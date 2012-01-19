@@ -1,0 +1,4 @@
+comment = 'foreign data wrapper for Informix IDS 11 access'
+default_version = '1.0'
+module_pathname = '$libdir/ifx_fdw'
+relocatable = true
