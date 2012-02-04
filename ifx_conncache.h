@@ -25,17 +25,17 @@
  */
 typedef struct IfxFTCacheItem
 {
-  Oid foreignTableOid;
+	/*
+	 * ID of the associated INFORMIX database
+	 * connection.
+	 */
+	char ifx_connection_name[IFX_CONNAME_LEN];
 
-  /*
-   * ID of the associated INFORMIX database
-   * connection.
-   */
-  char ifx_connection_name[IFX_CONNAME_LEN];
+	Oid foreignTableOid;
 
-  /*
-   * Cached cost estimates for this foreign table
-   */
+	/*
+	 * XXX: Cached cost estimates for this foreign table
+	 */
 } IfxFTCacheItem;
 
 /*
@@ -43,7 +43,8 @@ typedef struct IfxFTCacheItem
  */
 typedef struct IfxCachedConnection
 {
-  Oid establishedByOid;
+	char ifx_connection_name[IFX_CONNAME_LEN];
+	Oid establishedByOid;
 } IfxCachedConnection;
 
 /*

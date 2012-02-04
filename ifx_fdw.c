@@ -14,6 +14,7 @@
 
 #include "funcapi.h"
 #include "access/reloptions.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_user_mapping.h"
@@ -29,6 +30,8 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/rel.h"
+#include "utils/tqual.h"
 
 #include "ifx_fdw.h"
 #include "ifx_conncache.h"
@@ -65,6 +68,9 @@ static struct IfxFdwOption ifx_valid_options[] =
  */
 extern Datum ifx_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum ifx_fdw_validator(PG_FUNCTION_ARGS);
+
+PG_FUNCTION_INFO_V1(ifx_fdw_handler);
+PG_FUNCTION_INFO_V1(ifx_fdw_validator);
 
 /*******************************************************************************
  * FDW callback routines.
@@ -224,6 +230,8 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	ScanKeyInit(&key[1], Anum_pg_attribute_attnum,
 				BTGreaterStrategyNumber, F_INT2GT,
 				Int16GetDatum((int2)0));
+	scan = systable_beginscan(attrRel, AttributeRelidNumIndexId, true,
+							  SnapshotNow, 2, key);
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
@@ -399,6 +407,7 @@ ifxGetDatabaseString(IfxConnectionInfo *coninfo)
 	StringInfoData *buf;
 
 	buf = makeStringInfo();
+	initStringInfo(buf);
 	appendStringInfo(buf, "%s@%s", coninfo->database, coninfo->servername);
 
 	return buf;
@@ -416,6 +425,7 @@ ifxGenerateConnName(IfxConnectionInfo *coninfo)
 	StringInfoData *buf;
 
 	buf = makeStringInfo();
+	initStringInfo(buf);
 	appendStringInfo(buf, "%s-%s-%s", coninfo->username, coninfo->database,
 					 coninfo->servername);
 
@@ -427,8 +437,12 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 {
 	FdwRoutine *fdwRoutine = makeNode(FdwRoutine);
 
-	fdwRoutine->PlanForeignScan = ifxPlanForeignScan;
+	fdwRoutine->PlanForeignScan    = ifxPlanForeignScan;
 	fdwRoutine->ExplainForeignScan = ifxExplainForeignScan;
+	fdwRoutine->BeginForeignScan   = ifxBeginForeignScan;
+	fdwRoutine->IterateForeignScan = ifxIterateForeignScan;
+	fdwRoutine->ReScanForeignScan  = NULL;
+	fdwRoutine->EndForeignScan     = NULL;
 
 	PG_RETURN_POINTER(fdwRoutine);
 }
@@ -441,9 +455,9 @@ Datum
 ifx_fdw_validator(PG_FUNCTION_ARGS)
 {
 	List     *ifx_options_list = untransformRelOptions(PG_GETARG_DATUM(0));
-	ListCell *cell;
 	Oid       catalogOid = PG_GETARG_OID(1);
 	IfxConnectionInfo coninfo = {0};
+	ListCell *cell;
 
 	/*
 	 * Check options passed to this FDW. Validate values and required
@@ -506,37 +520,40 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	{
 		DefElem *def = (DefElem *) lfirst(elem);
 
+		elog(DEBUG1, "ifx_fdw set param %s=%s",
+			 def->defname, defGetString(def));
+
 		/*
 		 * "servername" defines the INFORMIXSERVER to connect to
 		 */
-		if (strcmp(def->defname, "servername") == 0)
+		if (strcmp(def->defname, "informixserver") == 0)
 		{
-			coninfo->servername = defGetString(def);
+			coninfo->servername = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "database") == 0)
 		{
-			coninfo->database = defGetString(def);
+			coninfo->database = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "username") == 0)
 		{
-			coninfo->username = defGetString(def);
+			coninfo->username = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "password") == 0)
 		{
-			coninfo->password = defGetString(def);
+			coninfo->password = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "table") == 0)
 		{
-			coninfo->tablename = defGetString(def);
+			coninfo->tablename = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "query") == 0)
 		{
-			coninfo->query = defGetString(def);
+			coninfo->query = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "estimated_rows") == 0)
@@ -805,6 +822,8 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	 */
 	for (i = 0; i < state->stmt_info.ifxAttrCount - 1; i++)
 	{
+		elog(DEBUG2, "get column %d", i);
+
 		/*
 		 * Retrieve a converted datum from the current
 		 * column and store it within state context.
@@ -813,7 +832,7 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 
 		/*
 		 * It might happen that the FDW table has dropped
-		 * columns...check for them and insert a NULL value for them
+		 * columns...check for them and insert a NULL value instead..
 		 */
 		if (state->pgAttrDefs[i] == NULL)
 		{
@@ -1001,6 +1020,7 @@ ifxFdwOptionsToStringBuf(Oid context)
 	struct IfxFdwOption *ifxopt;
 
 	buf = makeStringInfo();
+	initStringInfo(buf);
 
 	for (ifxopt = ifx_valid_options; ifxopt->optname; ifxopt++)
 	{

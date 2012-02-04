@@ -1,0 +1,20 @@
+== Example Setup ==
+
+CREATE SERVER centosifx_tcp
+FOREIGN DATA WRAPPER informix_fdw
+OPTIONS (informixserver 'centosifx_tcp',
+         connection_costs '250');
+
+CREATE USER MAPPING FOR CURRENT_USER
+SERVER centosifx_tcp
+OPTIONS (username 'informix', password 'informix');
+
+CREATE FOREIGN TABLE ifx_fdw_test (
+       id integer,
+       value integer
+    )
+SERVER centosifx_tcp
+OPTIONS ( query 'SELECT * FROM foo',
+          database 'test',
+          estimated_rows '500',
+          informixserver 'centosifx_tcp');
