@@ -121,7 +121,8 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate);
 
 static IfxFdwExecutionState *makeIfxFdwExecutionState();
 
-static int ifxCatchExceptions(IfxStatementInfo *state);
+static IfxSqlStateClass
+ifxCatchExceptions(IfxStatementInfo *state);
 
 /*******************************************************************************
  * Implementation starts here
@@ -135,7 +136,7 @@ static int ifxCatchExceptions(IfxStatementInfo *state);
  * messages.
  *
  */
-static int ifxCatchExceptions(IfxStatementInfo *state)
+static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state)
 {
 	IfxSqlStateClass errclass;
 
@@ -146,16 +147,36 @@ static int ifxCatchExceptions(IfxStatementInfo *state)
 
 	if (errclass != IFX_SUCCESS)
 	{
+		/*
+		 * Obtain the error message.
+		 */
+		IfxSqlStateMessage message;
+
+		elog(DEBUG1, "informix FDW exception count: %d",
+			 state->exception_count);
+
+		ifxGetSqlStateMessage(1, &message);
+
 		switch (errclass)
 		{
 			case IFX_RT_ERROR:
 				/* log FATAL */
+				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+								errmsg("informix FDW error: \"%s\"",
+									   message.text),
+								errdetail("SQLCODE %d", ifxGetSqlCode())));
 				break;
 			case IFX_WARNING:
 				/* log WARN */
+				ereport(WARNING, (errcode(ERRCODE_FDW_ERROR),
+								  errmsg("informix FDW error: \"%s\"",
+										 message.text)));
 				break;
 			case IFX_ERROR:
 				/* log ERROR */
+				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+								errmsg("informix FDW error: \"%s\"",
+									   message.text)));
 				break;
 			case IFX_NOT_FOUND:
 			default:
@@ -217,8 +238,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	festate->pgAttrCount = RelationGetNumberOfAttributes(foreignRel);
 	heap_close(foreignRel, NoLock);
 
-	festate->pgAttrDefs = palloc(sizeof(PgAttrDef) * (festate->pgAttrCount + 1));
-	festate->pgAttrDefs[festate->pgAttrCount + 1] = NULL;
+	festate->pgAttrDefs = palloc(sizeof(PgAttrDef) * festate->pgAttrCount);
 
 	/*
 	 * Get all attributes for the given foreign table.
@@ -240,12 +260,14 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		attrTuple = (Form_pg_attribute) GETSTRUCT(tuple);
 
 		/* Check for dropped columns. Any match is recorded
-		 * by setting the corresponding column slot in pgAttrDefs
-		 * to NULL.
+		 * by setting the corresponding attribute number to -1.
 		 */
 		if (attrTuple->attisdropped)
 		{
-			festate->pgAttrDefs[attrIndex - 1] = NULL;
+			festate->pgAttrDefs[attrIndex - 1].attnum = -1;
+			festate->pgAttrDefs[attrIndex - 1].atttypid = -1;
+			festate->pgAttrDefs[attrIndex - 1].atttypmod = -1;
+			festate->pgAttrDefs[attrIndex - 1].attname = NULL;
 			continue;
 		}
 
@@ -253,7 +275,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		 * Protect against corrupted numbers in pg_class.relnatts
 		 * and number of attributes retrieved from pg_attribute.
 		 */
-		if (attrIndex >= festate->pgAttrCount)
+		if (attrIndex > festate->pgAttrCount)
 		{
 			systable_endscan(scan);
 			heap_close(attrRel, AccessShareLock);
@@ -264,10 +286,10 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		 * Save the attribute and all required properties for
 		 * later usage.
 		 */
-		festate->pgAttrDefs[attrIndex - 1]->attnum = attrTuple->attnum;
-		festate->pgAttrDefs[attrIndex - 1]->atttypid = attrTuple->atttypid;
-		festate->pgAttrDefs[attrIndex - 1]->atttypmod = attrTuple->atttypmod;
-		festate->pgAttrDefs[attrIndex - 1]->attname = pstrdup(NameStr(attrTuple->attname));
+		festate->pgAttrDefs[attrIndex - 1].attnum = attrTuple->attnum;
+		festate->pgAttrDefs[attrIndex - 1].atttypid = attrTuple->atttypid;
+		festate->pgAttrDefs[attrIndex - 1].atttypmod = attrTuple->atttypmod;
+		festate->pgAttrDefs[attrIndex - 1].attname = pstrdup(NameStr(attrTuple->attname));
 	}
 
 	systable_endscan(scan);
@@ -285,6 +307,17 @@ static void
 ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 {
 	Assert(coninfo != NULL);
+
+	if (strcmp(def->defname, "informixdir") == 0)
+	{
+		if (coninfo->informixdir)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: informixdir(%s)",
+								   defGetString(def))));
+
+		coninfo->informixdir = defGetString(def);
+	}
+
 
 	if (strcmp(def->defname, "servername") == 0)
 	{
@@ -426,7 +459,7 @@ ifxGenerateConnName(IfxConnectionInfo *coninfo)
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
-	appendStringInfo(buf, "%s-%s-%s", coninfo->username, coninfo->database,
+	appendStringInfo(buf, "%s_%s_%s", coninfo->username, coninfo->database,
 					 coninfo->servername);
 
 	return buf;
@@ -501,6 +534,8 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	UserMapping   *userMap;
 	List          *options;
 	ListCell      *elem;
+	bool           mandatory[2] = { false, false };
+	int            i;
 
 	Assert(coninfo != NULL);
 
@@ -529,6 +564,17 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		if (strcmp(def->defname, "informixserver") == 0)
 		{
 			coninfo->servername = pstrdup(defGetString(def));
+			mandatory[0] = true;
+		}
+
+		/*
+		 * "informixdir" defines the INFORMIXDIR environment
+		 * variable.
+		 */
+		if (strcmp(def->defname, "informixdir") == 0)
+		{
+			coninfo->informixdir = pstrdup(defGetString(def));
+			mandatory[1] = true;
 		}
 
 		if (strcmp(def->defname, "database") == 0)
@@ -573,6 +619,16 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		}
 	}
 
+	/*
+	 * Check for mandatory options
+	 */
+	for (i = 0; i <= IFX_REQUIRED_CONN_KEYWORDS; i++)
+	{
+		if (!mandatory[i])
+			ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+							errmsg("missing required FDW options (informixserver, informixdir)")));
+	}
+
 }
 
 /*
@@ -592,7 +648,8 @@ static char *ifxGenStatementName(IfxConnectionInfo *coninfo)
 	stmt_name = (char *) palloc(stmt_name_len + 1);
 	bzero(stmt_name, stmt_name_len + 1);
 
-	snprintf("%s_%d", stmt_name_len, coninfo->conname, MyBackendId);
+	snprintf(stmt_name, stmt_name_len, "%s_%d",
+			 coninfo->conname, MyBackendId);
 
 	return stmt_name;
 }
@@ -609,7 +666,8 @@ static char *ifxGenCursorName(IfxConnectionInfo *coninfo)
 	cursor_name = (char *) palloc(len + 1);
 	bzero(cursor_name, len + 1);
 
-	snprintf("%s_%d_cur", len, coninfo->conname, MyBackendId);
+	snprintf(cursor_name, len, "%s_%d_cur",
+			 coninfo->conname, MyBackendId);
 	return cursor_name;
 }
 
@@ -671,28 +729,18 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 */
 	festate->stmt_info.cursor_name = ifxGenCursorName(coninfo);
 
-	/*
-	 * Prepare the query. We need to generate a unique
-	 * statement name for it, first.
-	 */
+	/* Prepare the query. */
+	elog(DEBUG1, "prepare query \"%s\"", festate->stmt_info.query);
 	ifxPrepareQuery(&festate->stmt_info);
-
-	if (ifxSetException(&(festate->stmt_info)) == IFX_RT_ERROR)
-	{
-		elog(ERROR, "could not prepare informix query %s",
-			 festate->stmt_info.query);
-	}
+	ifxCatchExceptions(&festate->stmt_info);
 
 	/*
 	 * Declare the cursor for the prepared
 	 * statement.
 	 */
+	elog(DEBUG1, "declare cursor \"%s\"", festate->stmt_info.cursor_name);
 	ifxDeclareCursorForPrepared(&festate->stmt_info);
-
-	if (ifxSetException(&(festate->stmt_info)) == IFX_RT_ERROR)
-	{
-		elog(ERROR, "could not declare informix cursor");
-	}
+	ifxCatchExceptions(&festate->stmt_info);
 
 	/*
 	 * Create a descriptor handle for the prepared
@@ -700,33 +748,25 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 * columns. We cheat a little bit and just reuse the
 	 * statement id.
 	 */
+	elog(DEBUG1, "allocate descriptor area \"%s\"", festate->stmt_info.stmt_name);
 	ifxAllocateDescriptor(festate->stmt_info.stmt_name);
-
-	if (ifxSetException(&(festate->stmt_info)) == IFX_RT_ERROR)
-	{
-		elog(ERROR, "could not allocate informix descriptor area");
-	}
+	ifxCatchExceptions(&festate->stmt_info);
 
 	/*
 	 * Open the cursor
 	 */
+	elog(DEBUG1, "open cursor \"%s\"", festate->stmt_info.cursor_name);
 	ifxOpenCursorForPrepared(&festate->stmt_info);
-
-	if (ifxSetException(&(festate->stmt_info)) == IFX_RT_ERROR)
-	{
-		elog(ERROR, "could not open informix cursor");
-	}
+	ifxCatchExceptions(&festate->stmt_info);
 
 	/*
 	 * Populate the DESCRIPTOR area.
 	 */
+	elog(DEBUG1, "populate descriptor area for statement \"%s\"",
+		 festate->stmt_info.stmt_name);
 	ifxDescribeAllocatorByName(festate->stmt_info.stmt_name,
 							   festate->stmt_info.stmt_name);
-
-	if (ifxSetException(&(festate->stmt_info)) == IFX_RT_ERROR)
-	{
-		elog(ERROR, "could not describe informix result set");
-	}
+	ifxCatchExceptions(&festate->stmt_info);
 
 	/*
 	 * Get the number of columns.
@@ -834,7 +874,7 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 		 * It might happen that the FDW table has dropped
 		 * columns...check for them and insert a NULL value instead..
 		 */
-		if (state->pgAttrDefs[i] == NULL)
+		if (state->pgAttrDefs[i].attnum < 0)
 		{
 			tupleSlot->tts_isnull[i] = true;
 			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
@@ -871,15 +911,22 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid)
 {
 	IfxConnectionInfo *coninfo;
 	StringInfoData    *buf;
+	StringInfoData    *dsn;
 
+	/*
+	 * Initialize connection handle, set
+	 * defaults.
+	 */
 	coninfo = (IfxConnectionInfo *) palloc(sizeof(IfxConnectionInfo));
 	bzero(coninfo->conname, IFX_CONNAME_LEN + 1);
+	ifxConnInfoSetDefaults(coninfo);
 	ifxGetOptions(foreignTableOid, coninfo);
 
 	buf = ifxGenerateConnName(coninfo);
 	StrNCpy(coninfo->conname, buf->data, IFX_CONNAME_LEN);
 
-	ifxConnInfoSetDefaults(coninfo);
+	dsn = ifxGetDatabaseString(coninfo);
+	coninfo->dsn = pstrdup(dsn->data);
 
 	return coninfo;
 }
@@ -921,6 +968,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	 */
 
 	coninfo = ifxMakeConnectionInfo(foreignTableOid);
+	elog(DEBUG1, "informix connection dsn \"%s\"", coninfo->dsn);
 
 	/*
 	 * Lookup the connection name in the connection cache.
@@ -964,7 +1012,8 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 			elog(WARNING, "opened informix connection with warnings");
 
 		if (err == IFX_CONNECTION_ERROR)
-			elog(ERROR, "could not open connection to informix server");
+			elog(ERROR, "could not open connection to informix server: SQLCODE=%d",
+				 ifxGetSqlCode());
 	}
 
 	return plan;

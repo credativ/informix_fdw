@@ -80,7 +80,7 @@ typedef struct IfxFdwExecutionState
 	 * Dynamic list of foreign table attribute
 	 * definitions.
 	 */
-	PgAttrDef **pgAttrDefs;
+	PgAttrDef *pgAttrDefs;
 
 	/*
 	 * Dynamic list of column values retrieved per iteration

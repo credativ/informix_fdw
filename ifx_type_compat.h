@@ -34,6 +34,11 @@
 #define IFX_FIXED_SIZE_VALUE -1
 
 /*
+ * Number of required connection parameters
+ */
+#define IFX_REQUIRED_CONN_KEYWORDS 2
+
+/*
  * Which kind of CURSOR to use.
  */
 typedef enum IfxCursorUsage
@@ -60,6 +65,18 @@ typedef enum IfxSqlStateClass
 
 	IFX_STATE_UNKNOWN = 1000
 } IfxSqlStateClass;
+
+/*
+ * IfxSqlStateMessage
+ *
+ * Message from a SQLSTATE exception
+ */
+typedef struct IfxSqlStateMessage
+{
+	int   id;
+	int   len;
+	char  text[255];
+} IfxSqlStateMessage;
 
 /*
  * Define supported source types which can
@@ -141,6 +158,7 @@ typedef struct IfxPlanData
 typedef struct IfxConnectionInfo
 {
 	char *servername;
+	char *informixdir;
 	char *username;
 	char *password;
 	char *database;
@@ -229,7 +247,7 @@ typedef struct IfxStatementInfo
 
 } IfxStatementInfo;
 
-void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
+extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
 void ifxDestroyConnection(char *conname);
 void ifxPrepareQuery(IfxStatementInfo *state);
@@ -247,6 +265,8 @@ void ifxFetchRowFromCursor(IfxStatementInfo *state);
 IfxSqlStateClass ifxSetException(IfxStatementInfo *state);
 IfxSqlStateClass ifxConnectionStatus();
 int ifxExceptionCount();
+void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message);
+int ifxGetSqlCode();
 
 /*
  * Functions to access specific datatypes

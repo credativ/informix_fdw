@@ -11,15 +11,18 @@
  *-------------------------------------------------------------------------
  */
 #include <string.h>
+#include <stdlib.h>
 
 #include "ifx_type_compat.h"
 
 EXEC SQL include sqltypes;
 
+static void ifxSetEnv(IfxConnectionInfo *coninfo);
+
 /*
  * Establish a named INFORMIX database connection with transactions
  */
-void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
+extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifxdsn;
@@ -33,9 +36,20 @@ void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 	ifxuser    = coninfo->username;
 	ifxpass    = coninfo->password;
 
+	/*
+	 * Set specific Informix environment
+	 */
+	ifxSetEnv(coninfo);
+
 	EXEC SQL CONNECT TO :ifxdsn AS :ifxconname
 		USER :ifxuser USING :ifxpass WITH CONCURRENT TRANSACTION;
 
+}
+
+void ifxSetEnv(IfxConnectionInfo *coninfo)
+{
+	setenv("INFORMIXDIR", coninfo->informixdir, 1);
+	setenv("INFORMIXSERVER", coninfo->servername, 1);
 }
 
 void ifxSetConnection(IfxConnectionInfo *coninfo)
@@ -43,6 +57,11 @@ void ifxSetConnection(IfxConnectionInfo *coninfo)
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifxconname;
 	EXEC SQL END DECLARE SECTION;
+
+	/*
+	 * Set specific Informix environment
+	 */
+	ifxSetEnv(coninfo);
 
 	ifxconname = coninfo->conname;
 	EXEC SQL SET CONNECTION :ifxconname;
@@ -203,12 +222,49 @@ IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
 	}
 
 	/*
+	 * XXX: Note that a failed GET DIAGNOSTICS command
+	 * will always set SQLSTATE to IX000 or IX001.
+	 * In this case it is reasonable to return
+	 * a IFX_RT_ERROR code, to indicate a generic
+	 * runtime error for now.
+	 */
+
+	/*
 	 * Save number of possible sub-exceptions, so
 	 * they can be retrieved additionally.
 	 */
 	state->exception_count = ifxExceptionCount();
 
 	return errclass;
+}
+
+/*
+ * ifxGetSqlStateMessage
+ *
+ * Returns the specified SQLSTATE id within
+ * the current informix connection context.
+ */
+void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int   ifx_msg_id;
+	int   ifx_msg_len;
+	char  ifx_message[255];
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_msg_id  = id;
+	bzero(ifx_message, 255);
+	bzero(message->text, 255);
+	ifx_msg_len = message->len = 0;
+
+	EXEC SQL GET DIAGNOSTICS EXCEPTION :ifx_msg_id
+		:ifx_message = MESSAGE_TEXT,
+		:ifx_msg_len = MESSAGE_LENGTH;
+
+	/* copy fields to struct and we're done */
+	message->id   = id;
+	message->len  = ifx_msg_len;
+	strncpy(message->text, ifx_message, ifx_msg_len);
 }
 
 /*
@@ -221,12 +277,21 @@ IfxSqlStateClass ifxConnectionStatus()
 {
 	/*
 	 * Informix might set SQLSTATE to class 01
-	 * after CONNECT or SET CONNECTION.
+	 * after CONNECT or SET CONNECTION to tell
+	 * some specific connection characteristics.
 	 *
-	 * SQLSTATE class 02 means connection error.
+	 * There's also the 08 explicit connection
+	 * exception class which needs to be handled
+	 * accordingly. This always should be handled
+	 * as an ERROR within pgsql backends.
+	 *
+	 * Handle Informix exception class IX accordingly
+	 * in case someone has installation errors with his
+	 * CSDK (e.g. no INFORMIXDIR set).
 	 */
 
-	if (strncmp(SQLSTATE, "02", 2) == 0)
+	if ((strncmp(SQLSTATE, "08", 2) == 0)
+		|| (strncmp(SQLSTATE, "IX", 2) == 0))
 		return IFX_CONNECTION_ERROR;
 
 	if (strncmp(SQLSTATE, "01", 2) == 0)
@@ -236,6 +301,17 @@ IfxSqlStateClass ifxConnectionStatus()
 		return IFX_CONNECTION_OK;
 
 	return IFX_STATE_UNKNOWN;
+}
+
+/*
+ * ifxGetSqlCode
+ *
+ * Return the SQLCODE identifier for
+ * the last executed ESQL/C command.
+ */
+int ifxGetSqlCode()
+{
+	return SQLCODE;
 }
 
 /*
@@ -295,6 +371,7 @@ int ifxGetInt(IfxStatementInfo *state, int attnum)
 		state->ifxAttrDefs[ifx_attnum]->len = IFX_FIXED_SIZE_VALUE;
 	}
 
+	result = ifx_value;
 	return result;
 }
 
