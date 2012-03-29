@@ -1,3 +1,7 @@
+== Compiling ==
+
+INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make
+
 == Example Setup ==
 
 CREATE SERVER centosifx_tcp
@@ -17,4 +21,38 @@ SERVER centosifx_tcp
 OPTIONS ( query 'SELECT * FROM foo',
           database 'test',
           estimated_rows '500',
-          informixserver 'centosifx_tcp');
+          informixserver 'centosifx_tcp',
+          informixdir '/Applications/IBM/informix');
+
+CREATE SERVER sles11_tcp
+FOREIGN DATA WRAPPER informix_fdw
+OPTIONS (informixserver 'ol_informix1170',
+         connection_costs '250');
+
+CREATE USER MAPPING FOR CURRENT_USER
+SERVER sles11_tcp
+OPTIONS (username 'informix', password 'informix');
+
+CREATE FOREIGN TABLE ifx_fdw_test (
+       id integer,
+       value integer
+    )
+SERVER sles11_tcp
+OPTIONS ( query 'SELECT * FROM foo',
+          database 'test',
+          estimated_rows '500',
+          informixserver 'ol_informix1170',
+          informixdir '/Applications/IBM/informix');
+
+CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
+                                                   OUT established_by_relid oid)
+RETURNS SETOF record
+AS 'ifx_fdw.so', 'ifxGetConnections'
+LANGUAGE C IMMUTABLE STRICT;
+
+== ToDo ==
+
+9.2 introduced a number of interesting changes:
+
+- Adjust API for PlanForeignScan() to new path generation
+- Use FDW helper functions
