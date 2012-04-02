@@ -86,7 +86,7 @@ typedef struct IfxFdwExecutionState
 	 * Dynamic list of column values retrieved per iteration
 	 * from the foreign table.
 	 */
-	IfxValue **values;
+	IfxValue *values;
 
 } IfxFdwExecutionState;
 

@@ -16,6 +16,7 @@
 #include "ifx_type_compat.h"
 
 EXEC SQL include sqltypes;
+EXEC SQL include sqlda;
 
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 
@@ -80,48 +81,97 @@ void ifxPrepareQuery(IfxStatementInfo *state)
 	EXEC SQL PREPARE :ifx_stmt_name FROM :ifx_query;
 }
 
-void ifxAllocateDescriptor(char *descr_name)
+void ifxCloseCursor(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_cursor_name;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_cursor_name = state->cursor_name;
+
+	EXEC SQL CLOSE :ifx_cursor_name;
+}
+
+int ifxFreeResource(IfxStatementInfo *state,
+					 int stackentry)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_id;
+	EXEC SQL END DECLARE SECTION;
+
+	switch (stackentry)
+	{
+		case IFX_STACK_PREPARE:
+			ifx_id = state->stmt_name;
+			break;
+		case IFX_STACK_DECLARE:
+			ifx_id = state->cursor_name;
+		default:
+			/* should not happen */
+			return -1;
+	}
+
+	EXEC SQL FREE :ifx_id;
+
+	return stackentry;
+}
+
+void ifxAllocateDescriptor(char *descr_name, int num_items)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifx_descriptor;
+	int ifx_max;
 	EXEC SQL END DECLARE SECTION;
 
 	ifx_descriptor = descr_name;
+	ifx_max = num_items;
 
-	EXEC SQL ALLOCATE DESCRIPTOR :ifx_descriptor;
+	EXEC SQL ALLOCATE DESCRIPTOR :ifx_descriptor WITH MAX :ifx_max;
 }
 
-void ifxDescribeAllocatorByName(char *stmt_name, char *descr_name)
-{
-	EXEC SQL BEGIN DECLARE SECTION;
-	char *ifx_descriptor;
-	char *ifx_stmt_name;
-	EXEC SQL END DECLARE SECTION;
-
-	ifx_stmt_name  = stmt_name;
-	ifx_descriptor = descr_name;
-
-	EXEC SQL DESCRIBE :ifx_stmt_name
-	         USING SQL DESCRIPTOR :ifx_descriptor;
-}
-
-int ifxDescriptorColumnCount(char *descr_name)
+void ifxDeallocateDescriptor(char *descr_name)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifx_descr_name;
-	int   num_attr;
 	EXEC SQL END DECLARE SECTION;
 
-	int i;
-
-	/*
-	 * Number of attributes for current descriptor
-	 * area.
-	 */
 	ifx_descr_name = descr_name;
-	EXEC SQL GET DESCRIPTOR :ifx_descr_name :num_attr = COUNT;
 
-	return num_attr;
+	EXEC SQL DEALLOCATE DESCRIPTOR :ifx_descr_name;
+}
+
+void ifxDescribeAllocatorByName(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_stmt_name;
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda *ifx_sqlda;
+
+	ifx_stmt_name  = state->stmt_name;
+
+	EXEC SQL DESCRIBE :ifx_stmt_name
+	         INTO ifx_sqlda;
+
+	state->sqlda = (void *)ifx_sqlda;
+}
+
+void ifxSetDescriptorCount(char *descr_name, int count)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	int ifx_count;
+	char *ifx_descriptor;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_count = count;
+	ifx_descriptor = descr_name;
+	EXEC SQL SET DESCRIPTOR :ifx_descriptor COUNT = :ifx_count;
+}
+
+int ifxDescriptorColumnCount(IfxStatementInfo *state)
+{
+	struct sqlda *sqptr = (struct sqlda *)state->sqlda;
+	return sqptr->sqld;
 }
 
 void ifxOpenCursorForPrepared(IfxStatementInfo *state)
@@ -130,7 +180,11 @@ void ifxOpenCursorForPrepared(IfxStatementInfo *state)
 	char *ifx_cursor_name;
 	EXEC SQL END DECLARE SECTION;
 
+	struct sqlda * ifx_sqlda;
+
+	ifx_sqlda = state->sqlda;
 	ifx_cursor_name = state->cursor_name;
+
 	EXEC SQL OPEN :ifx_cursor_name;
 }
 
@@ -144,12 +198,15 @@ void ifxDeclareCursorForPrepared(IfxStatementInfo *state)
 	/*
 	 * Check if cursor support is really available.
 	 */
-	if (state->cursorUsage != IFX_DEFAULT_CURSOR)
-		return;
+	/* if (state->cursorUsage != IFX_DEFAULT_CURSOR) */
+	/* 	return; */
 
-	ifx_stmt_name = ifx_cursor_name = state->stmt_name;
+	ifx_stmt_name = state->stmt_name;
+	ifx_cursor_name = state->cursor_name;
+
 	EXEC SQL DECLARE :ifx_cursor_name
-		CURSOR FOR :ifx_stmt_name ;
+		SCROLL CURSOR FOR :ifx_stmt_name;
+
 }
 
 void ifxDestroyConnection(char *conname)
@@ -166,14 +223,15 @@ void ifxDestroyConnection(char *conname)
 void ifxFetchRowFromCursor(IfxStatementInfo *state)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
-	char *ifx_descr;
 	char *ifx_cursor_name;
 	EXEC SQL END DECLARE SECTION;
 
-	ifx_descr = state->stmt_name;
+	struct sqlda *ifx_sqlda;
+
+	ifx_sqlda = (struct sqlda *)state->sqlda;
 	ifx_cursor_name = state->cursor_name;
 
-	EXEC SQL FETCH NEXT :ifx_cursor_name USING SQL DESCRIPTOR :ifx_descr;
+	EXEC SQL FETCH NEXT :ifx_cursor_name USING DESCRIPTOR ifx_sqlda;
 }
 
 /*
@@ -257,13 +315,18 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 	bzero(message->text, 255);
 	ifx_msg_len = message->len = 0;
 
+	/* Save current SQLCODE and SQLSTATE */
+	message->sqlcode = ifxGetSqlCode();
+	strncpy(message->sqlstate, SQLSTATE, 6);
+
+	/* Obtain error message */
 	EXEC SQL GET DIAGNOSTICS EXCEPTION :ifx_msg_id
 		:ifx_message = MESSAGE_TEXT,
 		:ifx_msg_len = MESSAGE_LENGTH;
 
 	/* copy fields to struct and we're done */
-	message->id   = id;
-	message->len  = ifx_msg_len;
+	message->id      = id;
+	message->len     = ifx_msg_len;
 	strncpy(message->text, ifx_message, ifx_msg_len);
 }
 
@@ -276,16 +339,16 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 IfxSqlStateClass ifxConnectionStatus()
 {
 	/*
-	 * Informix might set SQLSTATE to class 01
+	 * Informix might set SQLSTATE to class '01'
 	 * after CONNECT or SET CONNECTION to tell
 	 * some specific connection characteristics.
 	 *
-	 * There's also the 08 explicit connection
+	 * There's also the '08' explicit connection
 	 * exception class which needs to be handled
 	 * accordingly. This always should be handled
 	 * as an ERROR within pgsql backends.
 	 *
-	 * Handle Informix exception class IX accordingly
+	 * Handle Informix exception class 'IX' accordingly
 	 * in case someone has installation errors with his
 	 * CSDK (e.g. no INFORMIXDIR set).
 	 */
@@ -338,57 +401,74 @@ int ifxExceptionCount()
 	return result;
 }
 
-int ifxGetInt(IfxStatementInfo *state, int attnum)
+int ifxGetInt(IfxStatementInfo *state, int ifx_attnum)
 {
-	EXEC SQL BEGIN DECLARE SECTION;
-	mint  ifx_value;
-	short ifx_indicator;
-	char *ifx_descr;
-	int   ifx_attnum;
-	EXEC SQL END DECLARE SECTION;
-
 	int result;
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	IfxIndicatorValue ifx_indicator;
 
-	ifx_descr  = state->stmt_name;
-	ifx_attnum = attnum;
-
-	EXEC SQL GET DESCRIPTOR :ifx_descr VALUE :ifx_attnum
-		:ifx_indicator = INDICATOR,
-		:ifx_value     = DATA;
+	/*
+	 * Init stuff.
+	 */
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
 
 	/*
 	 * Copy the data into a non-host variable. We don't want
 	 * to reuse variables in PostgreSQL that were part of ESQL/C
 	 * formerly.
 	 */
-	if (ifx_indicator == -1)
+	if ((*ifx_value->sqlind) == -1)
 		/* NULL value encountered */
-		state->ifxAttrDefs[ifx_attnum]->indicator = INDICATOR_NULL;
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NULL;
 	else
 	{
-		state->ifxAttrDefs[ifx_attnum]->indicator = INDICATOR_NOT_NULL;
-		/* fixed size value */
-		state->ifxAttrDefs[ifx_attnum]->len = IFX_FIXED_SIZE_VALUE;
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_NULL;
 	}
 
-	result = ifx_value;
+	result = (int) (*ifx_value->sqldata);
+
 	return result;
 }
 
+/*
+ * ifxGetColumnAttributes()
+ *
+ * Initializes an IfxStatementInfo according to the
+ * attributes defined by the returning columns of a previously
+ * prepared and described statement.
+ *
+ * ifxGetColumnAttributes() initializes column descriptors
+ * so it can be used later to transform informix datatypes into
+ * corresponding PostgreSQL types.
+ *
+ * The function returns -1 in case an error occurs or the
+ * row size required to be allocated to hold all values
+ * returned by a row.
+ */
 int ifxGetColumnAttributes(IfxStatementInfo *state)
 {
-	EXEC SQL BEGIN DECLARE SECTION;
-	short ifx_type;
-	int   ifx_attnum;
-	char *ifx_descr;
-	EXEC SQL END DECLARE SECTION;
+	struct sqlvar_struct *column_data;
+	struct sqlda *ifx_sqlda;
+	int ifx_attnum;
+	int row_size;
+	int ifx_offset;
 
-	ifx_descr = state->stmt_name;
+	ifx_sqlda   = (struct sqlda *)state->sqlda;
+	column_data = ifx_sqlda->sqlvar;
+	row_size    = -1;
+	ifx_offset  = 0;
 
-	for (ifx_attnum = 0; ifx_attnum < state->ifxAttrCount - 1; ifx_attnum++)
+	/*
+	 * Loop over all ifxAttrCount columns.
+	 */
+	for (ifx_attnum = 0; ifx_attnum < state->ifxAttrCount; ifx_attnum++)
 	{
-		EXEC SQL GET DESCRIPTOR :ifx_descr VALUE :ifx_attnum
-			:ifx_type = TYPE;
+		short ifx_type;
+
+		column_data->sqldata = NULL;
+		column_data->sqlind  = NULL;
 
 		/*
 		 * Record the source type, so that we can translate it to
@@ -397,36 +477,125 @@ int ifxGetColumnAttributes(IfxStatementInfo *state)
 		 * use the Informix type directly: sqltypes.h can't be included
 		 * in PostgreSQL modules, since it redefines int2 and int4.
 		 */
+		ifx_type = column_data->sqltype;
+
+		/* Raw size of the column reported by the database */
+		state->ifxAttrDefs[ifx_attnum].len = column_data->sqllen;
+
+		/*
+		 * Memory aligned offset into data buffer
+		 */
+		ifx_offset = rtypalign(ifx_offset, column_data->sqltype);
+		state->ifxAttrDefs[ifx_attnum].offset = ifx_offset;
+
+		/* Size used by the corresponding C datatype */
+		column_data->sqllen = rtypmsize(column_data->sqltype, column_data->sqllen);
+		state->ifxAttrDefs[ifx_attnum].mem_allocated = column_data->sqllen;
+		row_size += state->ifxAttrDefs[ifx_attnum].mem_allocated;
+
+		/*
+		 * Save current offset position.
+		 */
+		ifx_offset += column_data->sqllen;
+
+		/* Store the corresponding informix data type identifier. This is later
+		 * used to identify the PostgreSQL target type we need to convert to. */
+		state->ifxAttrDefs[ifx_attnum].type = (IfxSourceType) ifx_type;
+
+		/*
+		 * Switch to the ESQL/C host variable type we want to assign
+		 * the value.
+		 */
 		switch(ifx_type) {
 			case SQLCHAR:
+				column_data->sqltype = CCHARTYPE;
+				break;
 			case SQLSMINT:
+				column_data->sqltype = CSHORTTYPE;
+				break;
 			case SQLINT:
+				column_data->sqltype = CINTTYPE;
+				break;
 			case SQLFLOAT:
 			case SQLSMFLOAT:
+				column_data->sqltype = CFLOATTYPE;
+				break;
 			case SQLDECIMAL:
-			case SQLSERIAL:
+				column_data->sqltype = CDECIMALTYPE;
+				break;
 			case SQLDATE:
+				column_data->sqltype = CDATETYPE;
+				break;
 			case SQLMONEY:
+				column_data->sqltype = CMONEYTYPE;
+				break;
 			case SQLNULL:
+				/* XXX: How is this going to be used ??? */
+				break;
 			case SQLDTIME:
+				column_data->sqltype = CDTIMETYPE;
+				break;
 			case SQLBYTES:
 			case SQLTEXT:
+				/* BLOB datatypes. These are handled via loc_t
+				 * locator descriptor and require special handling */
+				column_data->sqltype = CLOCATORTYPE;
+				break;
 			case SQLVCHAR:
-			case SQLINTERVAL:
 			case SQLNCHAR:
 			case SQLNVCHAR:
+				column_data->sqltype = CSTRINGTYPE;
+				break;
+			case SQLINTERVAL:
+				column_data->sqltype = CINVTYPE;
+				break;
+			case SQLSERIAL:
 			case SQLINT8:
 			case SQLSERIAL8:
+				column_data->sqltype = CINT8TYPE;
+				break;
 			case SQLSET:
 			case SQLMULTISET:
 			case SQLLIST:
+				break;
 			case SQLROW:
+				column_data->sqltype = CROWTYPE;
+				break;
 			case SQLCOLLECTION:
+				column_data->sqltype = CCOLLTYPE;
+				break;
 			case SQLROWREF:
-				state->ifxAttrDefs[ifx_attnum]->type = (IfxSourceType) ifx_type;
 				break;
 			default:
 				return -1;
 		}
+
+		column_data++;
+	}
+
+	return row_size;
+}
+
+void ifxSetupDataBufferAligned(IfxStatementInfo *state)
+{
+	int ifx_attnum;
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *column_data;
+
+	/*
+	 * Initialize stuff.
+	 */
+	ifx_sqlda = (struct sqlda *) state->sqlda;
+	column_data = ifx_sqlda->sqlvar;
+
+	for (ifx_attnum = 0; ifx_attnum < state->ifxAttrCount; ifx_attnum++)
+	{
+		column_data->sqldata = &state->data[state->ifxAttrDefs[ifx_attnum].offset];
+		column_data->sqlind  = &state->indicator[ifx_attnum];
+
+		/*
+		 * Next one...
+		 */
+		column_data++;
 	}
 }

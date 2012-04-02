@@ -39,6 +39,17 @@
 #define IFX_REQUIRED_CONN_KEYWORDS 2
 
 /*
+ * Flags to identify current state
+ * of informix calls.
+ */
+#define IFX_STACK_EMPTY    0
+#define IFX_STACK_PREPARE  1
+#define IFX_STACK_DECLARE  2
+#define IFX_STACK_ALLOCATE 4
+#define IFX_STACK_DESCRIBE 8
+#define IFX_STACK_OPEN     16
+
+/*
  * Which kind of CURSOR to use.
  */
 typedef enum IfxCursorUsage
@@ -75,6 +86,8 @@ typedef struct IfxSqlStateMessage
 {
 	int   id;
 	int   len;
+	char  sqlcode;
+	char  sqlstate[6];
 	char  text[255];
 } IfxSqlStateMessage;
 
@@ -137,6 +150,8 @@ typedef struct IfxAttrDef
 	int            len;
 	char          *name;
 	IfxIndicatorValue indicator;
+	size_t            mem_allocated; /* memory allocated for data */
+	int               offset;        /* offset into the data memory buffer */
 } IfxAttrDef;
 
 /*
@@ -209,6 +224,12 @@ typedef struct IfxStatementInfo
 	char sqlstate[6];
 
 	/*
+	 * Call stack. Used to track
+	 * the current state of informix calls.
+	 */
+	unsigned short call_stack;
+
+	/*
 	 * Number of exceptions per ESQL call.
 	 */
 	int exception_count;
@@ -229,6 +250,11 @@ typedef struct IfxStatementInfo
 	char *stmt_name;
 
 	/*
+	 * Named descriptor area.
+	 */
+	char *descr_name;
+
+	/*
 	 * Size of the informix column descriptor list.
      * Should match number of IfxAttrDef elements in ifxAttrDefs.
 	 */
@@ -238,12 +264,33 @@ typedef struct IfxStatementInfo
 	 * Size of the foreign table column descriptor
 	 * list. Should match the number of columns of
 	 * the foreign table defined in pgAttrDefs.
+	 *
+	 * XXX: Required here?
+	 *
+	 * XXX: Pointer to internal informix SQLDA structure
 	 */
+	void *sqlda;
+
+	/*
+	 * Allocated row size. Should be > 0 in case any allocations
+	 * to SQLDA and sqldata within sqlvar structs occur.
+	 */
+	size_t row_size;
+
+	/*
+	 * Memory area for sqlvar structs to store values.
+	 */
+	char *data;
+
+	/*
+	 * Memory area for SQLDA indicator values.
+	 */
+	short *indicator;
 
 	/*
 	 * Dynamic list of attribute definitions
 	 */
-	IfxAttrDef **ifxAttrDefs;
+	IfxAttrDef *ifxAttrDefs;
 
 } IfxStatementInfo;
 
@@ -251,9 +298,9 @@ extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
 void ifxDestroyConnection(char *conname);
 void ifxPrepareQuery(IfxStatementInfo *state);
-void ifxAllocateDescriptor(char *descr_name);
-void ifxDescribeAllocatorByName(char *stmt_name, char *descr_name);
-int ifxDescriptorColumnCount(char *descr_name);
+void ifxAllocateDescriptor(char *descr_name, int num_items);
+void ifxDescribeAllocatorByName(IfxStatementInfo *state);
+int ifxDescriptorColumnCount(IfxStatementInfo *state);
 void ifxDeclareCursorForPrepared(IfxStatementInfo *state);
 void ifxOpenCursorForPrepared(IfxStatementInfo *state);
 int ifxGetColumnAttributes(IfxStatementInfo *state);
