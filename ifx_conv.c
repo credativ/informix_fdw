@@ -9,7 +9,7 @@
  * call ifxRewindCallstack before re-throwing any PostgreSQL
  * elog's, otherwise you likely leak memory.
  *
- * Copyright (c) 2010-2011, PostgreSQL Global Development Group
+ * Copyright (c) 2012, credativ GmbH
  *
  * IDENTIFICATION
  *		  informix_fdw/ifx_conv.c

@@ -7,7 +7,7 @@
  * the need to include PostgreSQL-related header files to avoid
  * conflicts.
  *
- * Copyright (c) 2010-2011, PostgreSQL Global Development Group
+ * Copyright (c) 2012, credativ GmbH
  *
  * IDENTIFICATION
  *		  informix_fdw/ifx_fdw.c

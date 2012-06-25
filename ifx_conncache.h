@@ -3,7 +3,7 @@
  * ifx_conncache.c
  *		  foreign-data wrapper for IBM INFORMIX databases
  *
- * Copyright (c) 2010-2011, PostgreSQL Global Development Group
+ * Copyright (c) 2012, credativ GmbH
  *
  * IDENTIFICATION
  *		  informix_fdw/ifx_conncache.h
