@@ -1,3 +1,22 @@
+= About this software =
+
+THIS CODE IS STILL ALPHA!
+
+Please note that this software is still under high development.
+There are likely still bugs and functional deficiencies in the code.
+You are encouraged to report any bugs to the author.
+
+The PostgreSQL Informix Foreign Datawrapper (FDW) module
+is a driver for accessing remote informix table from within
+PostgreSQL databases. Foreign Tables are transparently accessed
+as normal PostgreSQL tables, they can be used to join remote data
+against real PostgreSQL tables, import remote data and more. The FDW
+interface implemented in PostgreSQL starting with version 9.1
+supports the SQL/MED standard. Currently only read-only access
+to remote data is supported.
+
+Currently, only PostgreSQL 9.1 is supported.
+
 = Requirements =
 
 Informix FDW for PostgreSQL requires a complete
@@ -13,6 +32,8 @@ module. Informix FDW is installed as an EXTENSION, for details
 see
 
 http://www.postgresql.org/docs/9.1/static/sql-createextension.html
+
+Currently only PostgreSQL 9.1 is supported.
 
 = Compiling =
 
@@ -61,17 +82,6 @@ OPTIONS ( query 'SELECT * FROM foo',
           informixserver 'ol_informix1170',
           informixdir '/Applications/IBM/informix');
 
-CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
-                                                   OUT established_by_relid oid,
-                                                   OUT servername text,
-                                                   OUT informixdir text,
-                                                   OUT database text,
-                                                   OUT db_locale text,
-                                                   OUT client_locale text)
-RETURNS SETOF record
-AS 'ifx_fdw.so', 'ifxGetConnections'
-LANGUAGE C IMMUTABLE STRICT;
-
 = Supported datatypes =
 
 Currently, only fundamental Informix data types are supported. There's
@@ -93,12 +103,43 @@ LVARCHAR
 NCHAR
 NVARCHAR
 
+= Predicate Pushdown =
+
+The Informix FDW is able to pushdown query predicates which meet the following
+conditions:
+
+- The expression is of type VAR OP CONST, where VAR is a column reference to
+  the foreign table and CONST a constant value
+- OP must be one of the following operators:
+  <, >, =, <=, >=, LIKE
+- Matching of column references is done on a per-name basis: that means even
+  you can name a column in a foreign table different than on your remote informix
+  table, it cannot be successfully pushded down and will throw an error (in that case
+  you need to turn of predicate pushdown).
+
 = GLS Support =
 
 Informix GLS support is provided through the CLIENT_LOCALE and DB_LOCALE
 database connection parameters. At least, each foreign server is required
-to define a valid CLIENT_LOCALE, which should be match the server_encoding
+to define a valid CLIENT_LOCALE, which should match the server_encoding
 of the PostgreSQL database.
+
+= Helper functions =
+
+To get a list of cached informix database connections in a PostgreSQL
+session, use the ifx_fdw_get_connections() procedure:
+
+#= SELECT * FROM ifx_fdw_get_connections();
+-[ RECORD 1 ]--------+----------------------------
+connection_name      | informixtestol_informix1170
+established_by_relid | 230262
+servername           | ol_informix1170
+informixdir          | /Applications/IBM/informix
+database             | test
+username             | informix
+usage                | 2
+db_locale            | en_us.819
+client_locale        | en_US.utf8
 
 = Caveats =
 
@@ -111,7 +152,7 @@ of the PostgreSQL database.
 - Better error handling in case of NULL datum in the various convert*
   routines in ifx_conv.c
 
-9.2 introduced a number of interesting changes:
+9.2 will introduce a number of interesting changes:
 
 - Adjust API for PlanForeignScan() to new path generation
 - Use FDW helper functions
