@@ -202,5 +202,10 @@ Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum);
 void ifxRewindCallstack(IfxStatementInfo *info);
 IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo);
 
+/*
+ * Node support helper functions
+ */
+bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context);
+
 #endif
 

@@ -67,6 +67,8 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 int2 ifxGetSerializedInt16Field(List *list, int ident);
 int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);
+Datum ifxSetSerializedInt32Field(List *list, int ident, int value);
+Datum ifxSetSerializedInt16Field(List *list, int ident, int2 value);
 
 bytea *
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);

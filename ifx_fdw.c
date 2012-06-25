@@ -141,6 +141,9 @@ static char *ifxFilterQuals(PlannerInfo *planInfo,
 							RelOptInfo *baserel,
 							Oid foreignTableOid);
 
+static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
+									IfxConnectionInfo *coninfo);
+
 /*******************************************************************************
  * SQL status and helper functions.
  */
@@ -901,8 +904,8 @@ static char *ifxGenCursorName(IfxConnectionInfo *coninfo)
 /*
  * Prepare informix query object identifier
  */
-void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
-							 IfxConnectionInfo *coninfo)
+static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
+									IfxConnectionInfo *coninfo)
 {
 	StringInfoData *buf;
 
@@ -1268,10 +1271,8 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 
 static void ifxEndForeignScan(ForeignScanState *node)
 {
-	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *state;
 	FdwPlan              *plan;
-	Oid                   foreignTableOid;
 
 	elog(DEBUG3, "informix_fdw: end scan");
 
@@ -1450,7 +1451,6 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 							 Oid foreignTableOid)
 {
 	IfxPushdownOprContext pushdownCxt;
-	List                 *restrictInfos;
 	ListCell             *cell;
 	StringInfoData       *buf;
 	int i;
@@ -1475,7 +1475,7 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 
 		info = (RestrictInfo *) lfirst(cell);
 
-		ifx_predicate_tree_walker(info->clause, &pushdownCxt);
+		ifx_predicate_tree_walker((Node *)info->clause, &pushdownCxt);
 	}
 
 	/*
@@ -1513,10 +1513,8 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 {
 
 	IfxConnectionInfo    *coninfo;
-	StringInfoData       *buf;
 	bool                  conn_cached;
 	FdwPlan              *plan;
-	bytea                *plan_data;
 	IfxSqlStateClass      err;
 	List                 *plan_values;
 	IfxFdwExecutionState *state;

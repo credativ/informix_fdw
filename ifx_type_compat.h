@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * ifx_type_compat.h
- *		  foreign-data wrapper for IBM INFORMIX databases
+ *		  foreign-data wrapper for INFORMIX(tm) databases
  *
  * Describes the API for accessing the INFORMIX module without
  * the need to include PostgreSQL-related header files to avoid
@@ -382,6 +382,7 @@ int ifxFreeResource(IfxStatementInfo *state,
 void ifxDeallocateDescriptor(char *descr_name);
 char ifxGetSQLCAWarn(signed short warn);
 int ifxGetSQLCAErrd(signed short ca);
+void ifxSetDescriptorCount(char *descr_name, int count);
 
 /*
  * Error handling

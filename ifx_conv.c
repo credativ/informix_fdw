@@ -23,6 +23,7 @@
 #include "catalog/pg_type.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "nodes/nodeFuncs.h"
 #include "utils/builtins.h"
 #include "utils/syscache.h"
 
@@ -31,10 +32,6 @@
 /*******************************************************************************
  * Helper functions
  */
-
-static char *ifxVarOperandColumnName(IfxStatementInfo *state,
-									 Var *var);
-
 static regproc getTypeCastFunction(IfxFdwExecutionState *state,
 								   Oid sourceOid, Oid targetOid);
 static regproc getTypeInputFunction(IfxFdwExecutionState *state,
@@ -807,7 +804,6 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 	if (! IsA(node, Var) && ! IsA(node, Const))
 	{
-		Datum transform;
 		elog(DEBUG3, "removed opr %d with type %d from pushdown list",
 			 context->count - 1,
 			 info->type);
@@ -819,96 +815,4 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 	return false;
 
-}
-
-void ifxPushdownFilter(IfxPushdownOprInfo *pushDown,
-					   Node *right,
-					   Node *left)
-{
-	bool vars[2];
-	Datum expr_string;
-
-	/*
-	 * Currently this approach is very naive: we assume
-	 * a VAR and CONST expression on either the left or right
-	 * side of the operand- See ifx_fdw.h:IfxOprType for
-	 * supported operators.
-	 *
-	 * Record which one of the arguments is a VAR or either
-	 * a CONST value. Obviously the vars array mustn't be both
-	 * false, otherwise it makes no sense to push dem down.
-	 *
-	 * XXX: Actually both operands couldn't be VAR when
-	 * referencing a local PostgreSQL table. That would mean a
-	 * join and this is up to this point not yet supported in
-	 * PostgreSQL. So we allow both VARs and try to push them
-	 * down. However, if there are two CONST expression, we abort,
-	 * since this doesn't make any real sense to pushdown.
-	 */
-
-	vars[0] = IsA(right, Var);
-	vars[1] = IsA(left, Var);
-
-	if ((vars[0] && vars[1])
-		|| (vars[0] ^ vars[1]))
-	{
-		Const *const_expr;
-		Var   *var_expr[2]; /* Might only one be used */
-
-		var_expr[0] = NULL;
-		var_expr[1] = NULL;
-		const_expr  = NULL;
-
-		/*
-		 * If one of the operands are not VAR, check
-		 * for a CONST expr. If false, abort. We don't
-		 * throw an error here, since we simply treat this as
-		 * an expression not able to be pushdown.
-		 *
-		 * XXX: This is a rather dumb approach, but we want to
-		 *      extend this later anyways, so that
-		 *      for example Function Calls or similar can be
-		 *      pushed down.
-		 */
-		if (!vars[0])
-		{
-			if (!IsA(left, Const))
-				return;
-			else
-				const_expr = (Const *)left;
-		}
-		else
-		{
-			var_expr[0] = (Var *)left;
-		}
-
-		if (!vars[1])
-		{
-			if (!IsA(right, Const))
-				return;
-			else
-				const_expr = (Const *) right;
-		}
-		else
-		{
-			var_expr[1] = (Var *)right;
-		}
-
-		/*
-		 * Beginning with this point we *know*
-		 * that we deal with either VAR <opr> CONST,
-		 * CONST <opr> VAR or VAR <opr> VAR.
-		 *
-		 * Try to deparse the OpExpr and save it
-		 * into the IfxPushdownOprInfo structure...
-		 */
-
-	}
-}
-
-static char *ifxVarOperandColumnName(IfxStatementInfo *state,
-									 Var *var)
-{
-	Assert(var != NULL);
-	Assert(state != NULL);
 }

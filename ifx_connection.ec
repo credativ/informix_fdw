@@ -80,11 +80,6 @@ char ifxGetSQLCAWarn(signed short int warn)
 	}
 }
 
-void ifxGetTableStatistics(IfxPlanData *planData, char *tablename)
-{
-
-}
-
 void ifxSetEnv(IfxConnectionInfo *coninfo)
 {
 	setenv("INFORMIXDIR", coninfo->informixdir, 1);
