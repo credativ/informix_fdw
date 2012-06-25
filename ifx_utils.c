@@ -14,8 +14,6 @@
 #include "ifx_fdw.h"
 #include "ifx_node_utils.h"
 
-#include "utils/portal.h"
-
 static void ifxFdwExecutionStateToList(Const *const_vals[],
 									   IfxFdwExecutionState *state);
 
