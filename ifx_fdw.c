@@ -10,30 +10,10 @@
  *
  *-------------------------------------------------------------------------
  */
-#include "postgres.h"
 
-#include "funcapi.h"
-#include "access/reloptions.h"
-#include "catalog/indexing.h"
-#include "catalog/pg_foreign_server.h"
-#include "catalog/pg_foreign_table.h"
-#include "catalog/pg_user_mapping.h"
-#include "catalog/pg_type.h"
-#include "commands/defrem.h"
-#include "commands/explain.h"
-#include "foreign/fdwapi.h"
-#include "foreign/foreign.h"
-#include "miscadmin.h"
-#include "mb/pg_wchar.h"
-#include "optimizer/cost.h"
-#include "storage/fd.h"
-#include "utils/array.h"
-#include "utils/builtins.h"
-#include "utils/fmgroids.h"
-#include "utils/rel.h"
-#include "utils/tqual.h"
 
 #include "ifx_fdw.h"
+#include "ifx_node_utils.h"
 #include "ifx_conncache.h"
 
 PG_MODULE_MAGIC;
@@ -60,7 +40,12 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "table",            ForeignTableRelationId },
 	{ "estimated_rows",   ForeignTableRelationId },
 	{ "connection_costs", ForeignTableRelationId },
-	{ NULL,               ForeignTableRelationId }
+	{ "gl_datetime",      ForeignTableRelationId },
+	{ "gl_date",          ForeignTableRelationId },
+	{ "client_locale",    ForeignTableRelationId },
+	{ "db_locale",        ForeignTableRelationId },
+	{ "disable_predicate_pushdown", ForeignTableRelationId },
+	{ NULL,                         ForeignTableRelationId }
 };
 
 /*
@@ -98,6 +83,8 @@ static void
 ifxBeginForeignScan(ForeignScanState *node, int eflags);
 
 static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node);
+
+static void ifxReScanForeignScan(ForeignScanState *state);
 
 static void ifxEndForeignScan(ForeignScanState *node);
 
@@ -144,6 +131,23 @@ static inline void ifxPopCallstack(IfxStatementInfo *info,
 static inline void ifxPushCallstack(IfxStatementInfo *info,
 									unsigned short stackentry);
 
+static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
+								   bool *isnull);
+
+
+static void ifxPrepareCursorForScan(IfxStatementInfo *info);
+
+static char *ifxFilterQuals(PlannerInfo *planInfo,
+							RelOptInfo *baserel,
+							Oid foreignTableOid);
+
+/*******************************************************************************
+ * SQL status and helper functions.
+ */
+
+Datum
+ifxGetConnections(PG_FUNCTION_ARGS);
+
 /*******************************************************************************
  * Implementation starts here
  */
@@ -181,7 +185,7 @@ static inline void ifxPopCallstack(IfxStatementInfo *info,
  * all resources associated with the call stack
  * in the given state.
  */
-static void ifxRewindCallstack(IfxStatementInfo *info)
+void ifxRewindCallstack(IfxStatementInfo *info)
 {
 	/*
 	 * NOTE: IFX_STACK_DESCRIBE doesn't need any special handling here,
@@ -198,23 +202,32 @@ static void ifxRewindCallstack(IfxStatementInfo *info)
 
 	if ((info->call_stack & IFX_STACK_ALLOCATE) == IFX_STACK_ALLOCATE)
 	{
-		/* ifxDeallocateDescriptor(info->descr_name); */
+		/*
+		 * Deallocating allocated memory by sqlda data structure
+		 * is going to be little tricky here: sqlda is allocated
+		 * by the Informix ESQL/C API, so we don't have any influence
+		 * via memory contexts...we aren't allowed to use pfree()!
+		 *
+		 * The memory area for SQL data values retrieved by any
+		 * FETCH from the underlying cursor is allocated by palloc(),
+		 * however. We don't free them immediately and leave this up
+		 * to memory context cleanup.
+		 */
+		ifxDeallocateSQLDA(info);
 		elog(DEBUG2, "informix_fdw: undo allocate");
-		if (info->sqlda != NULL)
-			free(info->sqlda);
 		ifxPopCallstack(info, IFX_STACK_ALLOCATE);
 	}
 
 	if ((info->call_stack & IFX_STACK_DECLARE) == IFX_STACK_DECLARE)
 	{
-		ifxFreeResource(info);
+		ifxFreeResource(info, IFX_STACK_DECLARE);
 		elog(DEBUG2, "informix_fdw: undo declare");
 		ifxPopCallstack(info, IFX_STACK_DECLARE);
 	}
 
 	if ((info->call_stack & IFX_STACK_PREPARE) == IFX_STACK_PREPARE)
 	{
-		ifxFreeResource(info);
+		ifxFreeResource(info, IFX_STACK_PREPARE);
 		elog(DEBUG2, "informix_fdw: undo prepare");
 		ifxPopCallstack(info, IFX_STACK_PREPARE);
 	}
@@ -291,7 +304,6 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 	 * IFX_SUCCESS
 	 */
 	ifxPushCallstack(state, stackentry);
-	elog(DEBUG1, "push callstack %u", state->call_stack);
 
 	return errclass;
 }
@@ -309,6 +321,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState()
 	state->stmt_info.cursorUsage = IFX_DEFAULT_CURSOR;
 
 	state->stmt_info.query        = NULL;
+	state->stmt_info.predicate    = NULL;
 	state->stmt_info.cursor_name  = NULL;
 	state->stmt_info.stmt_name    = NULL;
 	state->stmt_info.descr_name   = NULL;
@@ -428,6 +441,47 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 								   defGetString(def))));
 
 		coninfo->informixdir = defGetString(def);
+	}
+
+	if (strcmp(def->defname, "gl_date") == 0)
+	{
+		if (coninfo->gl_date)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: gl_date(%s)",
+								   defGetString(def))));
+
+		coninfo->gl_date = defGetString(def);
+	}
+
+	if (strcmp(def->defname, "db_locale") == 0)
+	{
+		if (coninfo->db_locale)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: db_locale(%s)",
+								   defGetString(def))));
+
+		coninfo->db_locale = defGetString(def);
+	}
+
+
+	if (strcmp(def->defname, "gl_datetime") == 0)
+	{
+		if (coninfo->gl_datetime)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: gl_datetime(%s)",
+								   defGetString(def))));
+
+		coninfo->gl_datetime = defGetString(def);
+	}
+
+	if (strcmp(def->defname, "client_locale") == 0)
+	{
+		if (coninfo->client_locale)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: gl_date(%s)",
+								   defGetString(def))));
+
+		coninfo->client_locale = defGetString(def);
 	}
 
 
@@ -587,9 +641,19 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 	fdwRoutine->BeginForeignScan   = ifxBeginForeignScan;
 	fdwRoutine->IterateForeignScan = ifxIterateForeignScan;
 	fdwRoutine->EndForeignScan     = ifxEndForeignScan;
-	fdwRoutine->ReScanForeignScan  = NULL;
+	fdwRoutine->ReScanForeignScan  = ifxReScanForeignScan;
 
 	PG_RETURN_POINTER(fdwRoutine);
+}
+
+/*
+ * ifxReScanForeignScan
+ *
+ *   Restart the scan with new parameters.
+ */
+static void ifxReScanForeignScan(ForeignScanState *state)
+{
+	elog(DEBUG1, "informix_fdw: rescan");
 }
 
 /*
@@ -629,6 +693,9 @@ ifx_fdw_validator(PG_FUNCTION_ARGS)
 						));
 		}
 
+		/*
+		 * Duplicates present in current options list?
+		 */
 		ifxGetOptionDups(&coninfo, def);
 	}
 
@@ -646,7 +713,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	UserMapping   *userMap;
 	List          *options;
 	ListCell      *elem;
-	bool           mandatory[2] = { false, false };
+	bool           mandatory[4] = { false, false, false, false };
 	int            i;
 
 	Assert(coninfo != NULL);
@@ -667,7 +734,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	{
 		DefElem *def = (DefElem *) lfirst(elem);
 
-		elog(DEBUG1, "ifx_fdw set param %s=%s",
+		elog(DEBUG3, "ifx_fdw set param %s=%s",
 			 def->defname, defGetString(def));
 
 		/*
@@ -692,6 +759,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		if (strcmp(def->defname, "database") == 0)
 		{
 			coninfo->database = pstrdup(defGetString(def));
+			mandatory[3] = true;
 		}
 
 		if (strcmp(def->defname, "username") == 0)
@@ -729,6 +797,37 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 			val = defGetString(def);
 			coninfo->planData.connection_costs = strtof(val, NULL);
 		}
+
+		if (strcmp(def->defname, "gl_date") == 0)
+		{
+			coninfo->gl_date = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "gl_datetime") == 0)
+		{
+			coninfo->gl_datetime = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "client_locale") == 0)
+		{
+			coninfo->client_locale = pstrdup(defGetString(def));
+			mandatory[2] = true;
+		}
+
+		if (strcmp(def->defname, "db_locale") == 0)
+		{
+			coninfo->db_locale = pstrdup(defGetString(def));
+			mandatory[2] = true;
+		}
+
+		if (strcmp(def->defname, "disable_predicate_pushdown") == 0)
+		{
+			/* we don't bother about the value passed to
+			 * this argument, treat its existence to disable
+			 * predicate pushdown.
+			 */
+			coninfo->predicate_pushdown = 0;
+		}
 	}
 
 	/*
@@ -738,7 +837,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	{
 		if (!mandatory[i])
 			ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
-							errmsg("missing required FDW options (informixserver, informixdir)")));
+							errmsg("missing required FDW options (informixserver, informixdir, client_locale, database)")));
 	}
 
 }
@@ -799,6 +898,67 @@ static char *ifxGenCursorName(IfxConnectionInfo *coninfo)
 	return cursor_name;
 }
 
+/*
+ * Prepare informix query object identifier
+ */
+void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
+							 IfxConnectionInfo *coninfo)
+{
+	StringInfoData *buf;
+
+	buf = makeStringInfo();
+	initStringInfo(buf);
+
+	/*
+	 * Record the given query and pass it over
+	 * to the state structure.
+	 */
+	if (coninfo->query)
+	{
+		if ((state->stmt_info.predicate != NULL)
+			&& (strlen(state->stmt_info.predicate) > 0)
+			&& coninfo->predicate_pushdown)
+		{
+			appendStringInfo(buf, "%s WHERE %s",
+							 coninfo->query,
+							 state->stmt_info.predicate);
+		}
+		else
+		{
+			appendStringInfo(buf, "%s",
+							 coninfo->query);
+		}
+	}
+	else
+	{
+		if ((state->stmt_info.predicate != NULL)
+			&& (strlen(state->stmt_info.predicate) > 0)
+			&& coninfo->predicate_pushdown)
+		{
+			appendStringInfo(buf, "SELECT * FROM %s WHERE %s FOR READ ONLY",
+							 coninfo->tablename,
+							 state->stmt_info.predicate);
+		}
+		else
+		{
+			appendStringInfo(buf, "SELECT * FROM %s FOR READ ONLY",
+							 coninfo->tablename);
+		}
+	}
+
+	state->stmt_info.query = buf->data;
+
+	/*
+	 * Save the connection identifier.
+	 */
+	StrNCpy(state->stmt_info.conname, coninfo->conname, IFX_CONNAME_LEN);
+}
+
+/*
+ * ifxBeginForeignScan
+ *
+ * Implements FDW BeginForeignScan callback function.
+ */
 static void
 ifxBeginForeignScan(ForeignScanState *node, int eflags)
 {
@@ -807,8 +967,11 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	IfxCachedConnection  *cached;
 	Oid                   foreignTableOid;
 	bool                  conn_cached;
-	size_t                row_size;
+	FdwPlan              *plan;
 
+	elog(DEBUG3, "informix_fdw: begin scan");
+
+	plan = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
 	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	Assert((foreignTableOid != InvalidOid));
 	coninfo = ifxMakeConnectionInfo(foreignTableOid);
@@ -820,73 +983,58 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 * for now. Maybe I need to revert this, but for the initial
 	 * coding it seems the best option.
 	 */
-	cached = ifxConnCache_add(foreignTableOid, coninfo->conname,
+	cached = ifxConnCache_add(foreignTableOid, coninfo,
 							  &conn_cached);
 
-	Assert(conn_cached);
+	Assert(conn_cached && cached != NULL);
 
 	festate = makeIfxFdwExecutionState();
 
-	if (coninfo->query)
-		festate->stmt_info.query = coninfo->query;
+	/*
+	 * Record our FDW state structures.
+	 */
+	node->fdw_state = (void *) festate;
+
+	/*
+	 * Cached plan data present?
+	 */
+	if (plan->fdw_private != NULL)
+	{
+
+		/*
+		 * Retrieved cached parameters formerly prepared
+		 * by ifxPlanForeignScan().
+		 */
+		ifxDeserializeFdwData(festate, plan);
+	}
 	else
 	{
-		size_t len = strlen(coninfo->tablename) + 31;
+		elog(DEBUG1, "informix_fdw no cached plan data");
+		ifxPrepareParamsForScan(festate, coninfo);
 
-		festate->stmt_info.query = (char *) palloc(len);
-		snprintf(festate->stmt_info.query, len,
-				 "SELECT * FROM \"%s\" FOR READ ONLY",
-				 coninfo->tablename);
+		/*
+		 * Recheck if everything is already prepared on the
+		 * informix server. If not, we are either in a rescan condition
+		 * or a cached query plan is used. Redo all necessary preparation
+		 * previously done in the planning state. We do this to save
+		 * some cycles when just doing plain SELECTs.
+		 */
 	}
+
+
+	if (festate->stmt_info.call_stack == IFX_STACK_EMPTY)
+		ifxPrepareCursorForScan(&festate->stmt_info);
 
 	/*
 	 * Get the definition of the local foreign table attributes.
 	 */
 	ifxPgColumnData(foreignTableOid, festate);
 
-	/*
-	 * Save the connection identifier.
-	 */
-	StrNCpy(festate->stmt_info.conname, coninfo->conname, IFX_CONNAME_LEN);
-
-	/*
-	 * Generate a statement identifier. Required to uniquely
-	 * identify the prepared statement within Informix.
-	 */
-	festate->stmt_info.stmt_name = ifxGenStatementName(coninfo);
-
-	/*
-	 * An identifier for the dynamically allocated
-	 * DESCRITPOR area.
-	 */
-	festate->stmt_info.descr_name = ifxGenDescrName(coninfo);
-
-	/*
-	 * ...and finally the cursor name.
-	 */
-	festate->stmt_info.cursor_name = ifxGenCursorName(coninfo);
-
-	/* Prepare the query. */
-	elog(DEBUG1, "prepare query \"%s\"", festate->stmt_info.query);
-	ifxPrepareQuery(&festate->stmt_info);
-	ifxCatchExceptions(&festate->stmt_info, IFX_STACK_PREPARE);
-
-	/*
-	 * Declare the cursor for the prepared
-	 * statement.
-	 */
-	elog(DEBUG1, "declare cursor \"%s\"", festate->stmt_info.cursor_name);
-	ifxDeclareCursorForPrepared(&festate->stmt_info);
-	ifxCatchExceptions(&festate->stmt_info, IFX_STACK_DECLARE);
-
-	/*
-	 * Create a descriptor handle for the prepared
-	 * query, so we can obtain information about returned
-	 * columns.
-	 */
-	/* elog(DEBUG1, "allocate descriptor area \"%s\"", festate->stmt_info.descr_name); */
-	/* ifxAllocateDescriptor(festate->stmt_info.descr_name, 2); */
-	/* ifxCatchExceptions(&festate->stmt_info, IFX_STACK_ALLOCATE); */
+	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+	{
+		elog(DEBUG1, "informix_fdw: explain only");
+		return;
+	}
 
 	/*
 	 * Populate the DESCRIPTOR area.
@@ -909,9 +1057,9 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	/*
 	 * Populate result set column info array.
 	 */
-	if ((row_size =ifxGetColumnAttributes(&festate->stmt_info)) <= 0)
+	if ((festate->stmt_info.row_size = ifxGetColumnAttributes(&festate->stmt_info)) == 0)
 	{
-		/* whoops, no memory to allocate? Something surely went wrong,
+		/* oops, no memory to allocate? Something surely went wrong,
 		 * so abort */
 		ifxRewindCallstack(&festate->stmt_info);
 		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
@@ -921,14 +1069,16 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	/*
 	 * NOTE:
 	 *
-	 * ifxGetColumnAttributes obtained all information about the
+	 * ifxGetColumnAttributes() obtained all information about the
 	 * returned column and stored them within the informix SQLDA and
 	 * sqlvar structs. However, we don't want to allocate memory underneath
 	 * our current memory context, thus we allocate the required memory structure
-	 * on top here.
+	 * on top here. ifxSetupDataBufferAligned() will assign the allocated
+	 * memory area to the SQLDA structure and will maintain the data offsets
+	 * properly aligned.
 	 */
-	festate->stmt_info.data = (char *) palloc(festate->stmt_info.row_size);
-	festate->stmt_info.indicator = (short *) palloc(sizeof(short)
+	festate->stmt_info.data = (char *) palloc0(festate->stmt_info.row_size);
+	festate->stmt_info.indicator = (short *) palloc0(sizeof(short)
 													* festate->stmt_info.ifxAttrCount);
 
 	/*
@@ -937,48 +1087,175 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	ifxSetupDataBufferAligned(&festate->stmt_info);
 
 	/*
-	 * And finally: open the cursor
+	 * Open the cursor.
 	 */
 	elog(DEBUG1, "open cursor \"%s\"",
 		 festate->stmt_info.cursor_name);
 	ifxOpenCursorForPrepared(&festate->stmt_info);
 	ifxCatchExceptions(&festate->stmt_info, IFX_STACK_OPEN);
 
-	node->fdw_state = (void *) festate;
+	/*
+	 * And finally store current state into
+	 * plan structure.
+	 */
+	/* plan->fdw_private = ifxSerializePlanData(coninfo, festate, */
+	/* 										 (ForeignScan *)node->ss.ps.plan); */
 }
 
-static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum)
+static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
+								   bool *isnull)
 {
-	Assert(state != NULL);
-	Assert(attnum >= 0);
+	Assert(state != NULL && attnum >= 0);
+	Assert(state->stmt_info.data != NULL);
+	Assert(state->values != NULL);
+	Assert(state->pgAttrDefs);
+
+	/*
+	 * Setup...
+	 */
+	state->values[attnum].def = &state->stmt_info.ifxAttrDefs[attnum];
+	IFX_SETVAL_P(state, attnum, PointerGetDatum(NULL));
+	*isnull = false;
 
 	/*
 	 * Retrieve values from Informix and try to convert
-	 * into a appropiate PostgreSQL datum.
+	 * into an appropiate PostgreSQL datum.
 	 */
 
-	switch (state->stmt_info.ifxAttrDefs[attnum].type)
+	switch (IFX_ATTRTYPE_P(state, attnum))
 	{
+		case IFX_SMALLINT:
 		case IFX_INTEGER:
 		case IFX_SERIAL:
+		case IFX_INT8:
+		case IFX_SERIAL8:
+		case IFX_INFX_INT8:
 		{
-			state->values[attnum].val = Int32GetDatum(ifxGetInt(&(state->stmt_info),
-																attnum));
-			state->values[attnum].def = &(state->stmt_info.ifxAttrDefs[attnum]);
+			Datum dat;
+
+			dat = convertIfxInt(state, attnum);
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+
+			/*
+			 * Check for errors, but only if we
+			 * didnt get a validated NULL attribute from
+			 * informix.
+			 */
+			if (! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			IFX_SETVAL_P(state, attnum, dat);
 			break;
 		}
 		case IFX_CHARACTER:
 		case IFX_VCHAR:
 		case IFX_NCHAR:
+		case IFX_LVARCHAR:
 		case IFX_NVCHAR:
-			/* TO DO */
+		{
+			/* SQLCHAR, SQLVCHAR, SQLNCHAR, SQLLVARCHAR, SQLNVCHAR */
+			Datum dat;
+
+			dat = convertIfxCharacterString(state, attnum);
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+
+			/*
+			 * At this point we never expect a NULL datum without
+			 * having retrieved NULL from informix. Check it.
+			 * If it's a validated NULL value from informix,
+			 * don't throw an error.
+			 */
+			if ((DatumGetPointer(dat) == NULL)
+				&& !*isnull)
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			IFX_SETVAL_P(state, attnum, dat);
 			break;
+		}
 		case IFX_TEXT:
 			/* TO DO */
 			break;
 		case IFX_BYTES:
 			/* TO DO */
 			break;
+		case IFX_BOOLEAN:
+		{
+			/* SQLBOOL value */
+			Datum dat;
+			dat = convertIfxBoolean(state, attnum);
+
+			/*
+			 * Unlike other types, a NULL datum is treated
+			 * like a normal FALSE value in case the indicator
+			 * value tells that we got a NOT NULL column.
+			 */
+			if (! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+
+			break;
+		}
+		case IFX_DATE:
+		{
+			/* SQLDATE value */
+			Datum dat;
+			dat = convertIfxDateString(state, attnum);
+
+			/*
+			 * Valid datum?
+			 */
+			if ((DatumGetPointer(dat) == NULL)
+				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+			break;
+		}
+		case IFX_DTIME:
+		{
+			/* SQLDTIME value */
+			Datum dat;
+			dat = convertIfxTimestampString(state, attnum);
+
+			/*
+			 * Valid datum?
+			 */
+			if ((DatumGetPointer(dat) == NULL)
+				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+			break;
+		}
 		default:
 		{
 			ifxRewindCallstack(&state->stmt_info);
@@ -991,18 +1268,31 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum)
 
 static void ifxEndForeignScan(ForeignScanState *node)
 {
+	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *state;
+	FdwPlan              *plan;
+	Oid                   foreignTableOid;
+
+	elog(DEBUG3, "informix_fdw: end scan");
 
 	state = (IfxFdwExecutionState *) node->fdw_state;
+	plan  = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
+
+	ifxDeserializeFdwData(state, plan);
 
 	/*
-	 * Dispose SQLDA resource.
-	 */
-
-	/*
-	 * Dispose any resources.
+	 * Dispose SQLDA resource, allocated database objects, ...
 	 */
 	ifxRewindCallstack(&state->stmt_info);
+
+	/*
+	 * Save the callstack into cached plan structure. This
+	 * is necessary to teach ifxBeginForeignScan() to do the
+	 * right thing(tm)...
+	 */
+	ifxSetSerializedInt16Field((List *)plan->fdw_private,
+							   SERIALIZED_CALLSTACK,
+							   state->stmt_info.call_stack);
 }
 
 static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
@@ -1013,6 +1303,8 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	int i;
 
 	state = (IfxFdwExecutionState *) node->fdw_state;
+
+	elog(DEBUG3, "informix_fdw: iterate scan");
 
 	tupleSlot->tts_mintuple   = NULL;
 	tupleSlot->tts_buffer     = InvalidBuffer;
@@ -1074,13 +1366,9 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	 */
 	for (i = 0; i <= state->stmt_info.ifxAttrCount - 1; i++)
 	{
-		elog(DEBUG1, "get column %d", i);
+		bool isnull;
 
-		/*
-		 * Retrieve a converted datum from the current
-		 * column and store it within state context.
-		 */
-		ifxColumnValueByAttNum(state, i);
+		elog(DEBUG3, "get column ifx attnum %d", i);
 
 		/*
 		 * It might happen that the FDW table has dropped
@@ -1094,9 +1382,17 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 		}
 
 		/*
-		 * Same for retrieved NULL values...
+		 * Retrieve a converted datum from the current
+		 * column and store it within state context. This also
+		 * sets and checks the indicator variable to record any
+		 * NULL occurences.
 		 */
-		if (state->stmt_info.ifxAttrDefs[i].indicator == INDICATOR_NULL)
+		ifxColumnValueByAttNum(state, i, &isnull);
+
+		/*
+		 * Same for retrieved NULL values from informix.
+		 */
+		if (isnull)
 		{
 			tupleSlot->tts_isnull[i] = true;
 			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
@@ -1143,37 +1439,105 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid)
 	return coninfo;
 }
 
-static bytea *
-ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo)
+/*
+ * ifxFilterQuals
+ *
+ * Walk through all FDW-related predicate expressions passed
+ * by baserel->restrictinfo and examine them for pushdown.
+ */
+static char * ifxFilterQuals(PlannerInfo *planInfo,
+							 RelOptInfo *baserel,
+							 Oid foreignTableOid)
 {
-	bytea *data;
-	int    len = 0;
+	IfxPushdownOprContext pushdownCxt;
+	List                 *restrictInfos;
+	ListCell             *cell;
+	StringInfoData       *buf;
+	int i;
 
-	data = (bytea *) palloc(len + VARHDRSZ);
-	memcpy(VARDATA(data), &(coninfo->planData), sizeof(IfxPlanData));
-	return data;
+	Assert(foreignTableOid != InvalidOid);
+
+	pushdownCxt.foreign_relid = foreignTableOid;
+	pushdownCxt.predicates    = NIL;
+	pushdownCxt.count         = 0;
+
+	buf = makeStringInfo();
+	initStringInfo(buf);
+
+	/*
+	 * Loop through the operator nodes and try to
+	 * extract the pushdown expressions as a text datum
+	 * to the pushdown context structure.
+	 */
+	foreach(cell, baserel->baserestrictinfo)
+	{
+		RestrictInfo *info;
+
+		info = (RestrictInfo *) lfirst(cell);
+
+		ifx_predicate_tree_walker(info->clause, &pushdownCxt);
+	}
+
+	/*
+	 * Filter step done, if any predicates to be able to be
+	 * pushed down are found, we have a list of IfxPushDownOprInfo
+	 * structure in the IfxPushdownOprContext structure. Loop
+	 * through them and attach all supported filter quals into
+	 * our result buffer.
+	 */
+	for (i = 0; i < pushdownCxt.count; i++)
+	{
+		IfxPushdownOprInfo *info;
+
+		info = (IfxPushdownOprInfo *) list_nth(pushdownCxt.predicates, i);
+
+		if (info->type != IFX_OPR_NOT_SUPPORTED)
+		{
+			appendStringInfo(buf, "%s%s",
+							 (i > 0) ? " AND " : "",
+							 text_to_cstring(info->expr_string));
+		}
+	}
+
+	/* empty string in case no pushdown predicates are found */
+	return buf->data;
 }
 
+/*
+ * ifxPlanForeignScan
+ *
+ * Plans a foreign scan on an remote informix relation.
+ */
 static FdwPlan *
 ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baserel)
 {
 
-	IfxConnectionInfo *coninfo;
-	StringInfoData    *buf;
-	bool               conn_cached;
-	FdwPlan           *plan;
-	bytea             *plan_data;
-	IfxSqlStateClass   err;
+	IfxConnectionInfo    *coninfo;
+	StringInfoData       *buf;
+	bool                  conn_cached;
+	FdwPlan              *plan;
+	bytea                *plan_data;
+	IfxSqlStateClass      err;
+	List                 *plan_values;
+	IfxFdwExecutionState *state;
 
-	/*
-	 * Prepare a generic plan structure
-	 */
-	plan = makeNode(FdwPlan);
+	elog(DEBUG3, "informix_fdw: plan scan");
 
 	/*
 	 * If not already done, initialize cache data structures.
 	 */
 	InformixCacheInit();
+
+	/*
+	 * Save parameters for later use
+	 * in executor.
+	 */
+	plan_values = NIL;
+
+	/*
+	 * Prepare a generic plan structure
+	 */
+	plan = makeNode(FdwPlan);
 
 	/*
 	 * Initialize connection structures and retrieve FDW options
@@ -1183,9 +1547,15 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	elog(DEBUG1, "informix connection dsn \"%s\"", coninfo->dsn);
 
 	/*
+	 * Make a generic informix execution state
+	 * structure.
+	 */
+	state = makeIfxFdwExecutionState();
+
+	/*
 	 * Lookup the connection name in the connection cache.
 	 */
-	ifxConnCache_add(foreignTableOid, coninfo->conname, &conn_cached);
+	ifxConnCache_add(foreignTableOid, coninfo, &conn_cached);
 
 	/*
 	 * Establish a new INFORMIX connection with transactions,
@@ -1195,9 +1565,11 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	if (!conn_cached)
 	{
 		ifxCreateConnectionXact(coninfo);
+		elog(DEBUG2, "created new cached informix connection \"%s\"",
+			 coninfo->conname);
 
 		/*
-		 * A new connection probably has less cache affinity on the
+		 * A new connection likely has more overhead on the
 		 * server than a cached one. So if this is a fresh connection,
 		 * reflect it in the startup cost.
 		 */
@@ -1209,6 +1581,8 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 		 * Make the requested connection current.
 		 */
 		ifxSetConnection(coninfo);
+		elog(DEBUG2, "reusing cached informix connection \"%s\"",
+			 coninfo->conname);
 
 		plan->startup_cost = 100;
 	}
@@ -1225,18 +1599,149 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 			IfxSqlStateMessage message;
 			ifxGetSqlStateMessage(1, &message);
 
-			ereport(WARNING, (errcode(ERRCODE_FDW_ERROR),
+			ereport(WARNING, (errcode(WARNING),
 							  errmsg("opened informix connection with warnings"),
-							  errdetail("informix warning: \"%s\"",
-										message.text)));
+							  errdetail("informix SQLSTATE %s: \"%s\"",
+										message.sqlstate, message.text)));
 		}
 
 		if (err == IFX_CONNECTION_ERROR)
+		{
+			/*
+			 * If we are here, something went wrong with connection
+			 * establishing. Remove the already cached entry and force
+			 * the connection to re-established again later.
+			 */
+			ifxConnCache_rm(coninfo->conname, &conn_cached);
+
+			/* finally, error out */
 			elog(ERROR, "could not open connection to informix server: SQLCODE=%d",
 				 ifxGetSqlCode());
+		}
 	}
 
+	/*
+	 * Check if this database was opened using
+	 * transactions.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+	{
+		elog(DEBUG1, "informix database connection using transactions");
+		coninfo->tx_enabled = 1;
+	}
+
+	/*
+	 * Check for predicates that can be pushed down
+	 * to the informix server, but skip it in case the user
+	 * has set the disable_predicate_pushdown option...
+	 */
+	if (coninfo->predicate_pushdown)
+	{
+		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
+													foreignTableOid);
+		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
+	}
+	else
+	{
+		elog(DEBUG2, "predicate pushdown disabled");
+		state->stmt_info.predicate = "";
+	}
+
+	/*
+	 * Prepare parameters of the state structure
+	 * for scan later.
+	 */
+	ifxPrepareParamsForScan(state, coninfo);
+
+	/*
+	 * Generate a statement identifier. Required to uniquely
+	 * identify the prepared statement within Informix.
+	 */
+	state->stmt_info.stmt_name = ifxGenStatementName(coninfo);
+
+	/*
+	 * An identifier for the dynamically allocated
+	 * DESCRITPOR area.
+	 */
+	state->stmt_info.descr_name = ifxGenDescrName(coninfo);
+
+	/*
+	 * ...and finally the cursor name.
+	 */
+	state->stmt_info.cursor_name = ifxGenCursorName(coninfo);
+
+	/* Finally do the preparation */
+	ifxPrepareCursorForScan(&state->stmt_info);
+
+	/*
+	 * After declaring the cursor we are able to retrieve
+	 * row and cost estimates via SQLCA fields. Do that and save
+	 * them into the IfxPlanData structure member if
+	 * IfxConnectionInfo and, more important, assign the
+	 * values to our plan node.
+	 */
+	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
+	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
+	baserel->rows = coninfo->planData.estimated_rows;
+	plan->total_cost = coninfo->planData.costs + plan->startup_cost;
+
+	/*
+	 * Save parameters to our plan. We need to make sure they
+	 * are copyable by copyObject(), so use a list with
+	 * bytea const nodes.
+	 *
+	 * NOTE: we *must* not allocate serialized nodes within
+	 *       the current memory context, because this will crash
+	 *       on prepared statements and subsequent EXECUTE calls
+	 *       since they will be freed after. Instead, use the
+	 *       planner context, which will remain as long as
+	 *       the plan exists.
+	 *
+	 */
+	plan_values = ifxSerializePlanData(coninfo, state, planInfo);
+	plan->fdw_private = plan_values;
+
 	return plan;
+}
+
+/*
+ * ifxPrepareCursorForScan()
+ *
+ * Prepares the remote informix FDW to scan the relation.
+ * This basically means to allocate the SQLDA description area and
+ * declaring the cursor. The reason why this is a separate function is,
+ * that we are eventually required to do it twice, once in ifxPlanForeignScan()
+ * and in ifxBeginForeignScan(). The reason for this is that we need the
+ * query plan from the DECLARE CURSOR statement in ifxPlanForeignScan()
+ * to get the query costs from the informix server easily. However, that
+ * involves declaring the cursor in ifxPlanForeignScan(), which will be then
+ * reused in ifxBeginForeignScan() later. To save extra cycles and declaring
+ * the cursor twice, we just reuse the cursor previously declared in
+ * ifxBeginForeignScan() later. However, if used for example with a prepared
+ * statement, ifxPlanForeignScan() won't be called again, instead the
+ * previously plan prepared by ifxPlanForeignScan() will be re-used. Since
+ * ifxEndForeignScan() already has deallocated the complete structure, we
+ * are required to redeclare the cursor again, to satisfy subsequent
+ * EXECUTE calls to the prepared statement. This is relatively easy
+ * to check, since the only thing we need to do in ifxBeginForeignScan()
+ * is to recheck wether the call stack is empty or not.
+ */
+static void ifxPrepareCursorForScan(IfxStatementInfo *info)
+{
+	/* Prepare the query. */
+	elog(DEBUG1, "prepare query \"%s\"", info->query);
+	ifxPrepareQuery(info->query,
+					info->stmt_name);
+	ifxCatchExceptions(info, IFX_STACK_PREPARE);
+
+	/*
+	 * Declare the cursor for the prepared
+	 * statement.
+	 */
+	elog(DEBUG1, "declare cursor \"%s\"", info->cursor_name);
+	ifxDeclareCursorForPrepared(info->stmt_name,
+								info->cursor_name);
+	ifxCatchExceptions(info, IFX_STACK_DECLARE);
 }
 
 /*
@@ -1280,6 +1785,15 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 
 	coninfo->planData.estimated_rows = 100.0;
 	coninfo->planData.connection_costs = 100.0;
+	coninfo->tx_enabled = 0;
+
+    /* enable predicate pushdown */
+	coninfo->predicate_pushdown = 1;
+
+	coninfo->gl_date       = IFX_ISO_DATE;
+	coninfo->gl_datetime   = IFX_ISO_TIMESTAMP;
+	coninfo->db_locale     = NULL;
+	coninfo->client_locale = NULL;
 }
 
 static StringInfoData *
@@ -1368,7 +1882,7 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		else
 		{
 			fcontext->max_calls = hash_get_num_entries(ifxCache.connections);
-			elog(DEBUG1, "found %d entries in informix connection cache",
+			elog(DEBUG2, "found %d entries in informix connection cache",
 				 fcontext->max_calls);
 
 			/*
@@ -1401,8 +1915,8 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 	if (conn_processed < conn_expected)
 	{
 		IfxCachedConnection *conn_cached;
-		Datum                values[2];
-		bool                 nulls[2];
+		Datum                values[9];
+		bool                 nulls[9];
 		HeapTuple            tuple;
 		Datum                result;
 
@@ -1411,15 +1925,48 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		conn_cached = (IfxCachedConnection *) hash_seq_search(call_data->hash_status);
 
 		/*
-		 * Values array. This will hold the values to be returned
-		 * as C strings.
+		 * Values array. This will hold the values to be returned.
 		 */
-		elog(DEBUG1, "connection name %s", conn_cached->ifx_connection_name);
+		elog(DEBUG2, "connection name %s", conn_cached->ifx_connection_name);
 		values[0] = PointerGetDatum(cstring_to_text(conn_cached->ifx_connection_name));
 		values[1] = Int32GetDatum(conn_cached->establishedByOid);
+		values[2] = PointerGetDatum(cstring_to_text(conn_cached->servername));
+		values[3] = PointerGetDatum(cstring_to_text(conn_cached->informixdir));
+		values[4] = PointerGetDatum(cstring_to_text(conn_cached->database));
+		values[5] = PointerGetDatum(cstring_to_text(conn_cached->username));
+		values[6] = Int32GetDatum(conn_cached->usage);
 
 		nulls[0] = false;
 		nulls[1] = false;
+		nulls[2] = false;
+		nulls[3] = false;
+		nulls[4] = false;
+		nulls[5] = false;
+		nulls[6] = false;
+
+		/* db_locale and client_locale might be undefined */
+
+		if (conn_cached->db_locale != NULL)
+		{
+			values[7] = PointerGetDatum(cstring_to_text(conn_cached->db_locale));
+			nulls[7] = false;
+		}
+		else
+		{
+			nulls[7] = true;
+			values[7] = PointerGetDatum(NULL);
+		}
+
+		if (conn_cached->client_locale != NULL)
+		{
+			values[8] = PointerGetDatum(cstring_to_text(conn_cached->client_locale));
+			nulls[8] = false;
+		}
+		else
+		{
+			nulls[8] = true;
+			values[8] = PointerGetDatum(NULL);
+		}
 
 		/*
 		 * Build the result tuple.

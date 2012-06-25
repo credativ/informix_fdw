@@ -134,7 +134,7 @@ static void ifxFTCache_init()
  * Add a new INFORMIX connection to the connection cache.
  */
 IfxCachedConnection *
-ifxConnCache_add(Oid foreignTableOid, char *conname, bool *found)
+ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 {
 	IfxCachedConnection *item;
 
@@ -145,7 +145,7 @@ ifxConnCache_add(Oid foreignTableOid, char *conname, bool *found)
 	 * already registered, create a new cached entry, otherwise
 	 * return the cached item.
 	 */
-	item = hash_search(ifxCache.connections, (void *) conname,
+	item = hash_search(ifxCache.connections, (void *) coninfo->conname,
 					   HASH_ENTER, found);
 
 	/*
@@ -153,9 +153,68 @@ ifxConnCache_add(Oid foreignTableOid, char *conname, bool *found)
 	 */
 	if (!*found)
 	{
+		MemoryContext old_cxt;
+
+		/*
+		 * Make sure, cached connection information is
+		 * allocated within the memory context actually
+		 * used by the connection cache.
+		 */
+		old_cxt = MemoryContextSwitchTo(TopMemoryContext);
+
 		item->establishedByOid = foreignTableOid;
+		item->servername       = pstrdup(coninfo->servername);
+		item->informixdir      = pstrdup(coninfo->informixdir);
+		item->username         = pstrdup(coninfo->username);
+		item->database         = pstrdup(coninfo->database);
+
+		/* can be NULL */
+		if (coninfo->db_locale != NULL)
+			item->db_locale        = pstrdup(coninfo->db_locale);
+		else
+			item->db_locale = NULL;
+
+		if (coninfo->client_locale != NULL)
+			item->client_locale    = pstrdup(coninfo->client_locale);
+		else
+			item->client_locale = NULL;
+
+		/* also initialize usage counter */
+		item->usage = 1;
+
+		MemoryContextSwitchTo(old_cxt);
+	}
+	else
+	{
+		item->usage++;
 	}
 
+	return item;
+}
+
+/*
+ * Remove an existing connection handle from the cache.
+ * If the requested connection doesn't exist yet, NULL
+ * is returned.
+ */
+IfxCachedConnection *
+ifxConnCache_rm(char *conname, bool *found)
+{
+	IfxCachedConnection *item;
+
+	Assert(IfxCacheIsInitialized);
+
+	/*
+	 * Lookup the connection name. If found, the entry is
+	 * removed from the cache, but returned to the caller.
+	 */
+	item = hash_search(ifxCache.connections, (void *) conname,
+					   HASH_REMOVE, found);
+
+	/*
+	 * If something found, return it, otherwise
+	 * NULL is returned.
+	 */
 	return item;
 }
 

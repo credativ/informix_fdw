@@ -34,9 +34,10 @@
 #define IFX_FIXED_SIZE_VALUE -1
 
 /*
- * Number of required connection parameters
+ * Maximum length of a signed int8 value
+ * in its character representation.
  */
-#define IFX_REQUIRED_CONN_KEYWORDS 2
+#define IFX_INT8_CHAR_LEN 19
 
 /*
  * Flags to identify current state
@@ -48,6 +49,31 @@
 #define IFX_STACK_ALLOCATE 4
 #define IFX_STACK_DESCRIBE 8
 #define IFX_STACK_OPEN     16
+
+/*
+ * IS8601 compatible DATE and DATETIME
+ * output formats for Informix.
+ */
+#define IFX_DBDATE_FORMAT "Y4MD-"
+#define IFX_ISO_DATE "%iY-%m-%d"
+#define IFX_ISO_TIMESTAMP "%iY-%m-%d %H:%M:%S"
+
+/*
+ * Binary size of informix DATE value
+ */
+#define IFX_DATE_BINARY_SIZE 4
+
+/*
+ * Default buffer length for
+ * DATE character strings.
+ */
+#define IFX_DATE_BUFFER_LEN 20
+
+/*
+ * Default buffer length for
+ * DATETIME character strings.
+ */
+#define IFX_DATETIME_BUFFER_LEN 26
 
 /*
  * Which kind of CURSOR to use.
@@ -128,14 +154,27 @@ typedef enum IfxSourceType
 	IFX_LIST      = 21,
 	IFX_ROW       = 22,
 	IFX_COLLECTION = 23,
-	IFX_ROWREF     = 24
+	IFX_ROWREF     = 24,
+
+	/*
+	 * Special ESQL/C types.
+	 */
+	IFX_LVARCHAR  = 43,
+	IFX_BOOLEAN   = 45,
+	IFX_INFX_INT8 = 52
 
 } IfxSourceType;
 
+
+/*
+ * Defines Informix indicator values. Currently,
+ * NULL and NOT NULL values are supported.
+ */
 typedef enum IfxIndicatorValue
 {
 	INDICATOR_NULL,
-	INDICATOR_NOT_NULL
+	INDICATOR_NOT_NULL,
+	INDICATOR_NOT_VALID
 } IfxIndicatorValue;
 
 /*
@@ -156,14 +195,27 @@ typedef struct IfxAttrDef
 
 /*
  * Stores plan data, e.g. row and cost estimation.
+ * Pushed down from the planner stage to ifxBeginForeignScan().
+ * Stays here only because it's currently used in IfxConnectionInfo
+ * (XXX: need to change that, not really required) :(
  */
 typedef struct IfxPlanData
 {
 	/*
-	 * Cost parameters
+	 * Cost parameters, this might be
+	 * passed through FDW options.
 	 */
 	double estimated_rows;
 	double connection_costs;
+
+	/*
+	 * Table statistics derived
+	 * from Informix.
+	 */
+	double nrows;
+	double npages;
+	double costs;
+	short row_size;
 
 } IfxPlanData;
 
@@ -190,6 +242,16 @@ typedef struct IfxConnectionInfo
 	 */
 	char *tablename;
 	char *query;
+
+	/*
+	 * Environment options, e.g. GL_DATE, ...
+	 */
+	char *gl_date;
+	char *gl_datetime;
+	char *client_locale;
+	char *db_locale;
+	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
+	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
 
 	/* plan data */
 	IfxPlanData planData;
@@ -238,6 +300,13 @@ typedef struct IfxStatementInfo
 	 * Query text.
 	 */
 	char *query;
+
+	/*
+	 * Predicate string to be pushed down.
+	 * This is the string representation of the WHERE
+	 * expressions examined during the planning phase...
+	 */
+	char *predicate;
 
 	/*
 	 * Name of an associated cursor.
@@ -297,14 +366,22 @@ typedef struct IfxStatementInfo
 extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
 void ifxDestroyConnection(char *conname);
-void ifxPrepareQuery(IfxStatementInfo *state);
+void ifxPrepareQuery(char *query, char *stmt_name);
 void ifxAllocateDescriptor(char *descr_name, int num_items);
 void ifxDescribeAllocatorByName(IfxStatementInfo *state);
 int ifxDescriptorColumnCount(IfxStatementInfo *state);
-void ifxDeclareCursorForPrepared(IfxStatementInfo *state);
+void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name);
 void ifxOpenCursorForPrepared(IfxStatementInfo *state);
-int ifxGetColumnAttributes(IfxStatementInfo *state);
+size_t ifxGetColumnAttributes(IfxStatementInfo *state);
 void ifxFetchRowFromCursor(IfxStatementInfo *state);
+void ifxDeallocateSQLDA(IfxStatementInfo *state);
+void ifxSetupDataBufferAligned(IfxStatementInfo *state);
+void ifxCloseCursor(IfxStatementInfo *state);
+int ifxFreeResource(IfxStatementInfo *state,
+					int stackentry);
+void ifxDeallocateDescriptor(char *descr_name);
+char ifxGetSQLCAWarn(signed short warn);
+int ifxGetSQLCAErrd(signed short ca);
 
 /*
  * Error handling
@@ -319,6 +396,30 @@ int ifxGetSqlCode();
  * Functions to access specific datatypes
  * within result sets
  */
-int ifxGetInt(IfxStatementInfo *state, int attnum);
+char *ifxGetInt8(IfxStatementInfo *state, int attnum, char *buf);
+char *ifxGetDateAsString(IfxStatementInfo *state, int ifx_attnum,
+						 char *buf);
+char *ifxGetTimestampAsString(IfxStatementInfo *state, int ifx_attnum,
+							  char *buf);
+char ifxGetBool(IfxStatementInfo *state, int ifx_attnum);
+int2 ifxGetInt2(IfxStatementInfo *state, int attnum);
+int ifxGetInt4(IfxStatementInfo *state, int attnum);
+char *ifxGetText(IfxStatementInfo *state, int attnum);
+
+/*
+ * Helper macros.
+ */
+#define SQLCA_WARN_SET 0
+#define SQLCA_WARN_TRANSACTIONS 1
+#define SQLCA_WARN_ANSI 2
+#define SQLCA_WARN_NO_IFX_SE 3
+#define SQLCA_WARN_FLOAT_IS_DEC 4
+#define SQLCA_WARN_RESERVED 5 /* not used */
+#define SQLCA_WARN_REPLICATED_DB 6
+#define SQLCA_WARN_DB_LOCALE_MISMATCH 7
+#define SQLCA_WARN(a) sqlca.sqlwarn.sqlwarn##a
+
+#define SQLCA_NROWS_PROCESSED 0
+#define SQLCA_NROWS_WEIGHT    3
 
 #endif

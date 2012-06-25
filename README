@@ -1,8 +1,26 @@
-== Compiling ==
+= Requirements =
 
-INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make
+Informix FDW for PostgreSQL requires a complete
+installation of the IBM ESQL/C Client SDK for Informix.
 
-== Example Setup ==
+See
+
+http://www-01.ibm.com/software/data/informix/tools/csdk/
+
+for details. Furthermore, the FDW API is available since
+PostgreSQL 9.1, so at least 9.1 is required to use this
+module. Informix FDW is installed as an EXTENSION, for details
+see
+
+http://www.postgresql.org/docs/9.1/static/sql-createextension.html
+
+= Compiling =
+
+INFORMIXDIR=/path/to/your/csdk/installation make install
+
+= Example Setup =
+
+CREATE EXTENSION informix_fdw;
 
 CREATE SERVER centosifx_tcp
 FOREIGN DATA WRAPPER informix_fdw
@@ -21,7 +39,6 @@ SERVER centosifx_tcp
 OPTIONS ( query 'SELECT * FROM foo',
           database 'test',
           estimated_rows '500',
-          informixserver 'centosifx_tcp',
           informixdir '/Applications/IBM/informix');
 
 CREATE SERVER sles11_tcp
@@ -45,14 +62,57 @@ OPTIONS ( query 'SELECT * FROM foo',
           informixdir '/Applications/IBM/informix');
 
 CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
-                                                   OUT established_by_relid oid)
+                                                   OUT established_by_relid oid,
+                                                   OUT servername text,
+                                                   OUT informixdir text,
+                                                   OUT database text,
+                                                   OUT db_locale text,
+                                                   OUT client_locale text)
 RETURNS SETOF record
 AS 'ifx_fdw.so', 'ifxGetConnections'
 LANGUAGE C IMMUTABLE STRICT;
 
-== ToDo ==
+= Supported datatypes =
+
+Currently, only fundamental Informix data types are supported. There's
+no support for opaque or user defined types at the moment. Implemented
+datatype conversion routines:
+
+BOOLEAN
+DATETIME
+DATE
+SMALLINT
+INT2
+INT4
+INT8/BIGINT
+SERIAL
+SERIAL8
+VARCHAR
+CHARACTER
+LVARCHAR
+NCHAR
+NVARCHAR
+
+= GLS Support =
+
+Informix GLS support is provided through the CLIENT_LOCALE and DB_LOCALE
+database connection parameters. At least, each foreign server is required
+to define a valid CLIENT_LOCALE, which should be match the server_encoding
+of the PostgreSQL database.
+
+= Caveats =
+
+== Datatype conversion issues ==
+
+- Informix SQLDATE allows 0000-00-00, this is treated as NULL
+
+= ToDo =
+
+- Better error handling in case of NULL datum in the various convert*
+  routines in ifx_conv.c
 
 9.2 introduced a number of interesting changes:
 
 - Adjust API for PlanForeignScan() to new path generation
 - Use FDW helper functions
+- ANALYZE support for foreign tables

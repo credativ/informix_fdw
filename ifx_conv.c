@@ -18,6 +18,8 @@
  */
 #include "postgres.h"
 #include "catalog/pg_cast.h"
+#include "catalog/pg_namespace.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
@@ -29,6 +31,9 @@
 /*******************************************************************************
  * Helper functions
  */
+
+static char *ifxVarOperandColumnName(IfxStatementInfo *state,
+									 Var *var);
 
 static regproc getTypeCastFunction(IfxFdwExecutionState *state,
 								   Oid sourceOid, Oid targetOid);
@@ -150,7 +155,7 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 	 /*
 	  * We get the Informix DTIME value as a ANSI SQL
 	  * formatted character string. Prepare a buffer for it
-	  * a call the appropiate conversion function from our
+	  * and call the appropiate conversion function from our
 	  * Informix API...
 	  */
 	 val = (char *) palloc0(IFX_DATETIME_BUFFER_LEN);
@@ -252,7 +257,7 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 		 case INT8OID:
 			 /*
 			  * Note that the informix int8 value retrieved by
-			  * ifxGetInt8() is converted into its character*
+			  * ifxGetInt8() is converted into its *character*
 			  * representation. We leave it up to the typinput
 			  * routine to convert it back to a PostgreSQL BIGINT.
 			  * So fall through and do the work below.
@@ -266,7 +271,9 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 			  */
 			 PG_TRY();
 			 {
-				 if (IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+				 if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+					 || (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8)
+					 || (IFX_ATTRTYPE_P(state, attnum) == IFX_INFX_INT8))
 				 {
 					char *buf;
 					regproc typinputfunc;
@@ -497,7 +504,7 @@ Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum)
 /*
  * convertIfxCharacterString
  *
- * Converts a given TEXT value formerly retrieved
+ * Converts a given character string formerly retrieved
  * from Informix into the given PostgreSQL destination type.
  *
  * Supported informix character types are:
@@ -508,8 +515,7 @@ Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum)
  * NVARCHAR
  *
  * The caller must have prepared the column definitions
- * before and ensured, that the passed informix value
- * is NOT NULL (otherwise the behavior is undefined).
+ * before.
  *
  * Handled target types are
  *
@@ -543,6 +549,7 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 		case TEXTOID:
 		case VARCHAROID:
 		case BPCHAROID:
+		case BYTEAOID:
 			break;
 		default:
 		{
@@ -571,25 +578,48 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 	 * since for the other types it might be necessary to apply typmods...
 	 */
 	if ((pg_def.atttypid == TEXTOID)
+		|| (pg_def.atttypid == BYTEAOID)
 		|| ((pg_def.atttypid == VARCHAROID) && (pg_def.atttypmod == -1)))
 	{
-		text *text_val;
+		if (PG_ATTRTYPE_P(state, attnum) == TEXTOID)
+		{
+			text *text_val;
 
-		/*
-		 * Otherwise convert the character string into a text
-		 * value. We must be cautious here, since the column length
-		 * stored in the column definition struct only reports the *overall*
-		 * length of the data buffer, *not* the value length itself.
-		 *
-		 */
+			/*
+			 * Otherwise convert the character string into a text
+			 * value. We must be cautious here, since the column length
+			 * stored in the column definition struct only reports the *overall*
+			 * length of the data buffer, *not* the value length itself.
+			 *
+			 */
 
-		/*
-		 * XXX: What about encoding conversion??
-		 */
+			/*
+			 * XXX: What about encoding conversion??
+			 */
 
-		text_val = cstring_to_text_with_len(val, strlen(val));
-		IFX_SETVAL_P(state, attnum, PointerGetDatum(text_val));
-		result = IFX_GETVAL_P(state, attnum);
+			text_val = cstring_to_text_with_len(val, strlen(val));
+			IFX_SETVAL_P(state, attnum, PointerGetDatum(text_val));
+			result = IFX_GETVAL_P(state, attnum);
+		}
+		else
+		{
+			/* binary BYTEA value */
+			bytea *binary_data;
+			int    len;
+
+			/*
+			 * Allocate a bytea datum. We can use strlen here, because
+			 * we know that our source value must be a valid
+			 * character string.
+			 */
+			len = strlen(val);
+			binary_data = (bytea *) palloc0(VARHDRSZ + len);
+
+			SET_VARSIZE(binary_data, len + VARHDRSZ);
+			memcpy(VARDATA(binary_data), val, len);
+			IFX_SETVAL_P(state, attnum, PointerGetDatum(binary_data));
+			result = IFX_GETVAL_P(state, attnum);
+		}
 	}
 	else
 	{
@@ -634,4 +664,251 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 	}
 
 	return result;
+}
+
+IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
+{
+	char *oprname;
+	HeapTuple oprtuple;
+	Form_pg_operator oprForm;
+
+	Assert(oprid != InvalidOid);
+	Assert(pushdownInfo != NULL);
+
+	oprtuple = SearchSysCache1(OPEROID, oprid);
+
+	if (!HeapTupleIsValid(oprtuple))
+		elog(ERROR, "cache lookup failed for operator %u", oprid);
+
+	oprForm  = (Form_pg_operator)GETSTRUCT(oprtuple);
+	/* pushdownInfo->pg_opr_nsp   = oprForm->oprnamespace; */
+	/* pushdownInfo->pg_opr_left  = oprForm->oprleft; */
+	/* pushdownInfo->pg_opr_right = oprForm->oprright; */
+	oprname  = pstrdup(NameStr(oprForm->oprname));
+
+	ReleaseSysCache(oprtuple);
+
+	/*
+	 * Currently we support Postgresql internal
+	 * operators only. Ignore all operators living
+	 * in other schemas than pg_catalog.
+	 *
+	 * We might relax this some time, since we push
+	 * down the operator names based on string
+	 * comparisons.
+	 */
+	if (oprForm->oprnamespace != PG_CATALOG_NAMESPACE)
+		return IFX_OPR_NOT_SUPPORTED;
+
+	if (strcmp(oprname, ">=") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_GE;
+		return IFX_OPR_GE;
+	}
+	else if (strcmp(oprname, "<=") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_LE;
+		return IFX_OPR_LE;
+	}
+	else if (strcmp(oprname, "<") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_LT;
+		return IFX_OPR_LT;
+	}
+	else if (strcmp(oprname, ">") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_GT;
+		return IFX_OPR_GT;
+	}
+	else if (strcmp(oprname, "=") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_EQUAL;
+		return IFX_OPR_EQUAL;
+	}
+	else if (strcmp(oprname, "<>") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_NEQUAL;
+		return IFX_OPR_NEQUAL;
+	}
+	else if (strcmp(oprname, "~~") == 0)
+	{
+		pushdownInfo->type = IFX_OPR_LIKE;
+		return IFX_OPR_LIKE;
+	}
+	else
+	{
+		pushdownInfo->type = IFX_OPR_NOT_SUPPORTED;
+		return IFX_OPR_NOT_SUPPORTED;
+	}
+
+	/* currently never reached */
+	return IFX_OPR_UNKNOWN;
+}
+
+/*
+ * ifx_predicate_tree_walker()
+ *
+ * Examine the expression node. We expect a OPEXPR
+ * here always in the form
+ *
+ * FDW col = CONST
+ * FDW col != CONST
+ * FDW col >(=) CONST
+ * FDW col <(=) CONST
+ *
+ * Only CONST and VAR expressions are currently supported.
+ */
+bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context)
+{
+	IfxPushdownOprInfo *info;
+
+	if (node == NULL)
+		return false;
+
+	/*
+	 * Check wether this is an OpExpr. If true,
+	 * recurse into it...
+	 */
+	if (IsA(node, OpExpr))
+	{
+		IfxPushdownOprInfo *info;
+		OpExpr *opr;
+
+		info = palloc(sizeof(IfxPushdownOprInfo));
+		info->expr = opr  = (OpExpr *)node;
+		info->expr_string = NULL;
+
+		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
+		{
+			text *node_string;
+
+			context->predicates = lappend(context->predicates, info);
+			context->count++;
+
+			/*
+			 * Try to deparse the OpExpr and save it
+			 * into the IfxPushdownOprInfo structure...
+			 */
+			node_string = cstring_to_text(nodeToString(info->expr));
+			info->expr_string = DatumGetTextP(OidFunctionCall3((regproc)2509,
+															   PointerGetDatum(node_string),
+															   ObjectIdGetDatum(context->foreign_relid),
+															   BoolGetDatum(true)));
+
+			elog(DEBUG1, "deparsed pushdown predicate %d, %s",
+				 context->count - 1,
+				 text_to_cstring(info->expr_string));
+			return expression_tree_walker(node, ifx_predicate_tree_walker,
+										  (void *) context);
+		}
+	}
+
+	info = list_nth(context->predicates, context->count - 1);
+
+	if (! IsA(node, Var) && ! IsA(node, Const))
+	{
+		Datum transform;
+		elog(DEBUG3, "removed opr %d with type %d from pushdown list",
+			 context->count - 1,
+			 info->type);
+
+		info->type = IFX_OPR_NOT_SUPPORTED;
+		/* done */
+		return true;
+	}
+
+	return false;
+
+}
+
+void ifxPushdownFilter(IfxPushdownOprInfo *pushDown,
+					   Node *right,
+					   Node *left)
+{
+	bool vars[2];
+	Datum expr_string;
+
+	/*
+	 * Currently this approach is very naive: we assume
+	 * a VAR and CONST expression on either the left or right
+	 * side of the operand- See ifx_fdw.h:IfxOprType for
+	 * supported operators.
+	 *
+	 * Record which one of the arguments is a VAR or either
+	 * a CONST value. Obviously the vars array mustn't be both
+	 * false, otherwise it makes no sense to push dem down.
+	 *
+	 * XXX: Actually both operands couldn't be VAR when
+	 * referencing a local PostgreSQL table. That would mean a
+	 * join and this is up to this point not yet supported in
+	 * PostgreSQL. So we allow both VARs and try to push them
+	 * down. However, if there are two CONST expression, we abort,
+	 * since this doesn't make any real sense to pushdown.
+	 */
+
+	vars[0] = IsA(right, Var);
+	vars[1] = IsA(left, Var);
+
+	if ((vars[0] && vars[1])
+		|| (vars[0] ^ vars[1]))
+	{
+		Const *const_expr;
+		Var   *var_expr[2]; /* Might only one be used */
+
+		var_expr[0] = NULL;
+		var_expr[1] = NULL;
+		const_expr  = NULL;
+
+		/*
+		 * If one of the operands are not VAR, check
+		 * for a CONST expr. If false, abort. We don't
+		 * throw an error here, since we simply treat this as
+		 * an expression not able to be pushdown.
+		 *
+		 * XXX: This is a rather dumb approach, but we want to
+		 *      extend this later anyways, so that
+		 *      for example Function Calls or similar can be
+		 *      pushed down.
+		 */
+		if (!vars[0])
+		{
+			if (!IsA(left, Const))
+				return;
+			else
+				const_expr = (Const *)left;
+		}
+		else
+		{
+			var_expr[0] = (Var *)left;
+		}
+
+		if (!vars[1])
+		{
+			if (!IsA(right, Const))
+				return;
+			else
+				const_expr = (Const *) right;
+		}
+		else
+		{
+			var_expr[1] = (Var *)right;
+		}
+
+		/*
+		 * Beginning with this point we *know*
+		 * that we deal with either VAR <opr> CONST,
+		 * CONST <opr> VAR or VAR <opr> VAR.
+		 *
+		 * Try to deparse the OpExpr and save it
+		 * into the IfxPushdownOprInfo structure...
+		 */
+
+	}
+}
+
+static char *ifxVarOperandColumnName(IfxStatementInfo *state,
+									 Var *var)
+{
+	Assert(var != NULL);
+	Assert(state != NULL);
 }

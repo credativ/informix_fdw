@@ -13,8 +13,47 @@
 #ifndef HAVE_IFX_FDW_H
 #define HAVE_IFX_FDW_H
 
-#include "ifx_type_compat.h"
+#include "postgres.h"
+
+#include "funcapi.h"
+#include "access/reloptions.h"
+#include "catalog/indexing.h"
+#include "catalog/pg_foreign_server.h"
+#include "catalog/pg_foreign_table.h"
+#include "catalog/pg_user_mapping.h"
+#include "catalog/pg_type.h"
+#include "commands/defrem.h"
+#include "commands/explain.h"
+#include "foreign/fdwapi.h"
+#include "foreign/foreign.h"
+#include "miscadmin.h"
+#include "mb/pg_wchar.h"
+#include "nodes/makefuncs.h"
+#include "nodes/nodes.h"
+#include "optimizer/cost.h"
+#include "storage/fd.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/fmgroids.h"
+#include "utils/rel.h"
+#include "utils/tqual.h"
+
+#include "access/attnum.h"
+#include "nodes/pg_list.h"
 #include "postgres_ext.h"
+
+#include "ifx_type_compat.h"
+
+/*
+ * Query information pushed down
+ * from the planner state to the executor
+ */
+typedef struct IfxQueryData
+{
+	char *query;
+	char *stmt_name;
+	char *cursor_name;
+} IfxQueryData;
 
 /*
  * PgAttrDef
@@ -33,8 +72,7 @@ typedef struct PgAttrDef
 /*
  * IfxPGAttrDef
  *
- * Inherits the definition of IfxAttrDef and extends
- * the type to hold PostgreSQL datums.
+ * Holds Informix values converted into PostgreSQL datums.
  *
  * NOTE: def ist normally just a pointer into
  *       IfxStatementInfo und should not be deallocated
@@ -89,6 +127,80 @@ typedef struct IfxFdwExecutionState
 	IfxValue *values;
 
 } IfxFdwExecutionState;
+
+/*
+ * PostgreSQL operator types supported for pushdown
+ * to an Informix database.
+ */
+typedef enum IfxOprType
+{
+	IFX_OPR_EQUAL,
+	IFX_OPR_NEQUAL,
+	IFX_OPR_LE,
+	IFX_OPR_GE,
+	IFX_OPR_GT,
+	IFX_OPR_LT,
+	IFX_OPR_LIKE,
+	IFX_OPR_NOT_SUPPORTED,
+	IFX_OPR_UNKNOWN
+} IfxOprType;
+
+/*
+ * Info structure for pushdown operators.
+ */
+typedef struct IfxPushdownOprInfo
+{
+	IfxOprType type;
+	/* Oid        pg_opr_nsp;    /\* operator schema *\/ */
+	/* Oid        pg_opr_left;   /\* left operand *\/ */
+	/* Oid        pg_opr_right;  /\* right operand *\/ */
+	/* Datum      const_val;     /\* constant value *\/ */
+	OpExpr    *expr;          /* pointer to operator expression */
+	text      *expr_string;   /* decoded string representation of expr */
+	AttrNumber pg_attnum;     /* attribute number of foreign table */
+} IfxPushdownOprInfo;
+
+/*
+ * Pushdown context structure for generating
+ * pushed down query predicates. Actually used
+ * by ifx_predicate_tree_walker()
+ */
+typedef struct IfxPushdownOprContext
+{
+	Oid   foreign_relid; /* OID of foreign table */
+	List *predicates;    /* list of IfxPushDownOprInfo */
+	int   count;         /* number of elements in predicates list */
+} IfxPushdownOprContext;
+
+/*
+ * Number of required connection parameters
+ */
+#define IFX_REQUIRED_CONN_KEYWORDS 3
+
+/*
+ * Helper macros to access various struct members.
+ */
+#define PG_ATTRTYPE_P(x, y) (x)->pgAttrDefs[(y)].atttypid
+#define PG_ATTRTYPEMOD_P(x, y) (x)->pgAttrDefs[(y)].atttypmod
+#define IFX_ATTRTYPE_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].type
+#define IFX_SETVAL_P(x, y, z) (x)->values[(y)].val = (z)
+#define IFX_GETVAL_P(x, y) (x)->values[(y)].val
+#define IFX_ATTR_ISNULL_P(x, y) ((x)->stmt_info.ifxAttrDefs[(y)].indicator == INDICATOR_NULL)
+#define IFX_ATTR_SETNOTVALID_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].indicator = INDICATOR_NOT_VALID
+#define IFX_ATTR_IS_VALID_P(x, y) ((x)->stmt_info.ifxAttrDefs[(y)].indicator != INDICATOR_NOT_VALID)
+#define IFX_ATTR_ALLOC_SIZE_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].mem_allocated
+
+/*
+ * Datatype conversion routines.
+ */
+Datum convertIfxTimestamp(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxInt(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum);
+void ifxRewindCallstack(IfxStatementInfo *info);
+IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo);
 
 #endif
 

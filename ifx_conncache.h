@@ -13,11 +13,11 @@
 #ifndef HAVE_IFX_CONNCACHE_H
 #define HAVE_IFX_CONNCACHE_H
 
+#include "ifx_fdw.h"
+
 #include "nodes/pg_list.h"
 #include "utils/hsearch.h"
 #include "utils/dynahash.h"
-
-#include "ifx_fdw.h"
 
 /*
  * Cached information for an INFORMIX
@@ -44,6 +44,13 @@ typedef struct IfxFTCacheItem
 typedef struct IfxCachedConnection
 {
 	char ifx_connection_name[IFX_CONNAME_LEN];
+	char *servername;
+	char *informixdir;
+	char *username;
+	char *database;
+	char *db_locale;
+	char *client_locale;
+	int usage;
 	Oid establishedByOid;
 } IfxCachedConnection;
 
@@ -73,7 +80,10 @@ void InformixCacheInit();
  * Register a new INFORMIX foreign table to the cache.
  */
 IfxFTCacheItem *ifxFTCache_add(Oid foreignTableOid, char *conname);
-IfxCachedConnection *ifxConnCache_add(Oid foreignTableOid, char *conname,
+IfxCachedConnection *ifxConnCache_add(Oid foreignTableOid,
+									  IfxConnectionInfo *coninfo,
                                       bool *found);
+IfxCachedConnection *ifxConnCache_rm(char *conname,
+                                     bool *found);
 
 #endif

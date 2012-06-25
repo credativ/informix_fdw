@@ -18,3 +18,16 @@ CREATE FOREIGN DATA WRAPPER informix_fdw
 
 COMMENT ON FOREIGN DATA WRAPPER informix_fdw
 IS 'Informix foreign data wrapper';
+
+CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
+                                                   OUT established_by_relid oid,
+                                                   OUT servername text,
+                                                   OUT informixdir text,
+                                                   OUT database text,
+                                                   OUT username text,
+                                                   OUT usage integer,
+                                                   OUT db_locale text,
+                                                   OUT client_locale text)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME', 'ifxGetConnections'
+LANGUAGE C VOLATILE STRICT;
