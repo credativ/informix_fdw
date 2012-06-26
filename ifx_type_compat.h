@@ -201,20 +201,16 @@ typedef struct IfxAttrDef
  */
 typedef struct IfxPlanData
 {
-	/*
-	 * Cost parameters, this might be
-	 * passed through FDW options.
-	 */
 	double estimated_rows;
-	double connection_costs;
+	double costs;
 
 	/*
 	 * Table statistics derived
 	 * from Informix.
+	 * XXX: not used at the moment
 	 */
 	double nrows;
 	double npages;
-	double costs;
 	short row_size;
 
 } IfxPlanData;

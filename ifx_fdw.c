@@ -38,8 +38,6 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "database",         ForeignTableRelationId },
 	{ "query",            ForeignTableRelationId },
 	{ "table",            ForeignTableRelationId },
-	{ "estimated_rows",   ForeignTableRelationId },
-	{ "connection_costs", ForeignTableRelationId },
 	{ "gl_datetime",      ForeignTableRelationId },
 	{ "gl_date",          ForeignTableRelationId },
 	{ "client_locale",    ForeignTableRelationId },
@@ -559,44 +557,6 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 		coninfo->tablename = defGetString(def);
 	}
 
-	/*
-	 * Check wether cost parameters are already set.
-	 */
-	if (strcmp(def->defname, "estimated_rows") == 0)
-	{
-		/*
-		 * Try to convert the cost value into a double value.
-		 */
-		char *endp;
-		char *val;
-
-		val = defGetString(def);
-		coninfo->planData.estimated_rows = strtof(val, &endp);
-
-		if (val == endp && coninfo->planData.estimated_rows < 0.0)
-			ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
-							errmsg("\"%s\" is not a valid number for parameter \"estimated_rows\"",
-								   val)));
-
-	}
-
-	if (strcmp(def->defname, "connection_costs") == 0)
-	{
-		/*
-		 * Try to convert the cost value into a double value
-		 */
-		char *endp;
-		char *val;
-
-		val = defGetString(def);
-		coninfo->planData.connection_costs = strtof(val, &endp);
-
-		if (val == endp && coninfo->planData.connection_costs < 0)
-			ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
-							errmsg("\"%s\" is not a valid number for parameter \"estimated_rows\"",
-								   val)));
-	}
-
 }
 
 /*
@@ -783,22 +743,6 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		if (strcmp(def->defname, "query") == 0)
 		{
 			coninfo->query = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "estimated_rows") == 0)
-		{
-			char *val;
-
-			val = defGetString(def);
-			coninfo->planData.estimated_rows = strtof(val, NULL);
-		}
-
-		if (strcmp(def->defname, "connection_costs") == 0)
-		{
-			char *val;
-
-			val = defGetString(def);
-			coninfo->planData.connection_costs = strtof(val, NULL);
 		}
 
 		if (strcmp(def->defname, "gl_date") == 0)
@@ -1565,13 +1509,6 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 		ifxCreateConnectionXact(coninfo);
 		elog(DEBUG2, "created new cached informix connection \"%s\"",
 			 coninfo->conname);
-
-		/*
-		 * A new connection likely has more overhead on the
-		 * server than a cached one. So if this is a fresh connection,
-		 * reflect it in the startup cost.
-		 */
-		plan->startup_cost = 500;
 	}
 	else
 	{
@@ -1581,8 +1518,6 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 		ifxSetConnection(coninfo);
 		elog(DEBUG2, "reusing cached informix connection \"%s\"",
 			 coninfo->conname);
-
-		plan->startup_cost = 100;
 	}
 
 	/*
@@ -1681,6 +1616,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
 	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
 	baserel->rows = coninfo->planData.estimated_rows;
+	plan->startup_cost = 0.0;
 	plan->total_cost = coninfo->planData.costs + plan->startup_cost;
 
 	/*
@@ -1749,26 +1685,24 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info)
 static void
 ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
-	IfxConnectionInfo coninfo;
+	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *festate;
+	FdwPlan              *plan;
+	Oid                   foreignTableOid;
 
+	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	festate = (IfxFdwExecutionState *) node->fdw_state;
+	coninfo = ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
 	 * XXX: We need to get the info from the cached connection!
 	 */
-
-	/* Fetch options  */
-	ifxGetOptions(RelationGetRelid(node->ss.ss_currentRelation),
-				  &coninfo);
+	plan = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
+	ifxDeserializeFdwData(festate, plan);
 
 	/* Give some possibly useful info about startup costs */
 	if (es->costs)
 	{
-		ExplainPropertyFloat("Remote server startup cost",
-							 coninfo.planData.connection_costs, 4, es);
-		ExplainPropertyFloat("Remote table row estimate",
-							 coninfo.planData.estimated_rows, 4, es);
 		ExplainPropertyText("Informix query", festate->stmt_info.query, es);
 	}
 }
@@ -1781,8 +1715,6 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	if (coninfo == NULL)
 		return;
 
-	coninfo->planData.estimated_rows = 100.0;
-	coninfo->planData.connection_costs = 100.0;
 	coninfo->tx_enabled = 0;
 
     /* enable predicate pushdown */
