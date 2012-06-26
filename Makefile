@@ -7,13 +7,21 @@ ESQL=esql
 ##
 ## Currently we link statically against all required libraries
 ## needed by ESQL/C.
-ESQL_LIBS=$(shell $(ESQL) -libs -static)
+ESQL_LIBS=$(shell $(ESQL) -libs)
 
 SHLIB_LINK += -L$(INFORMIXDIR)/lib/ -L$(INFORMIXDIR)/lib/esql
 EXTENSION = informix_fdw
 DATA = informix_fdw--1.0.sql
 PG_CPPFLAGS += -I$(INFORMIXDIR)/incl/esql
-LDFLAGS_SL=$(ESQL_LIBS)
+
+## GNU/Linux
+ifeq (--as-needed, $(findstring --as-needed, $(shell pg_config --ldflags)))
+LDFLAGS_SL=-Wl,--no-as-needed $(ESQL_LIBS) -Wl,--as-needed
+
+## OSX
+else ifeq (-dead_strip_dylibs, $(findstring -dead_strip_dylibs, $(shell pg_config --ldflags)))
+ESQL_LIBS+=-static
+endif
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
