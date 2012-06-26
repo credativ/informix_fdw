@@ -5,8 +5,7 @@ ESQL=esql
 ##
 ## Which ESQL/C libs to link.
 ##
-## Currently we link statically against all required libraries
-## needed by ESQL/C.
+## Currently we link statically on OSX.
 ESQL_LIBS=$(shell $(ESQL) -libs)
 
 SHLIB_LINK += -L$(INFORMIXDIR)/lib/ -L$(INFORMIXDIR)/lib/esql
