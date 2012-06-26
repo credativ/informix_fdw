@@ -5,7 +5,6 @@ ESQL=esql
 ##
 ## Which ESQL/C libs to link.
 ##
-## Currently we link statically on OSX.
 ESQL_LIBS=$(shell $(ESQL) -libs)
 
 SHLIB_LINK += -L$(INFORMIXDIR)/lib/ -L$(INFORMIXDIR)/lib/esql
@@ -16,10 +15,13 @@ PG_CPPFLAGS += -I$(INFORMIXDIR)/incl/esql
 ## GNU/Linux
 ifeq (--as-needed, $(findstring --as-needed, $(shell pg_config --ldflags)))
 LDFLAGS_SL=-Wl,--no-as-needed $(ESQL_LIBS) -Wl,--as-needed
+endif
 
 ## OSX
-else ifeq (-dead_strip_dylibs, $(findstring -dead_strip_dylibs, $(shell pg_config --ldflags)))
-ESQL_LIBS+=-static
+ifeq (-dead_strip_dylibs, $(findstring -dead_strip_dylibs, $(shell pg_config --ldflags)))
+## Currently we link statically on OSX.
+ESQL_LIBS=$(shell $(ESQL) -libs -static)
+LDFLAGS_SL = $(ESQL_LIBS)
 endif
 
 PG_CONFIG = pg_config
