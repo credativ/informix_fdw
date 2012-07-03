@@ -1130,8 +1130,31 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			break;
 		}
 		case IFX_TEXT:
+		{
 			/* TO DO */
+			Datum dat;
+
+
+			dat = convertIfxSimpleLO(state, attnum);
+
+			/*
+			 * Check for invalid datum conversion.
+			 */
+			if (! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			/*
+			 * Valid NULL datum?
+			 */
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+
 			break;
+		}
 		case IFX_BYTES:
 			/* TO DO */
 			break;

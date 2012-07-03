@@ -190,6 +190,8 @@ typedef struct IfxAttrDef
 	char          *name;
 	IfxIndicatorValue indicator;
 	size_t            mem_allocated; /* memory allocated for data */
+	size_t            loc_buf_size;  /* memory allocated for additional BLOB buffer */
+	char             *loc_buf;       /* BLOB data buffer of size loc_buf_size */
 	int               offset;        /* offset into the data memory buffer */
 } IfxAttrDef;
 
@@ -402,6 +404,8 @@ char ifxGetBool(IfxStatementInfo *state, int ifx_attnum);
 int2 ifxGetInt2(IfxStatementInfo *state, int attnum);
 int ifxGetInt4(IfxStatementInfo *state, int attnum);
 char *ifxGetText(IfxStatementInfo *state, int attnum);
+char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
+							long *loc_buf_len);
 
 /*
  * Helper macros.

@@ -499,6 +499,129 @@ Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum)
 }
 
 /*
+ * convertIfxSimpleLO
+ *
+ * Converts a simple large object into a corresponding
+ * PostgreSQL datum. Currently supported are the following
+ * conversions:
+ *
+ *  INFORMIX | POSTGRESQL
+ * -----------------------
+ *  TEXT     | TEXT
+ *  TEXT     | VARCHAR
+ *  TEXT     | BPCHAR
+ *  TEXT     | BYTEA
+ */
+Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
+{
+	Datum  result;
+	char  *val;
+	Oid    inputOid;
+	regproc typeinputfunc;
+	long    buf_size;
+
+	result = PointerGetDatum(NULL);
+
+	/*
+	 * Target type OID supported?
+	 */
+	switch (PG_ATTRTYPE_P(state, attnum))
+	{
+		case TEXTOID:
+		case BPCHAROID:
+		case VARCHAROID:
+		case BYTEAOID:
+			inputOid = PG_ATTRTYPE_P(state, attnum);
+			break;
+		default:
+		{
+			/* oops, unsupported datum conversion */
+			IFX_ATTR_SETNOTVALID_P(state, attnum);
+			return result;
+		}
+	}
+
+	/*
+	 * ifxGetTextFromLocator returns a pointer into
+	 * the locator structure, just reuse it during the
+	 * FETCH but don't try to deallocate it. This is done
+	 * later by the ESQL/C API after the FETCH finishes...
+	 */
+	val = ifxGetTextFromLocator(&(state->stmt_info), attnum, &buf_size);
+
+	/*
+	 * Check indicator value. In case we got NULL,
+	 * nothing more to do.
+	 */
+	if (IFX_ATTR_ISNULL_P(state, attnum)
+		|| (! IFX_ATTR_IS_VALID_P(state, attnum)))
+		return result;
+
+	elog(DEBUG2, "blob size fetched: %ld", buf_size);
+
+	/*
+	 * If the target type is a varlena, go on. Take care for
+	 * typemods however...
+	 */
+	typeinputfunc = getTypeInputFunction(state, inputOid);
+
+	PG_TRY();
+	{
+		switch (inputOid)
+		{
+			case TEXTOID:
+			case VARCHAROID:
+			case BPCHAROID:
+			{
+				/*
+				 * Take care for typmods...
+				 */
+				if (PG_ATTRTYPEMOD_P(state, attnum) != -1)
+				{
+					result = OidFunctionCall3(typeinputfunc,
+											  CStringGetDatum(val),
+											  ObjectIdGetDatum(InvalidOid),
+											  Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
+				}
+				else
+				{
+					result = OidFunctionCall2(typeinputfunc,
+											  CStringGetDatum(val),
+											  ObjectIdGetDatum(InvalidOid));
+				}
+			}
+			case BYTEAOID:
+			{
+				bytea *binary_data;
+				int    len;
+
+				/*
+				 * Allocate a bytea datum. We can use strlen() to
+				 * get the VARDATA buffer size, since we know that
+				 * the source type is a TEXT value.
+				 */
+				len = strlen(val);
+				binary_data = (bytea *) palloc0(VARHDRSZ + len);
+
+				SET_VARSIZE(binary_data, len + VARHDRSZ);
+				memcpy(VARDATA(binary_data), val, len);
+				IFX_SETVAL_P(state, attnum, PointerGetDatum(binary_data));
+				result = IFX_GETVAL_P(state, attnum);
+			}
+		}
+
+	}
+	PG_CATCH();
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return result;
+}
+
+/*
  * convertIfxCharacterString
  *
  * Converts a given character string formerly retrieved

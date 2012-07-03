@@ -21,7 +21,7 @@ EXEC SQL include "int8.h";
 
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
-												struct sqlvar_struct *ifx_value);
+						struct sqlvar_struct *ifx_value);
 
 /*
  * Establish a named INFORMIX database connection with transactions
@@ -238,8 +238,7 @@ void ifxOpenCursorForPrepared(IfxStatementInfo *state)
 	EXEC SQL OPEN :ifx_cursor_name;
 }
 
-void ifxDeclareCursorForPrepared(char *stmt_name,
-								 char *cursor_name)
+void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifx_stmt_name;
@@ -256,7 +255,7 @@ void ifxDeclareCursorForPrepared(char *stmt_name,
 	ifx_cursor_name = cursor_name;
 
 	EXEC SQL DECLARE :ifx_cursor_name
-		SCROLL CURSOR FOR :ifx_stmt_name;
+		CURSOR FOR :ifx_stmt_name;
 
 }
 
@@ -766,6 +765,72 @@ char *ifxGetInt8(IfxStatementInfo *state, int ifx_attnum, char *buf)
 }
 
 /*
+ * ifxGetTextFromLocator
+ *
+ * Extracts a character string from the locator type
+ * bundled with the specified attribute. The character
+ * string is supposed to be a valid informix TEXT value,
+ * so no embedded null bytes are expected.
+ *
+ * The result character string is *not* copied, instead
+ * a pointer to the locator structure is returned, thus the
+ * caller must not free it itself.
+ *
+ * If an error occurred, the return value is NULL and
+ * the indicator value is set to INVALID.
+ *
+ * loc_buf_len will store the buffer size of the current locator.
+ */
+char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
+							long *loc_buf_len)
+{
+	ifx_loc_t            *loc;
+	char                 *result;
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Init stuff.
+	 */
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+	result = NULL;
+	*loc_buf_len   = 0;
+
+	loc = (ifx_loc_t *) ifx_value->sqldata;
+
+	/*
+	 * Check wether informix was able to allocate a buffer
+	 * for us. See
+	 *
+	 * http://publib.boulder.ibm.com/infocenter/idshelp/v115/index.jsp?topic=%2Fcom.ibm.esqlc.doc%2Fsii-07-37658.htm
+	 * for a detailed description of the error conditions here. It looks
+	 * to me that catching everything below 0 is enough...anyways, it might
+	 * be necessary to extend the indicator value to reflect further
+	 * error conditions in the future (e.g. out of memory, ...).
+	 */
+	if (loc->loc_status < 0)
+	{
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return result;
+	}
+
+	/*
+	 * Check for NULL...we can't use ifxSetIndicatorValue() here,
+	 * since we need to get the value from the locator directly.
+	 */
+	if (loc->loc_indicator == -1)
+	{
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NULL;
+		return result;
+	}
+
+	*loc_buf_len = loc->loc_size;
+	result = (char *) loc->loc_buffer;
+	return result;
+}
+
+/*
  * ifxGetColumnAttributes()
  *
  * Initializes an IfxStatementInfo according to the
@@ -892,10 +957,18 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				break;
 			case SQLBYTES:
 			case SQLTEXT:
+			{
 				/* BLOB datatypes. These are handled via loc_t
-				 * locator descriptor and require special handling */
+				 * locator descriptor and require special handling
+				 *
+				 * NOTE: ifxSetupDataBufferAligned() is responsible to
+				 *       setup the locator structure properly.
+				 */
+
 				column_data->sqltype = CLOCATORTYPE;
+				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
+			}
 			case SQLVCHAR:
 			case SQLNCHAR:
 			case SQLNVCHAR:
@@ -999,8 +1072,28 @@ void ifxSetupDataBufferAligned(IfxStatementInfo *state)
 			((intrvl_t *) column_data->sqldata)->in_qual = 0;
 
 		/*
+		 * Setup locator type. LOC_ALLOC specified within
+		 * mflags tells ESQL/C to maintain the locator buffer
+		 * itself...
+		 *
+		 * Please note that we always try to allocate the
+		 * LOB buffer in memory (LOCMEMORY).
+		 */
+		if (column_data->sqltype == CLOCATORTYPE)
+		{
+			ifx_loc_t *loc;
+
+			loc = (ifx_loc_t *)(column_data->sqldata);
+			loc->loc_loctype = LOCMEMORY;
+			loc->loc_bufsize = -1;
+			loc->loc_oflags  = 0;
+			loc->loc_mflags  = LOC_ALLOC;
+		}
+
+		/*
 		 * Next one...
 		 */
 		column_data++;
 	}
 }
+
