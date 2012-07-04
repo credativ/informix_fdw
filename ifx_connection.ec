@@ -768,16 +768,17 @@ char *ifxGetInt8(IfxStatementInfo *state, int ifx_attnum, char *buf)
  * ifxGetTextFromLocator
  *
  * Extracts a character string from the locator type
- * bundled with the specified attribute. The character
- * string is supposed to be a valid informix TEXT value,
- * so no embedded null bytes are expected.
+ * bundled with the specified attribute. The resulting
+ * character array could also be used to extract a byte
+ * stream from a simple large object, so be prepared
+ * to deal with embedded null bytes in this case.
  *
  * The result character string is *not* copied, instead
  * a pointer to the locator structure is returned, thus the
  * caller must not free it itself.
  *
  * If an error occurred, the return value is NULL and
- * the indicator value is set to INVALID.
+ * the indicator value is set to INDICATOR_NOT_VALID.
  *
  * loc_buf_len will store the buffer size of the current locator.
  */
@@ -804,6 +805,7 @@ char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
 	 * for us. See
 	 *
 	 * http://publib.boulder.ibm.com/infocenter/idshelp/v115/index.jsp?topic=%2Fcom.ibm.esqlc.doc%2Fsii-07-37658.htm
+	 *
 	 * for a detailed description of the error conditions here. It looks
 	 * to me that catching everything below 0 is enough...anyways, it might
 	 * be necessary to extend the indicator value to reflect further

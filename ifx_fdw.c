@@ -272,9 +272,14 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 		switch (errclass)
 		{
 			case IFX_RT_ERROR:
-				/* log FATAL */
+				/*
+				 * log FATAL
+				 *
+				 * There's no ERRCODE_FDW_FATAL, so we go with a HV000 error
+				 * code for now, but print out the error message as FATAL.
+				 */
 				ifxRewindCallstack(state);
-				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+				ereport(FATAL, (errcode(ERRCODE_FDW_ERROR),
 								errmsg("informix FDW error: \"%s\"",
 									   message.text),
 								errdetail("SQLSTATE %s (SQLCODE=%d)",
@@ -924,11 +929,8 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	coninfo = ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
-	 * XXX: ifxPlanForeignScan() already should have added a cached
-	 * connection entry for the requested table. If we don't
-	 * find any entry in the connection cache, we treat this as an error
-	 * for now. Maybe I need to revert this, but for the initial
-	 * coding it seems the best option.
+	 * ifxPlanForeignScan() already should have added a cached
+	 * connection entry for the requested table.
 	 */
 	cached = ifxConnCache_add(foreignTableOid, coninfo,
 							  &conn_cached);
@@ -958,17 +960,16 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	{
 		elog(DEBUG1, "informix_fdw no cached plan data");
 		ifxPrepareParamsForScan(festate, coninfo);
-
-		/*
-		 * Recheck if everything is already prepared on the
-		 * informix server. If not, we are either in a rescan condition
-		 * or a cached query plan is used. Redo all necessary preparation
-		 * previously done in the planning state. We do this to save
-		 * some cycles when just doing plain SELECTs.
-		 */
 	}
 
 
+	/*
+	 * Recheck if everything is already prepared on the
+	 * informix server. If not, we are either in a rescan condition
+	 * or a cached query plan is used. Redo all necessary preparation
+	 * previously done in the planning state. We do this to save
+	 * some cycles when just doing plain SELECTs.
+	 */
 	if (festate->stmt_info.call_stack == IFX_STACK_EMPTY)
 		ifxPrepareCursorForScan(&festate->stmt_info);
 
@@ -1041,12 +1042,6 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	ifxOpenCursorForPrepared(&festate->stmt_info);
 	ifxCatchExceptions(&festate->stmt_info, IFX_STACK_OPEN);
 
-	/*
-	 * And finally store current state into
-	 * plan structure.
-	 */
-	/* plan->fdw_private = ifxSerializePlanData(coninfo, festate, */
-	/* 										 (ForeignScan *)node->ss.ps.plan); */
 }
 
 static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
@@ -1615,7 +1610,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 
 	/*
 	 * An identifier for the dynamically allocated
-	 * DESCRITPOR area.
+	 * DESCRIPTOR area.
 	 */
 	state->stmt_info.descr_name = ifxGenDescrName(coninfo);
 
@@ -1630,7 +1625,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	/*
 	 * After declaring the cursor we are able to retrieve
 	 * row and cost estimates via SQLCA fields. Do that and save
-	 * them into the IfxPlanData structure member if
+	 * them into the IfxPlanData structure member of
 	 * IfxConnectionInfo and, more important, assign the
 	 * values to our plan node.
 	 */
