@@ -557,7 +557,7 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 		|| (! IFX_ATTR_IS_VALID_P(state, attnum)))
 		return result;
 
-	elog(DEBUG2, "blob size fetched: %ld", buf_size);
+	elog(DEBUG3, "blob size fetched: %ld", buf_size);
 
 	/*
 	 * If the target type is a varlena, go on. Take care for
@@ -596,11 +596,11 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 				int    len;
 
 				/*
-				 * Allocate a bytea datum. We can use strlen() to
-				 * get the VARDATA buffer size, since we know that
-				 * the source type is a TEXT value.
+				 * Allocate a bytea datum. Don't use strlen() for
+				 * val, in case the source column is of type BYTE. Instead,
+				 * rely on the loc_buffer size, Informix has returned to us.
 				 */
-				len = strlen(val);
+				len = buf_size;
 				binary_data = (bytea *) palloc0(VARHDRSZ + len);
 
 				SET_VARSIZE(binary_data, len + VARHDRSZ);

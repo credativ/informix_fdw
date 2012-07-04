@@ -1129,6 +1129,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			IFX_SETVAL_P(state, attnum, dat);
 			break;
 		}
+		case IFX_BYTES:
 		case IFX_TEXT:
 		{
 			/* TO DO */
@@ -1155,9 +1156,6 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 
 			break;
 		}
-		case IFX_BYTES:
-			/* TO DO */
-			break;
 		case IFX_BOOLEAN:
 		{
 			/* SQLBOOL value */
@@ -1708,14 +1706,10 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info)
 static void
 ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
-	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *festate;
 	FdwPlan              *plan;
-	Oid                   foreignTableOid;
 
-	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	festate = (IfxFdwExecutionState *) node->fdw_state;
-	coninfo = ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
 	 * XXX: We need to get the info from the cached connection!
