@@ -18,6 +18,7 @@
 EXEC SQL include sqltypes;
 EXEC SQL include sqlda;
 EXEC SQL include "int8.h";
+EXEC SQL include "decimal.h";
 
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
@@ -620,6 +621,68 @@ char ifxGetBool(IfxStatementInfo *state, int ifx_attnum)
 					ifx_value);
 
 	memcpy(&result, ifx_value->sqldata, 1);
+	return result;
+}
+
+/*
+ * ifxGetDecimal()
+ *
+ * Retrieves a decimal value from the specified
+ * attribute.
+ *
+ * The decimal value is returned as a character string. The buffer
+ * passed to the buf parameter must have enough room (IFX_DECIMAL_BUF_LEN)
+ * to hold the decimal value.
+ * The informix dectoasc() function will convert the decimal
+ * character representation into exponential notation, in case the buffer
+ * is too small. If this doesn't fit even, NULL is returned.
+ */
+char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum, char *buf)
+{
+	char         *result;
+	char          dec_buf[IFX_DECIMAL_BUF_LEN + 1];
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	dec_t val;
+
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+	result = NULL;
+
+	ifxSetIndicator(&state->ifxAttrDefs[ifx_attnum],
+					ifx_value);
+
+	/*
+	 * Check for NULL values. Don't proceed in case
+	 * the retrieved value is a SQL NULL datum.
+	 */
+	if (state->ifxAttrDefs[ifx_attnum].indicator == INDICATOR_NULL)
+	{
+		return result;
+	}
+
+	/*
+	 * Copy the value...
+	 */
+	memcpy(&val, ifx_value->sqldata,
+		   state->ifxAttrDefs[ifx_attnum].mem_allocated);
+
+	/*
+	 * Convert the decimal value into its character
+	 * representation.
+	 */
+	if (dectoasc(&val, dec_buf, sizeof(dec_buf), -1) < 0)
+	{
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return result;
+	}
+	else
+	{
+		dec_buf[sizeof(dec_buf) - 1] = '\0';
+		strncpy(buf, dec_buf, IFX_DECIMAL_BUF_LEN);
+		result = buf;
+	}
+
 	return result;
 }
 

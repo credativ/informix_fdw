@@ -29,6 +29,8 @@
 
 #include "ifx_fdw.h"
 
+#include "utils/numeric.h"
+
 /*******************************************************************************
  * Helper functions
  */
@@ -114,164 +116,241 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 	return result;
  }
 
- /*
-  * convertIfxTimestamp()
-  *
-  * Converts a given Informix DATETIME value into
-  * a PostgreSQL timestamp.
-  */
- Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum)
- {
-	 Datum result;
-	 Oid   inputOid;
-	 char  *val;
-	 regproc typeinputfunc;
+/*
+ * convertIfxTimestamp()
+ *
+ * Converts a given Informix DATETIME value into
+ * a PostgreSQL timestamp.
+ */
+Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum)
+{
+	Datum result;
+	Oid   inputOid;
+	char  *val;
+	regproc typeinputfunc;
 
-	 /*
-	  * Init ...
-	  */
-	 result = PointerGetDatum(NULL);
+	/*
+	 * Init ...
+	 */
+	result = PointerGetDatum(NULL);
 
-	 switch (PG_ATTRTYPE_P(state, attnum))
-	 {
-		 case TEXTOID:
-		 case VARCHAROID:
-		 case BPCHAROID:
-		 case TIMESTAMPOID:
-		 case TIMESTAMPTZOID:
-			 inputOid = PG_ATTRTYPE_P(state, attnum);
-			 break;
-		 default:
-		 {
-			 /* oops, unexpected datum conversion */
-			 IFX_ATTR_SETNOTVALID_P(state, attnum);
-			 return result;
-		 }
-	 }
+	switch (PG_ATTRTYPE_P(state, attnum))
+	{
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			inputOid = PG_ATTRTYPE_P(state, attnum);
+			break;
+		default:
+		{
+			/* oops, unexpected datum conversion */
+			IFX_ATTR_SETNOTVALID_P(state, attnum);
+			return result;
+		}
+	}
 
-	 /*
-	  * We get the Informix DTIME value as a ANSI SQL
-	  * formatted character string. Prepare a buffer for it
-	  * and call the appropiate conversion function from our
-	  * Informix API...
-	  */
-	 val = (char *) palloc0(IFX_DATETIME_BUFFER_LEN);
+	/*
+	 * We get the Informix DTIME value as a ANSI SQL
+	 * formatted character string. Prepare a buffer for it
+	 * and call the appropiate conversion function from our
+	 * Informix API...
+	 */
+	val = (char *) palloc0(IFX_DATETIME_BUFFER_LEN);
 
-	 if (ifxGetTimestampAsString(&(state->stmt_info), attnum, val) == NULL)
-	 {
-		 /*
-		  * Got a SQL null value or conversion error. Leave it up to
-		  * the caller to look what's wrong (at least, we can't error
-		  * out at this place, since the caller need's the chance to
-		  * clean up itself).
-		  */
-		 return result;
-	 }
+	if (ifxGetTimestampAsString(&(state->stmt_info), attnum, val) == NULL)
+	{
+		/*
+		 * Got a SQL null value or conversion error. Leave it up to
+		 * the caller to look what's wrong (at least, we can't error
+		 * out at this place, since the caller need's the chance to
+		 * clean up itself).
+		 */
+		return result;
+	}
 
-	 /*
-	  * Get the input function and try the conversion. We just pass
-	  * the character string into the specific type input function.
-	  */
-	 typeinputfunc = getTypeInputFunction(state, inputOid);
+	/*
+	 * Get the input function and try the conversion. We just pass
+	 * the character string into the specific type input function.
+	 */
+	typeinputfunc = getTypeInputFunction(state, inputOid);
 
-	 PG_TRY();
-	 {
-		 result = OidFunctionCall3(typeinputfunc,
-								   CStringGetDatum(val),
-								   ObjectIdGetDatum(InvalidOid),
-								   Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
-	 }
-	 PG_CATCH();
-	 {
-		 ifxRewindCallstack(&(state->stmt_info));
-		 PG_RE_THROW();
-	 }
-	 PG_END_TRY();
+	PG_TRY();
+	{
+		result = OidFunctionCall3(typeinputfunc,
+								  CStringGetDatum(val),
+								  ObjectIdGetDatum(InvalidOid),
+								  Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
+	}
+	PG_CATCH();
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-	 return result;
+	return result;
  }
 
- /*
-  * convertIfxInt()
-  *
-  * Converts either an 2-, 4-, or 8-byte informix integer value
-  * into a corresponding PostgreSQL datum. The target type
-  * range is checked and conversion refused if it doesn't
-  * match. We also support conversion into either TEXT, VARCHAR
-  * and bpchar.
-  *
-  * XXX: What about NUMERIC???
-  */
- Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
- {
-	 Datum result;
-	 PgAttrDef pg_def;
+/*
+ * convertIfxDecimal()
+ *
+ * Converts a decimal value into a PostgreSQL numeric datum.
+ * Note that convertIfxDecimal() works by converting the
+ * character representation of a dec_t value formerly retrieved
+ * from an informix column. This we must be aware of any locale
+ * settings here.
+ *
+ * Currently, we support conversion to numeric types only.
+ */
+Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
+{
+	Datum result;
+	Oid inputOid;
+	char *val;
+	Numeric num;
+	regproc typinputfunc;
 
-	 /*
-	  * Setup stuff...
-	  */
-	 pg_def = state->pgAttrDefs[attnum];
+	/*
+	 * Init...
+	 */
+	result = PointerGetDatum(NULL);
 
-	 /*
-	  * Do the conversion...
-	  */
-	 switch(pg_def.atttypid)
-	 {
-		 case INT2OID:
-		 {
-			 int2 val;
+	switch(PG_ATTRTYPE_P(state, attnum))
+	{
+		case NUMERICOID:
+		{
+			inputOid = PG_ATTRTYPE_P(state, attnum);
+			break;
+		}
+		default:
+		{
+			IFX_ATTR_SETNOTVALID_P(state, attnum);
+			return result;
+		}
+	}
 
-			 /* accepts int2 only */
-			 if (IFX_ATTRTYPE_P(state, attnum) != IFX_SMALLINT)
-			 {
-				 IFX_ATTR_SETNOTVALID_P(state, attnum);
-				 return PointerGetDatum(NULL);
-			 }
+	val = (char *) palloc0(IFX_DECIMAL_BUF_LEN + 1);
 
-			 val = ifxGetInt2(&(state->stmt_info), attnum);
-			 result = Int16GetDatum(val);
+	/*
+	 * Get the value from the informix column and check wether
+	 * the character string is valid. Don't go further, if not...
+	 */
+	if (ifxGetDecimal(&state->stmt_info, attnum, val) == NULL)
+	{
+		/* caller should handle indicator */
+		return result;
+	}
 
-			 break;
-		 }
-		 case INT4OID:
-		 {
-			 int val;
+	/*
+	 * Get the type input function.
+	 */
+	typinputfunc = getTypeInputFunction(state, inputOid);
 
-			 /* accepts int2 and int4/serial */
-			 if ((IFX_ATTRTYPE_P(state, attnum) != IFX_SMALLINT)
-				 && (IFX_ATTRTYPE_P(state, attnum) != IFX_INTEGER)
-				 && (IFX_ATTRTYPE_P(state, attnum) != IFX_SERIAL))
-			 {
-				 IFX_ATTR_SETNOTVALID_P(state, attnum);
-				 return PointerGetDatum(NULL);
-			 }
+	/*
+	 * Type input function known and target column looks compatible,
+	 * let's try the conversion...
+	 */
+	PG_TRY();
+	{
+		/*
+		 * Watch out for typemods
+		 */
+		result = OidFunctionCall3(typinputfunc,
+								  CStringGetDatum(val),
+								  ObjectIdGetDatum(InvalidOid),
+								  Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
+	}
+	PG_CATCH();
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-			 val = ifxGetInt4(&(state->stmt_info), attnum);
-			 result = Int32GetDatum(val);
+	return result;
+}
 
-			 break;
-		 }
-		 case INT8OID:
-			 /*
-			  * Note that the informix int8 value retrieved by
-			  * ifxGetInt8() is converted into its *character*
-			  * representation. We leave it up to the typinput
-			  * routine to convert it back to a PostgreSQL BIGINT.
-			  * So fall through and do the work below.
-			  */
-		 case TEXTOID:
-		 case VARCHAROID:
-		 case BPCHAROID:
-		 {
-			 /*
-			  * Try the conversion...
-			  */
-			 PG_TRY();
-			 {
-				 if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
-					 || (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8)
-					 || (IFX_ATTRTYPE_P(state, attnum) == IFX_INFX_INT8))
-				 {
+/*
+ * convertIfxInt()
+ *
+ * Converts either an 2-, 4-, or 8-byte informix integer value
+ * into a corresponding PostgreSQL datum. The target type
+ * range is checked and conversion refused if it doesn't
+ * match. We also support conversion into either TEXT, VARCHAR
+ * and bpchar.
+ */
+Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
+{
+	Datum result;
+	PgAttrDef pg_def;
+
+	/*
+	 * Setup stuff...
+	 */
+	pg_def = state->pgAttrDefs[attnum];
+
+	/*
+	 * Do the conversion...
+	 */
+	switch(pg_def.atttypid)
+	{
+		case INT2OID:
+		{
+			int2 val;
+
+			/* accepts int2 only */
+			if (IFX_ATTRTYPE_P(state, attnum) != IFX_SMALLINT)
+			{
+				IFX_ATTR_SETNOTVALID_P(state, attnum);
+				return PointerGetDatum(NULL);
+			}
+
+			val = ifxGetInt2(&(state->stmt_info), attnum);
+			result = Int16GetDatum(val);
+
+			break;
+		}
+		case INT4OID:
+		{
+			int val;
+
+			/* accepts int2 and int4/serial */
+			if ((IFX_ATTRTYPE_P(state, attnum) != IFX_SMALLINT)
+				&& (IFX_ATTRTYPE_P(state, attnum) != IFX_INTEGER)
+				&& (IFX_ATTRTYPE_P(state, attnum) != IFX_SERIAL))
+			{
+				IFX_ATTR_SETNOTVALID_P(state, attnum);
+				return PointerGetDatum(NULL);
+			}
+
+			val = ifxGetInt4(&(state->stmt_info), attnum);
+			result = Int32GetDatum(val);
+
+			break;
+		}
+		case INT8OID:
+			/*
+			 * Note that the informix int8 value retrieved by
+			 * ifxGetInt8() is converted into its *character*
+			 * representation. We leave it up to the typinput
+			 * routine to convert it back to a PostgreSQL BIGINT.
+			 * So fall through and do the work below.
+			 */
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+		{
+			/*
+			 * Try the conversion...
+			 */
+			PG_TRY();
+			{
+				if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+					|| (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8)
+					|| (IFX_ATTRTYPE_P(state, attnum) == IFX_INFX_INT8))
+				{
 					char *buf;
 					regproc typinputfunc;
 
@@ -559,14 +638,14 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 
 	elog(DEBUG3, "blob size fetched: %ld", buf_size);
 
-	/*
-	 * If the target type is a varlena, go on. Take care for
-	 * typemods however...
-	 */
-	typeinputfunc = getTypeInputFunction(state, inputOid);
-
 	PG_TRY();
 	{
+		/*
+		 * If the target type is a varlena, go on. Take care for
+		 * typemods however...
+		 */
+		typeinputfunc = getTypeInputFunction(state, inputOid);
+
 		switch (inputOid)
 		{
 			case TEXTOID:

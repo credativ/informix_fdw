@@ -33,8 +33,6 @@ see
 
 http://www.postgresql.org/docs/9.1/static/sql-createextension.html
 
-Currently only PostgreSQL 9.1 is supported.
-
 = Compiling =
 
 INFORMIXDIR=/path/to/your/csdk/installation make install
@@ -45,8 +43,7 @@ CREATE EXTENSION informix_fdw;
 
 CREATE SERVER centosifx_tcp
 FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver 'centosifx_tcp',
-         connection_costs '250');
+OPTIONS (informixserver 'centosifx_tcp');
 
 CREATE USER MAPPING FOR CURRENT_USER
 SERVER centosifx_tcp
@@ -59,13 +56,11 @@ CREATE FOREIGN TABLE ifx_fdw_test (
 SERVER centosifx_tcp
 OPTIONS ( query 'SELECT * FROM foo',
           database 'test',
-          estimated_rows '500',
           informixdir '/Applications/IBM/informix');
 
 CREATE SERVER sles11_tcp
 FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver 'ol_informix1170',
-         connection_costs '250');
+OPTIONS (informixserver 'ol_informix1170');
 
 CREATE USER MAPPING FOR CURRENT_USER
 SERVER sles11_tcp
@@ -78,7 +73,6 @@ CREATE FOREIGN TABLE ifx_fdw_test (
 SERVER sles11_tcp
 OPTIONS ( query 'SELECT * FROM foo',
           database 'test',
-          estimated_rows '500',
           informixserver 'ol_informix1170',
           informixdir '/Applications/IBM/informix');
 

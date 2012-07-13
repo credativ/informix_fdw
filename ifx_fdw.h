@@ -202,6 +202,7 @@ Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum);
 void ifxRewindCallstack(IfxStatementInfo *info);
 IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo);
 Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum);
 
 /*
  * Node support helper functions

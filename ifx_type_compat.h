@@ -40,6 +40,13 @@
 #define IFX_INT8_CHAR_LEN 19
 
 /*
+ * Maximum length for decimal
+ * character representation (without
+ * null byte).
+ */
+#define IFX_DECIMAL_BUF_LEN 30
+
+/*
  * Flags to identify current state
  * of informix calls.
  */
@@ -406,6 +413,8 @@ int ifxGetInt4(IfxStatementInfo *state, int attnum);
 char *ifxGetText(IfxStatementInfo *state, int attnum);
 char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
 							long *loc_buf_len);
+char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum,
+					char *buf);
 
 /*
  * Helper macros.

@@ -1067,6 +1067,10 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 	switch (IFX_ATTRTYPE_P(state, attnum))
 	{
 		case IFX_SMALLINT:
+			/*
+			 * All int values are handled
+			 * by convertIfxInt()...so fall through.
+			 */
 		case IFX_INTEGER:
 		case IFX_SERIAL:
 		case IFX_INT8:
@@ -1212,6 +1216,27 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 				ifxRewindCallstack(&state->stmt_info);
 				elog(ERROR, "could not convert informix type id %d into pg type %u",
 					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+			break;
+		}
+		case IFX_DECIMAL:
+		{
+			/* DECIMAL value */
+			Datum dat;
+			dat = convertIfxDecimal(state, attnum);
+
+			/*
+			 * Valid datum?
+			 */
+			if ((DatumGetPointer(dat) == NULL)
+				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix decimal into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 
