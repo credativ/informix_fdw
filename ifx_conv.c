@@ -29,8 +29,6 @@
 
 #include "ifx_fdw.h"
 
-#include "utils/numeric.h"
-
 /*******************************************************************************
  * Helper functions
  */
@@ -94,13 +92,16 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 		return result;
 	}
 
-	/*
-	 * Try the conversion.
-	 */
-	typeinputfunc = getTypeInputFunction(state, inputOid);
 
+	/*
+	 * Catch errors from subsequent function calls...
+	 */
 	PG_TRY();
 	{
+		/*
+		 * Try the conversion.
+		 */
+		typeinputfunc = getTypeInputFunction(state, inputOid);
 		result = OidFunctionCall3(typeinputfunc,
 								  CStringGetDatum(val),
 								  ObjectIdGetDatum(InvalidOid),
@@ -170,14 +171,13 @@ Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum)
 		return result;
 	}
 
-	/*
-	 * Get the input function and try the conversion. We just pass
-	 * the character string into the specific type input function.
-	 */
-	typeinputfunc = getTypeInputFunction(state, inputOid);
-
 	PG_TRY();
 	{
+		/*
+		 * Get the input function and try the conversion. We just pass
+		 * the character string into the specific type input function.
+		 */
+		typeinputfunc = getTypeInputFunction(state, inputOid);
 		result = OidFunctionCall3(typeinputfunc,
 								  CStringGetDatum(val),
 								  ObjectIdGetDatum(InvalidOid),
@@ -209,7 +209,6 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 	Datum result;
 	Oid inputOid;
 	char *val;
-	Numeric num;
 	regproc typinputfunc;
 
 	/*
@@ -243,10 +242,6 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 		return result;
 	}
 
-	/*
-	 * Get the type input function.
-	 */
-	typinputfunc = getTypeInputFunction(state, inputOid);
 
 	/*
 	 * Type input function known and target column looks compatible,
@@ -254,6 +249,11 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 	 */
 	PG_TRY();
 	{
+		/*
+		 * Get the type input function.
+		 */
+		typinputfunc = getTypeInputFunction(state, inputOid);
+
 		/*
 		 * Watch out for typemods
 		 */
@@ -841,12 +841,16 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 		}
 
 		/*
-		 * Try the conversion...
+		 * Catch any errors from the following function calls, or
+		 * we likely leak memory allocated by the ESQL/C API...
 		 */
-		typeinputfunc = ((Form_pg_type) GETSTRUCT(conv_tuple))->typinput;
-
 		PG_TRY();
 		{
+			/*
+			 * Try the conversion...
+			 */
+			typeinputfunc = ((Form_pg_type) GETSTRUCT(conv_tuple))->typinput;
+
 			result = OidFunctionCall3(typeinputfunc,
 									  CStringGetDatum(val),
 									  ObjectIdGetDatum(InvalidOid),
