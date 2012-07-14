@@ -79,7 +79,7 @@ OPTIONS ( query 'SELECT * FROM foo',
 = Supported datatypes =
 
 Currently, only fundamental Informix data types are supported. There's
-no support for opaque or user defined types at the moment. Implemented
+yno support for opaque or user defined types at the moment. Implemented
 datatype conversion routines:
 
 BOOLEAN
@@ -96,6 +96,9 @@ CHARACTER
 LVARCHAR
 NCHAR
 NVARCHAR
+BYTE
+TEXT
+NUMERIC
 
 = Predicate Pushdown =
 
