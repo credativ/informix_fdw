@@ -67,28 +67,27 @@ PG_FUNCTION_INFO_V1(ifx_fdw_validator);
 PG_FUNCTION_INFO_V1(ifxGetConnections);
 
 /*******************************************************************************
- * FDW callback routines.
+ * FDW internal macros
  */
 
-static FdwPlan *ifxPlanForeignScan(Oid foreignTableOid,
-								   PlannerInfo *planInfo,
-								   RelOptInfo *baserel);
-
-static void
-ifxExplainForeignScan(ForeignScanState *node, ExplainState *es);
-
-static void
-ifxBeginForeignScan(ForeignScanState *node, int eflags);
-
-static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node);
-
-static void ifxReScanForeignScan(ForeignScanState *state);
-
-static void ifxEndForeignScan(ForeignScanState *node);
+#if PG_VERSION_NUM < 90200
+#define PG_SCANSTATE_PRIVATE_P(a) \
+(List *) (FdwPlan *)(((ForeignScan *)(a)->ss.ps.plan)->fdwplan)->fdw_private
+#else
+#define PG_SCANSTATE_PRIVATE_P(a) \
+(List *) ((ForeignScan *)(a)->ss.ps.plan)->fdw_private
+#endif
 
 /*******************************************************************************
  * FDW helper functions.
  */
+static void ifxSetupFdwScan(IfxConnectionInfo    **coninfo,
+							IfxFdwExecutionState **state,
+							List    **plan_values,
+							Oid       foreignTableOid);
+
+static IfxFdwExecutionState *makeIfxFdwExecutionState();
+
 static StringInfoData *
 ifxFdwOptionsToStringBuf(Oid context);
 
@@ -119,8 +118,6 @@ static char *ifxGenCursorName(IfxConnectionInfo *coninfo);
 
 static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate);
 
-static IfxFdwExecutionState *makeIfxFdwExecutionState();
-
 static IfxSqlStateClass
 ifxCatchExceptions(IfxStatementInfo *state, unsigned short stackentry);
 
@@ -133,7 +130,8 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 								   bool *isnull);
 
 
-static void ifxPrepareCursorForScan(IfxStatementInfo *info);
+static void ifxPrepareCursorForScan(IfxStatementInfo *info,
+									IfxConnectionInfo *coninfo);
 
 static char *ifxFilterQuals(PlannerInfo *planInfo,
 							RelOptInfo *baserel,
@@ -141,6 +139,48 @@ static char *ifxFilterQuals(PlannerInfo *planInfo,
 
 static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 									IfxConnectionInfo *coninfo);
+
+/*******************************************************************************
+ * FDW callback routines.
+ */
+
+#if PG_VERSION_NUM >= 90200
+
+static void ifxGetForeignRelSize(PlannerInfo *root,
+								 RelOptInfo *baserel,
+								 Oid foreignTableId);
+static void ifxGetForeignPaths(PlannerInfo *root,
+							   RelOptInfo *baserel,
+							   Oid foreignTableId);
+static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
+									  RelOptInfo *baserel,
+									  Oid foreignTableId,
+									  ForeignPath *best_path,
+									  List *tlist,
+									  List *scan_clauses);
+
+#else
+
+static FdwPlan *ifxPlanForeignScan(Oid foreignTableOid,
+								   PlannerInfo *planInfo,
+								   RelOptInfo *baserel);
+
+#endif
+
+static void
+ifxExplainForeignScan(ForeignScanState *node, ExplainState *es);
+
+static void
+ifxBeginForeignScan(ForeignScanState *node, int eflags);
+
+static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node);
+
+static void ifxReScanForeignScan(ForeignScanState *state);
+
+static void ifxEndForeignScan(ForeignScanState *node);
+
+static void ifxPrepareScan(IfxConnectionInfo *coninfo,
+						   IfxFdwExecutionState *state);
 
 /*******************************************************************************
  * SQL status and helper functions.
@@ -152,6 +192,380 @@ ifxGetConnections(PG_FUNCTION_ARGS);
 /*******************************************************************************
  * Implementation starts here
  */
+
+/*
+ * Entry point for scan preparation. Does all the leg work
+ * for preparing the query and cursor definitions before
+ * entering the executor.
+ */
+static void ifxPrepareScan(IfxConnectionInfo *coninfo,
+						   IfxFdwExecutionState *state)
+{
+	/*
+	 * Prepare parameters of the state structure
+	 * for scan later.
+	 */
+	ifxPrepareParamsForScan(state, coninfo);
+
+	/* Finally do the cursor preparation */
+	ifxPrepareCursorForScan(&state->stmt_info, coninfo);
+}
+
+static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
+							IfxFdwExecutionState **state,
+							List    **plan_values,
+							Oid       foreignTableOid)
+{
+	bool                  conn_cached;
+	IfxSqlStateClass      err;
+
+	/*
+	 * If not already done, initialize cache data structures.
+	 */
+	InformixCacheInit();
+
+	/*
+	 * Save parameters for later use
+	 * in executor.
+	 */
+	*plan_values = NIL;
+
+	/*
+	 * Initialize connection structures and retrieve FDW options
+	 */
+
+	*coninfo = ifxMakeConnectionInfo(foreignTableOid);
+	elog(DEBUG1, "informix connection dsn \"%s\"", (*coninfo)->dsn);
+
+	/*
+	 * Make a generic informix execution state
+	 * structure.
+	 */
+	*state = makeIfxFdwExecutionState();
+
+	/*
+	 * Lookup the connection name in the connection cache.
+	 */
+	ifxConnCache_add(foreignTableOid, *coninfo, &conn_cached);
+
+	/*
+	 * Establish a new INFORMIX connection with transactions,
+	 * in case a new one needs to be created. Otherwise make
+	 * the requested connection current.
+	 */
+	if (!conn_cached)
+	{
+		ifxCreateConnectionXact(*coninfo);
+		elog(DEBUG2, "created new cached informix connection \"%s\"",
+			 (*coninfo)->conname);
+	}
+	else
+	{
+		/*
+		 * Make the requested connection current.
+		 */
+		ifxSetConnection(*coninfo);
+		elog(DEBUG2, "reusing cached informix connection \"%s\"",
+			 (*coninfo)->conname);
+	}
+
+	/*
+	 * Check connection status. This should happen directly
+	 * after connection establishing, otherwise we might get confused by
+	 * other ESQL API calls in the meantime.
+	 */
+	if ((err = ifxConnectionStatus()) != IFX_CONNECTION_OK)
+	{
+		if (err == IFX_CONNECTION_WARN)
+		{
+			IfxSqlStateMessage message;
+			ifxGetSqlStateMessage(1, &message);
+
+			ereport(WARNING, (errcode(WARNING),
+							  errmsg("opened informix connection with warnings"),
+							  errdetail("informix SQLSTATE %s: \"%s\"",
+										message.sqlstate, message.text)));
+		}
+
+		if (err == IFX_CONNECTION_ERROR)
+		{
+			/*
+			 * If we are here, something went wrong with connection
+			 * establishing. Remove the already cached entry and force
+			 * the connection to re-established again later.
+			 */
+			ifxConnCache_rm((*coninfo)->conname, &conn_cached);
+
+			/* finally, error out */
+			elog(ERROR, "could not open connection to informix server: SQLCODE=%d",
+				 ifxGetSqlCode());
+		}
+	}
+
+	/*
+	 * Check if this database was opened using
+	 * transactions.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+	{
+		elog(DEBUG1, "informix database connection using transactions");
+		(*coninfo)->tx_enabled = 1;
+	}
+}
+
+/*
+ * Returns a fully initialized pointer to
+ * an IfxFdwExecutionState structure. All pointers
+ * are initialized to NULL.
+ */
+static IfxFdwExecutionState *makeIfxFdwExecutionState()
+{
+	IfxFdwExecutionState *state = palloc(sizeof(IfxFdwExecutionState));
+
+	bzero(state->stmt_info.conname, IFX_CONNAME_LEN + 1);
+	state->stmt_info.cursorUsage = IFX_DEFAULT_CURSOR;
+
+	state->stmt_info.query        = NULL;
+	state->stmt_info.predicate    = NULL;
+	state->stmt_info.cursor_name  = NULL;
+	state->stmt_info.stmt_name    = NULL;
+	state->stmt_info.descr_name   = NULL;
+	state->stmt_info.sqlda        = NULL;
+	state->stmt_info.ifxAttrCount = 0;
+	state->stmt_info.ifxAttrDefs  = NULL;
+	state->stmt_info.call_stack   = IFX_STACK_EMPTY;
+	state->stmt_info.row_size     = 0;
+
+	bzero(state->stmt_info.sqlstate, 6);
+	state->stmt_info.exception_count = 0;
+
+	state->pgAttrCount = 0;
+	state->pgAttrDefs  = NULL;
+	state->values = NULL;
+
+	return state;
+}
+
+#if PG_VERSION_NUM >= 90200
+
+/*
+ * Get the foreign informix relation estimates. This function
+ * is also responsible to setup the informix database connection
+ * and create a corresponding cached connection, if not already
+ * done.
+ */
+static void ifxGetForeignRelSize(PlannerInfo *planInfo,
+								 RelOptInfo *baserel,
+								 Oid foreignTableId)
+{
+	IfxConnectionInfo    *coninfo;
+	List                 *plan_values;
+	IfxFdwExecutionState *state;
+	IfxFdwPlanState      *planState;
+
+	elog(DEBUG3, "informix_fdw: get foreign relation size");
+
+	planState = palloc(sizeof(IfxFdwPlanState));
+
+	/*
+	 * Establish remote informix connection or get
+	 * a already cached connection from the informix connection
+	 * cache.
+	 */
+	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableId);
+
+	/*
+	 * Check for predicates that can be pushed down
+	 * to the informix server, but skip it in case the user
+	 * has set the disable_predicate_pushdown option...
+	 */
+	if (coninfo->predicate_pushdown)
+	{
+		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
+													foreignTableId);
+		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
+	}
+	else
+	{
+		elog(DEBUG2, "predicate pushdown disabled");
+		state->stmt_info.predicate = "";
+	}
+
+	/*
+	 * Establish the remote query on the informix server. To do this,
+	 * we create the cursor, which will allow us to get the cost estimates
+	 * informix calculates for the query execution. We _don't_ open the
+	 * cursor yet, this is left to the executor later.
+	 */
+	ifxPrepareScan(coninfo, state);
+
+	/*
+	 * Now it should be possible to get the cost estimates
+	 * from the actual cursor.
+	 */
+	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
+	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
+
+	/* should be calculated nrows from foreign table */
+	baserel->rows        = coninfo->planData.estimated_rows;
+	planState->coninfo   = coninfo;
+	planState->state     = state;
+	baserel->fdw_private = (void *) planState;
+}
+
+/*
+ * Create possible access paths for the foreign data
+ * scan. Consider any pushdown predicate and create
+ * an appropiate path for it.
+ */
+static void ifxGetForeignPaths(PlannerInfo *root,
+							   RelOptInfo *baserel,
+							   Oid foreignTableId)
+{
+	IfxFdwPlanState *planState;
+
+	elog(DEBUG3, "informix_fdw: get foreign paths");
+
+	planState = (IfxFdwPlanState *) baserel->fdw_private;
+
+	/*
+	 * Create a generic foreign path for now. We need to consider any
+	 * restriction quals later, to get a smarter path generation here.
+	 *
+	 * For example, it is quite interesting to consider any index scans
+	 * or sorted output on the remote side and reflect it in the
+	 * choosen paths (helps nested loops et al.).
+	 */
+	add_path(baserel, (Path *)
+			 create_foreignscan_path(root, baserel,
+									 baserel->rows,
+									 planState->coninfo->planData.costs,
+									 planState->coninfo->planData.costs,
+									 NIL,
+									 NULL,
+									 NIL));
+}
+
+static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
+									  RelOptInfo *baserel,
+									  Oid foreignTableId,
+									  ForeignPath *best_path,
+									  List *tlist,
+									  List *scan_clauses)
+{
+	Index scan_relid;
+	IfxFdwPlanState  *planState;
+	List             *plan_values;
+
+	elog(DEBUG3, "informix_fdw: get foreign plan");
+
+	scan_relid = baserel->relid;
+	planState = (IfxFdwPlanState *) baserel->fdw_private;
+
+	scan_clauses = extract_actual_clauses(scan_clauses, false);
+
+	/*
+	 * Serialize current plan data into a format suitable
+	 * for copyObject() later. This is required to be able to
+	 * push down the collected information here down to the
+	 * executor.
+	 */
+	plan_values = ifxSerializePlanData(planState->coninfo,
+									   planState->state,
+									   root);
+
+	return make_foreignscan(tlist,
+							scan_clauses,
+							scan_relid,
+							NIL,
+							plan_values);
+}
+
+#else
+
+/*
+ * ifxPlanForeignScan
+ *
+ * Plans a foreign scan on an remote informix relation.
+ */
+static FdwPlan *
+ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baserel)
+{
+	IfxConnectionInfo    *coninfo;
+	FdwPlan              *plan;
+	List                 *plan_values;
+	IfxFdwExecutionState *state;
+
+	elog(DEBUG3, "informix_fdw: plan scan");
+
+	/*
+	 * Prepare a generic plan structure
+	 */
+	plan = makeNode(FdwPlan);
+
+	/*
+	 * Establish remote informix connection or get
+	 * a already cached connection from the informix connection
+	 * cache.
+	 */
+	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableOid);
+
+	/*
+	 * Check for predicates that can be pushed down
+	 * to the informix server, but skip it in case the user
+	 * has set the disable_predicate_pushdown option...
+	 */
+	if (coninfo->predicate_pushdown)
+	{
+		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
+													foreignTableOid);
+		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
+	}
+	else
+	{
+		elog(DEBUG2, "predicate pushdown disabled");
+		state->stmt_info.predicate = "";
+	}
+
+	/*
+	 * Prepare parameters of the state structure
+	 * and cursor definition.
+	 */
+	ifxPrepareScan(coninfo, state);
+
+	/*
+	 * After declaring the cursor we are able to retrieve
+	 * row and cost estimates via SQLCA fields. Do that and save
+	 * them into the IfxPlanData structure member of
+	 * IfxConnectionInfo and, more important, assign the
+	 * values to our plan node.
+	 */
+	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
+	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
+	baserel->rows = coninfo->planData.estimated_rows;
+	plan->startup_cost = 0.0;
+	plan->total_cost = coninfo->planData.costs + plan->startup_cost;
+
+	/*
+	 * Save parameters to our plan. We need to make sure they
+	 * are copyable by copyObject(), so use a list with
+	 * bytea const nodes.
+	 *
+	 * NOTE: we *must* not allocate serialized nodes within
+	 *       the current memory context, because this will crash
+	 *       on prepared statements and subsequent EXECUTE calls
+	 *       since they will be freed after. Instead, use the
+	 *       planner context, which will remain as long as
+	 *       the plan exists.
+	 *
+	 */
+	plan_values = ifxSerializePlanData(coninfo, state, planInfo);
+	plan->fdw_private = plan_values;
+
+	return plan;
+}
+
+#endif
 
 /*
  * ifxPushCallstack()
@@ -312,39 +726,6 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 	ifxPushCallstack(state, stackentry);
 
 	return errclass;
-}
-
-/*
- * Returns a fully initialized pointer to
- * an IfxFdwExecutionState structure. All pointers
- * are initialized to NULL.
- */
-static IfxFdwExecutionState *makeIfxFdwExecutionState()
-{
-	IfxFdwExecutionState *state = palloc(sizeof(IfxFdwExecutionState));
-
-	bzero(state->stmt_info.conname, IFX_CONNAME_LEN + 1);
-	state->stmt_info.cursorUsage = IFX_DEFAULT_CURSOR;
-
-	state->stmt_info.query        = NULL;
-	state->stmt_info.predicate    = NULL;
-	state->stmt_info.cursor_name  = NULL;
-	state->stmt_info.stmt_name    = NULL;
-	state->stmt_info.descr_name   = NULL;
-	state->stmt_info.sqlda        = NULL;
-	state->stmt_info.ifxAttrCount = 0;
-	state->stmt_info.ifxAttrDefs  = NULL;
-	state->stmt_info.call_stack   = IFX_STACK_EMPTY;
-	state->stmt_info.row_size     = 0;
-
-	bzero(state->stmt_info.sqlstate, 6);
-	state->stmt_info.exception_count = 0;
-
-	state->pgAttrCount = 0;
-	state->pgAttrDefs  = NULL;
-	state->values = NULL;
-
-	return state;
 }
 
 /*
@@ -604,12 +985,24 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 {
 	FdwRoutine *fdwRoutine = makeNode(FdwRoutine);
 
-	fdwRoutine->PlanForeignScan    = ifxPlanForeignScan;
 	fdwRoutine->ExplainForeignScan = ifxExplainForeignScan;
 	fdwRoutine->BeginForeignScan   = ifxBeginForeignScan;
 	fdwRoutine->IterateForeignScan = ifxIterateForeignScan;
 	fdwRoutine->EndForeignScan     = ifxEndForeignScan;
 	fdwRoutine->ReScanForeignScan  = ifxReScanForeignScan;
+
+	#if PG_VERSION_NUM < 90200
+
+	fdwRoutine->PlanForeignScan    = ifxPlanForeignScan;
+
+	#else
+
+	fdwRoutine->GetForeignRelSize = ifxGetForeignRelSize;
+	fdwRoutine->GetForeignPaths   = ifxGetForeignPaths;
+	fdwRoutine->GetForeignPlan    = ifxGetForeignPlan;
+
+	#endif
+
 
 	PG_RETURN_POINTER(fdwRoutine);
 }
@@ -919,14 +1312,14 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	IfxCachedConnection  *cached;
 	Oid                   foreignTableOid;
 	bool                  conn_cached;
-	FdwPlan              *plan;
+	List                 *plan_values;
 
 	elog(DEBUG3, "informix_fdw: begin scan");
 
-	plan = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
+	plan_values = PG_SCANSTATE_PRIVATE_P(node);
 	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	Assert((foreignTableOid != InvalidOid));
-	coninfo = ifxMakeConnectionInfo(foreignTableOid);
+	coninfo= ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
 	 * ifxPlanForeignScan() already should have added a cached
@@ -947,21 +1340,19 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	/*
 	 * Cached plan data present?
 	 */
-	if (plan->fdw_private != NULL)
+	if (PG_SCANSTATE_PRIVATE_P(node) != NULL)
 	{
-
 		/*
 		 * Retrieved cached parameters formerly prepared
 		 * by ifxPlanForeignScan().
 		 */
-		ifxDeserializeFdwData(festate, plan);
+		ifxDeserializeFdwData(festate, plan_values);
 	}
 	else
 	{
 		elog(DEBUG1, "informix_fdw no cached plan data");
 		ifxPrepareParamsForScan(festate, coninfo);
 	}
-
 
 	/*
 	 * Recheck if everything is already prepared on the
@@ -971,7 +1362,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 * some cycles when just doing plain SELECTs.
 	 */
 	if (festate->stmt_info.call_stack == IFX_STACK_EMPTY)
-		ifxPrepareCursorForScan(&festate->stmt_info);
+		ifxPrepareCursorForScan(&festate->stmt_info, coninfo);
 
 	/*
 	 * Get the definition of the local foreign table attributes.
@@ -1257,14 +1648,13 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 static void ifxEndForeignScan(ForeignScanState *node)
 {
 	IfxFdwExecutionState *state;
-	FdwPlan              *plan;
+	List                 *plan_values;
 
 	elog(DEBUG3, "informix_fdw: end scan");
 
 	state = (IfxFdwExecutionState *) node->fdw_state;
-	plan  = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
-
-	ifxDeserializeFdwData(state, plan);
+	plan_values = PG_SCANSTATE_PRIVATE_P(node);
+	ifxDeserializeFdwData(state, plan_values);
 
 	/*
 	 * Dispose SQLDA resource, allocated database objects, ...
@@ -1276,7 +1666,7 @@ static void ifxEndForeignScan(ForeignScanState *node)
 	 * is necessary to teach ifxBeginForeignScan() to do the
 	 * right thing(tm)...
 	 */
-	ifxSetSerializedInt16Field((List *)plan->fdw_private,
+	ifxSetSerializedInt16Field(plan_values,
 							   SERIALIZED_CALLSTACK,
 							   state->stmt_info.call_stack);
 }
@@ -1489,197 +1879,6 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 }
 
 /*
- * ifxPlanForeignScan
- *
- * Plans a foreign scan on an remote informix relation.
- */
-static FdwPlan *
-ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baserel)
-{
-
-	IfxConnectionInfo    *coninfo;
-	bool                  conn_cached;
-	FdwPlan              *plan;
-	IfxSqlStateClass      err;
-	List                 *plan_values;
-	IfxFdwExecutionState *state;
-
-	elog(DEBUG3, "informix_fdw: plan scan");
-
-	/*
-	 * If not already done, initialize cache data structures.
-	 */
-	InformixCacheInit();
-
-	/*
-	 * Save parameters for later use
-	 * in executor.
-	 */
-	plan_values = NIL;
-
-	/*
-	 * Prepare a generic plan structure
-	 */
-	plan = makeNode(FdwPlan);
-
-	/*
-	 * Initialize connection structures and retrieve FDW options
-	 */
-
-	coninfo = ifxMakeConnectionInfo(foreignTableOid);
-	elog(DEBUG1, "informix connection dsn \"%s\"", coninfo->dsn);
-
-	/*
-	 * Make a generic informix execution state
-	 * structure.
-	 */
-	state = makeIfxFdwExecutionState();
-
-	/*
-	 * Lookup the connection name in the connection cache.
-	 */
-	ifxConnCache_add(foreignTableOid, coninfo, &conn_cached);
-
-	/*
-	 * Establish a new INFORMIX connection with transactions,
-	 * in case a new one needs to be created. Otherwise make
-	 * the requested connection current.
-	 */
-	if (!conn_cached)
-	{
-		ifxCreateConnectionXact(coninfo);
-		elog(DEBUG2, "created new cached informix connection \"%s\"",
-			 coninfo->conname);
-	}
-	else
-	{
-		/*
-		 * Make the requested connection current.
-		 */
-		ifxSetConnection(coninfo);
-		elog(DEBUG2, "reusing cached informix connection \"%s\"",
-			 coninfo->conname);
-	}
-
-	/*
-	 * Check connection status. This should happen directly
-	 * after connection establishing, otherwise we might get confused by
-	 * other ESQL API calls in the meantime.
-	 */
-	if ((err = ifxConnectionStatus()) != IFX_CONNECTION_OK)
-	{
-		if (err == IFX_CONNECTION_WARN)
-		{
-			IfxSqlStateMessage message;
-			ifxGetSqlStateMessage(1, &message);
-
-			ereport(WARNING, (errcode(WARNING),
-							  errmsg("opened informix connection with warnings"),
-							  errdetail("informix SQLSTATE %s: \"%s\"",
-										message.sqlstate, message.text)));
-		}
-
-		if (err == IFX_CONNECTION_ERROR)
-		{
-			/*
-			 * If we are here, something went wrong with connection
-			 * establishing. Remove the already cached entry and force
-			 * the connection to re-established again later.
-			 */
-			ifxConnCache_rm(coninfo->conname, &conn_cached);
-
-			/* finally, error out */
-			elog(ERROR, "could not open connection to informix server: SQLCODE=%d",
-				 ifxGetSqlCode());
-		}
-	}
-
-	/*
-	 * Check if this database was opened using
-	 * transactions.
-	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
-	{
-		elog(DEBUG1, "informix database connection using transactions");
-		coninfo->tx_enabled = 1;
-	}
-
-	/*
-	 * Check for predicates that can be pushed down
-	 * to the informix server, but skip it in case the user
-	 * has set the disable_predicate_pushdown option...
-	 */
-	if (coninfo->predicate_pushdown)
-	{
-		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
-													foreignTableOid);
-		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
-	}
-	else
-	{
-		elog(DEBUG2, "predicate pushdown disabled");
-		state->stmt_info.predicate = "";
-	}
-
-	/*
-	 * Prepare parameters of the state structure
-	 * for scan later.
-	 */
-	ifxPrepareParamsForScan(state, coninfo);
-
-	/*
-	 * Generate a statement identifier. Required to uniquely
-	 * identify the prepared statement within Informix.
-	 */
-	state->stmt_info.stmt_name = ifxGenStatementName(coninfo);
-
-	/*
-	 * An identifier for the dynamically allocated
-	 * DESCRIPTOR area.
-	 */
-	state->stmt_info.descr_name = ifxGenDescrName(coninfo);
-
-	/*
-	 * ...and finally the cursor name.
-	 */
-	state->stmt_info.cursor_name = ifxGenCursorName(coninfo);
-
-	/* Finally do the preparation */
-	ifxPrepareCursorForScan(&state->stmt_info);
-
-	/*
-	 * After declaring the cursor we are able to retrieve
-	 * row and cost estimates via SQLCA fields. Do that and save
-	 * them into the IfxPlanData structure member of
-	 * IfxConnectionInfo and, more important, assign the
-	 * values to our plan node.
-	 */
-	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
-	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
-	baserel->rows = coninfo->planData.estimated_rows;
-	plan->startup_cost = 0.0;
-	plan->total_cost = coninfo->planData.costs + plan->startup_cost;
-
-	/*
-	 * Save parameters to our plan. We need to make sure they
-	 * are copyable by copyObject(), so use a list with
-	 * bytea const nodes.
-	 *
-	 * NOTE: we *must* not allocate serialized nodes within
-	 *       the current memory context, because this will crash
-	 *       on prepared statements and subsequent EXECUTE calls
-	 *       since they will be freed after. Instead, use the
-	 *       planner context, which will remain as long as
-	 *       the plan exists.
-	 *
-	 */
-	plan_values = ifxSerializePlanData(coninfo, state, planInfo);
-	plan->fdw_private = plan_values;
-
-	return plan;
-}
-
-/*
  * ifxPrepareCursorForScan()
  *
  * Prepares the remote informix FDW to scan the relation.
@@ -1701,8 +1900,26 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
  * to check, since the only thing we need to do in ifxBeginForeignScan()
  * is to recheck wether the call stack is empty or not.
  */
-static void ifxPrepareCursorForScan(IfxStatementInfo *info)
+static void ifxPrepareCursorForScan(IfxStatementInfo *info,
+									IfxConnectionInfo *coninfo)
 {
+	/*
+	 * Generate a statement identifier. Required to uniquely
+	 * identify the prepared statement within Informix.
+	 */
+	info->stmt_name = ifxGenStatementName(coninfo);
+
+	/*
+	 * An identifier for the dynamically allocated
+	 * DESCRIPTOR area.
+	 */
+	info->descr_name = ifxGenDescrName(coninfo);
+
+	/*
+	 * ...and finally the cursor name.
+	 */
+	info->cursor_name = ifxGenCursorName(coninfo);
+
 	/* Prepare the query. */
 	elog(DEBUG1, "prepare query \"%s\"", info->query);
 	ifxPrepareQuery(info->query,
@@ -1727,15 +1944,15 @@ static void
 ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
 	IfxFdwExecutionState *festate;
-	FdwPlan              *plan;
+	List                 *plan_values;
 
 	festate = (IfxFdwExecutionState *) node->fdw_state;
 
 	/*
 	 * XXX: We need to get the info from the cached connection!
 	 */
-	plan = (FdwPlan *)((ForeignScan *)node->ss.ps.plan)->fdwplan;
-	ifxDeserializeFdwData(festate, plan);
+	plan_values = PG_SCANSTATE_PRIVATE_P(node);
+	ifxDeserializeFdwData(festate, plan_values);
 
 	/* Give some possibly useful info about startup costs */
 	if (es->costs)

@@ -63,7 +63,7 @@ List * ifxSerializePlanData(IfxConnectionInfo *coninfo,
 							IfxFdwExecutionState *state,
 							PlannerInfo *plan);
 void ifxDeserializeFdwData(IfxFdwExecutionState *state,
-								  FdwPlan *plan);
+						   void *fdw_private);
 int2 ifxGetSerializedInt16Field(List *list, int ident);
 int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);

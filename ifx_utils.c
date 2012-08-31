@@ -25,12 +25,14 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
  * data previously retrieved in ifxPlanForeignScan().
  */
 void ifxDeserializeFdwData(IfxFdwExecutionState *state,
-						   FdwPlan *plan)
+						   void *fdw_private)
 {
 	List *params;
 	Assert(state != NULL);
 
-	params = (List *) plan->fdw_private;
+	params = (List *) fdw_private;
+
+	Assert(params != NIL);
 
 	state->stmt_info.query = ifxGetSerializedStringField(params,
 														 SERIALIZED_QUERY);

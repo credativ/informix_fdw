@@ -31,6 +31,9 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodes.h"
 #include "optimizer/cost.h"
+#include "optimizer/pathnode.h"
+#include "optimizer/planmain.h"
+#include "optimizer/restrictinfo.h"
 #include "storage/fd.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -127,6 +130,21 @@ typedef struct IfxFdwExecutionState
 	IfxValue *values;
 
 } IfxFdwExecutionState;
+
+#if PG_VERSION_NUM >= 90200
+
+/*
+ * PostgreSQL > 9.2 uses a much smarter planning infrastructure which
+ * requires us to submit state structures to different callbacks. Unify
+ * them to a single structure to ease passing them around.
+ */
+typedef struct IfxFdwPlanState
+{
+	IfxConnectionInfo *coninfo;
+	IfxFdwExecutionState *state;
+} IfxFdwPlanState;
+
+#endif
 
 /*
  * PostgreSQL operator types supported for pushdown

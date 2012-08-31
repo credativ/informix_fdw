@@ -453,6 +453,10 @@ int ifxExceptionCount()
 	return result;
 }
 
+/*
+ * Deallocate SQLDA structure from the current statement
+ * info structure.
+ */
 void ifxDeallocateSQLDA(IfxStatementInfo *state)
 {
 	/*
