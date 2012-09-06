@@ -969,12 +969,55 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		return false;
 
 	/*
+	 * Handle BoolExpr. Recurse into its arguments
+	 * and try to decode its OpExpr accordingly.
+	 */
+	if (IsA(node, BoolExpr))
+	{
+		BoolExpr *boolexpr;
+
+		elog(DEBUG2, "decode BoolExpr");
+
+		boolexpr = (BoolExpr *) node;
+
+		/*
+		 * Save boolean expression type.
+		 */
+		info = palloc(sizeof(IfxPushdownOprInfo));
+		info->expr = NULL;
+
+		switch (boolexpr->boolop)
+		{
+			case AND_EXPR:
+				info->type = IFX_OPR_AND;
+				info->expr_string = cstring_to_text("AND");
+				break;
+			case OR_EXPR:
+				info->type = IFX_OPR_OR;
+				info->expr_string = cstring_to_text("OR");
+				break;
+			case NOT_EXPR:
+				info->type = IFX_OPR_NOT;
+				info->expr_string = cstring_to_text("NOT");
+				break;
+			default:
+				elog(ERROR, "unsupported boolean expression type");
+		}
+
+		context->predicates = lappend(context->predicates, info);
+		context->count++;
+
+		return expression_tree_walker(node,
+									  ifx_predicate_tree_walker,
+									  (void *) context);
+	}
+
+	/*
 	 * Check wether this is an OpExpr. If true,
 	 * recurse into it...
 	 */
 	if (IsA(node, OpExpr))
 	{
-		IfxPushdownOprInfo *info;
 		OpExpr *opr;
 
 		info = palloc(sizeof(IfxPushdownOprInfo));
@@ -1005,6 +1048,13 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 										  (void *) context);
 		}
 	}
+
+	/*
+	 * We're done in case no valid supported expressions
+	 * were found.
+	 */
+	if (context->count <= 0)
+		return true;
 
 	info = list_nth(context->predicates, context->count - 1);
 

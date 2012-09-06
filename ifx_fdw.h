@@ -159,6 +159,9 @@ typedef enum IfxOprType
 	IFX_OPR_GT,
 	IFX_OPR_LT,
 	IFX_OPR_LIKE,
+	IFX_OPR_AND,
+	IFX_OPR_OR,
+	IFX_OPR_NOT,
 	IFX_OPR_NOT_SUPPORTED,
 	IFX_OPR_UNKNOWN
 } IfxOprType;
@@ -169,10 +172,6 @@ typedef enum IfxOprType
 typedef struct IfxPushdownOprInfo
 {
 	IfxOprType type;
-	/* Oid        pg_opr_nsp;    /\* operator schema *\/ */
-	/* Oid        pg_opr_left;   /\* left operand *\/ */
-	/* Oid        pg_opr_right;  /\* right operand *\/ */
-	/* Datum      const_val;     /\* constant value *\/ */
 	OpExpr    *expr;          /* pointer to operator expression */
 	text      *expr_string;   /* decoded string representation of expr */
 	AttrNumber pg_attnum;     /* attribute number of foreign table */

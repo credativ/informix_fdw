@@ -1828,6 +1828,7 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	IfxPushdownOprContext pushdownCxt;
 	ListCell             *cell;
 	StringInfoData       *buf;
+	char                 *oprStr;
 	int i;
 
 	Assert(foreignTableOid != InvalidOid);
@@ -1854,6 +1855,12 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	}
 
 	/*
+	 * Since restriction clauses are always AND together,
+	 * assume a AND_EXPR per default.
+	 */
+	oprStr = "AND";
+
+	/*
 	 * Filter step done, if any predicates to be able to be
 	 * pushed down are found, we have a list of IfxPushDownOprInfo
 	 * structure in the IfxPushdownOprContext structure. Loop
@@ -1866,11 +1873,24 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 
 		info = (IfxPushdownOprInfo *) list_nth(pushdownCxt.predicates, i);
 
-		if (info->type != IFX_OPR_NOT_SUPPORTED)
+		if ((info->type != IFX_OPR_OR)
+			&& (info->type != IFX_OPR_AND)
+			&& (info->type != IFX_OPR_NOT))
 		{
-			appendStringInfo(buf, "%s%s",
-							 (i > 0) ? " AND " : "",
-							 text_to_cstring(info->expr_string));
+			if (info->type != IFX_OPR_NOT_SUPPORTED)
+			{
+				appendStringInfo(buf, " %s %s",
+								 (i > 1) ? oprStr : "",
+								 text_to_cstring(info->expr_string));
+			}
+			else
+				continue;
+		}
+		else
+		{
+			/* save current boolean opr context */
+			oprStr = text_to_cstring(info->expr_string);
+			elog(DEBUG2, "decoded boolean expr %s", oprStr);
 		}
 	}
 
