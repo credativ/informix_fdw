@@ -1,0 +1,6 @@
+*~
+*.*~
+ifx_connection.c
+*.so
+*.o
+.deps/
