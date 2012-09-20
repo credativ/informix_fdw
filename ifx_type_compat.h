@@ -107,7 +107,11 @@ typedef enum IfxSqlStateClass
 	IFX_CONNECTION_WARN = 201,
 	IFX_CONNECTION_ERROR = 202,
 
-	IFX_STATE_UNKNOWN = 1000
+	IFX_STATE_UNKNOWN = 1000,
+
+	/* specific SQL object errors */
+	IFX_ERROR_TABLE_NOT_FOUND = 2000,
+	IFX_ERROR_INVALID_NAME    = 2001,
 } IfxSqlStateClass;
 
 /*

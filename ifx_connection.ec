@@ -20,9 +20,12 @@ EXEC SQL include sqlda;
 EXEC SQL include "int8.h";
 EXEC SQL include "decimal.h";
 
+/* Don't trap errors. Default, but force it explicitely */
+EXEC SQL WHENEVER SQLERROR CONTINUE;
+
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
-						struct sqlvar_struct *ifx_value);
+												struct sqlvar_struct *ifx_value);
 
 /*
  * Establish a named INFORMIX database connection with transactions
@@ -48,7 +51,6 @@ extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 
 	EXEC SQL CONNECT TO :ifxdsn AS :ifxconname
 		USER :ifxuser USING :ifxpass WITH CONCURRENT TRANSACTION;
-
 }
 
 int ifxGetSQLCAErrd(signed short ca)
@@ -326,8 +328,39 @@ IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
 				break;
 			default:
 				/* error */
+				errclass = IFX_ERROR;
 				break;
 		}
+	}
+	else if (SQLSTATE[0] == '4')
+	{
+		/*
+		 * Map SQL errors
+		 *
+		 * Currently we pay special attention to
+		 * SQLSTATE 42000 (syntax error) and 4040
+		 * (invalid transaction state).
+		 */
+		if ((SQLSTATE[1] == '0')
+			|| (SQLSTATE[1] == '2'))
+		{
+			errclass = IFX_ERROR;
+		}
+	}
+	else if (SQLSTATE[0] == 'S')
+	{
+		/*
+		 * S0 SQLSTATE messages carry object errors
+		 * or conflicts, such as tables already existing
+		 * or missing or invalid names.
+		 * Trap them accordingly and map them
+		 * to a specific error code.
+		 */
+		if (strncmp(SQLSTATE, "S0002", 5) == 0)
+			errclass = IFX_ERROR_TABLE_NOT_FOUND;
+
+		if (strncmp(SQLSTATE, "S0000", 5) == 0)
+			errclass = IFX_ERROR_INVALID_NAME;
 	}
 
 	/*

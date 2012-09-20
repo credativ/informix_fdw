@@ -707,9 +707,17 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 								  errdetail("SQLSTATE %s", message.sqlstate)));
 				break;
 			case IFX_ERROR:
+			case IFX_ERROR_INVALID_NAME:
 				/* log ERROR */
 				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
 								errmsg("informix FDW error: \"%s\"",
+									   message.text),
+								errdetail("SQLSTATE %s", message.sqlstate)));
+				break;
+			case IFX_ERROR_TABLE_NOT_FOUND:
+				/* log missing FDW table */
+				ereport(ERROR, (errcode(ERRCODE_FDW_TABLE_NOT_FOUND),
+								errmsg("informix FDW missing table: \"%s\"",
 									   message.text),
 								errdetail("SQLSTATE %s", message.sqlstate)));
 				break;
@@ -1904,9 +1912,10 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
  * Prepares the remote informix FDW to scan the relation.
  * This basically means to allocate the SQLDA description area and
  * declaring the cursor. The reason why this is a separate function is,
- * that we are eventually required to do it twice, once in ifxPlanForeignScan()
- * and in ifxBeginForeignScan(). The reason for this is that we need the
- * query plan from the DECLARE CURSOR statement in ifxPlanForeignScan()
+ * that we are eventually required to do it twice,
+ * once in ifxPlanForeignScan() and in ifxBeginForeignScan().
+ * When doing a scan, we  need the query plan from
+ * the DECLARE CURSOR statement in ifxPlanForeignScan()
  * to get the query costs from the informix server easily. However, that
  * involves declaring the cursor in ifxPlanForeignScan(), which will be then
  * reused in ifxBeginForeignScan() later. To save extra cycles and declaring
