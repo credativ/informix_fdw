@@ -975,41 +975,62 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	if (IsA(node, BoolExpr))
 	{
 		BoolExpr *boolexpr;
+		ListCell *cell;
 
 		elog(DEBUG2, "decode BoolExpr");
 
 		boolexpr = (BoolExpr *) node;
 
 		/*
-		 * Save boolean expression type.
+		 * Decode the arguments to the BoolExpr
+		 * directly, don't leave it to expression_tree_walker()
+		 *
+		 * By going down this route, we are able to push the
+		 * IfxPushdownOprInfo into our context list in the right
+		 * order.
 		 */
-		info = palloc(sizeof(IfxPushdownOprInfo));
-		info->expr = NULL;
-
-		switch (boolexpr->boolop)
+		foreach(cell, boolexpr->args)
 		{
-			case AND_EXPR:
-				info->type = IFX_OPR_AND;
-				info->expr_string = cstring_to_text("AND");
-				break;
-			case OR_EXPR:
-				info->type = IFX_OPR_OR;
-				info->expr_string = cstring_to_text("OR");
-				break;
-			case NOT_EXPR:
-				info->type = IFX_OPR_NOT;
-				info->expr_string = cstring_to_text("NOT");
-				break;
-			default:
-				elog(ERROR, "unsupported boolean expression type");
+			Node *bool_arg = (Node *) lfirst(cell);
+
+			elog(DEBUG2, "decode BoolExpr arg");
+
+			ifx_predicate_tree_walker(bool_arg, context);
+
+			/*
+			 * End of arguments?
+			 * If true, don't add additional pushdown info
+			 */
+			if (lnext(cell) != NULL)
+			{
+				/*
+				 * Save boolean expression type.
+				 */
+				info = palloc(sizeof(IfxPushdownOprInfo));
+				info->expr = NULL;
+
+				switch (boolexpr->boolop)
+				{
+					case AND_EXPR:
+						info->type        = IFX_OPR_AND;
+						info->expr_string = cstring_to_text("AND");
+						break;
+					case OR_EXPR:
+						info->type        = IFX_OPR_OR;
+						info->expr_string = cstring_to_text("OR");
+						break;
+					case NOT_EXPR:
+						info->type        = IFX_OPR_NOT;
+						info->expr_string = cstring_to_text("NOT");
+						break;
+					default:
+						elog(ERROR, "unsupported boolean expression type");
+				}
+
+				context->predicates = lappend(context->predicates, info);
+				context->count++;
+			}
 		}
-
-		context->predicates = lappend(context->predicates, info);
-		context->count++;
-
-		return expression_tree_walker(node,
-									  ifx_predicate_tree_walker,
-									  (void *) context);
 	}
 
 	/*
@@ -1019,6 +1040,8 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	if (IsA(node, OpExpr))
 	{
 		OpExpr *opr;
+
+		elog(DEBUG2, "decode OpExpr");
 
 		info = palloc(sizeof(IfxPushdownOprInfo));
 		info->expr = opr  = (OpExpr *)node;

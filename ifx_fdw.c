@@ -1848,10 +1848,26 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	foreach(cell, baserel->baserestrictinfo)
 	{
 		RestrictInfo *info;
+		IfxPushdownOprInfo *pushAndInfo;
 
 		info = (RestrictInfo *) lfirst(cell);
 
 		ifx_predicate_tree_walker((Node *)info->clause, &pushdownCxt);
+
+		/*
+		 * Each list element from baserestrictinfo is AND'ed together.
+		 * Record a corresponding IfxPushdownOprInfo structure in
+		 * the context, so that it get decoded properly below.
+		 */
+		if (lnext(cell) != NULL)
+		{
+			pushAndInfo              = palloc(sizeof(IfxPushdownOprInfo));
+			pushAndInfo->type        = IFX_OPR_AND;
+			pushAndInfo->expr_string = cstring_to_text("AND");
+
+			pushdownCxt.predicates = lappend(pushdownCxt.predicates, pushAndInfo);
+			pushdownCxt.count++;
+		}
 	}
 
 	/*
