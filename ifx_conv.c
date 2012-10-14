@@ -884,9 +884,6 @@ IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
 		elog(ERROR, "cache lookup failed for operator %u", oprid);
 
 	oprForm  = (Form_pg_operator)GETSTRUCT(oprtuple);
-	/* pushdownInfo->pg_opr_nsp   = oprForm->oprnamespace; */
-	/* pushdownInfo->pg_opr_left  = oprForm->oprleft; */
-	/* pushdownInfo->pg_opr_right = oprForm->oprright; */
 	oprname  = pstrdup(NameStr(oprForm->oprname));
 
 	ReleaseSysCache(oprtuple);
@@ -947,6 +944,20 @@ IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
 	/* currently never reached */
 	return IFX_OPR_UNKNOWN;
 }
+
+#define IFX_MARK_PREDICATE_NOT_SUPPORTED(a, b) \
+	(a)->type = IFX_OPR_NOT_SUPPORTED; (b)->num_scan_elems--; \
+	elog(DEBUG3, "num_scan_elems = %d", context->num_scan_elems);
+
+#define IFX_MARK_PREDICATE_ELEM(a, b) \
+	(b)->predicates = lappend((b)->predicates, (a)); \
+	(b)->count++; \
+	(b)->num_scan_elems++; \
+	elog(DEBUG3, "mark predicate num_scan_elems = %d", (b)->num_scan_elems);
+
+#define IFX_MARK_PREDICATE_BOOL(a, b) \
+	(b)->predicates = lappend((b)->predicates, (a)); \
+	(b)->count++;
 
 /*
  * ifx_predicate_tree_walker()
@@ -1027,10 +1038,14 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 						elog(ERROR, "unsupported boolean expression type");
 				}
 
-				context->predicates = lappend(context->predicates, info);
-				context->count++;
+				/* Push to the predicates list, but don't mark it
+				 * as a pushdown expression */
+				IFX_MARK_PREDICATE_BOOL(info, context);
 			}
 		}
+
+		/* done */
+		return true;
 	}
 
 	/*
@@ -1051,8 +1066,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		{
 			text *node_string;
 
-			context->predicates = lappend(context->predicates, info);
-			context->count++;
+			IFX_MARK_PREDICATE_ELEM(info, context);
 
 			/*
 			 * Try to deparse the OpExpr and save it
@@ -1087,11 +1101,40 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			 context->count - 1,
 			 info->type);
 
-		info->type = IFX_OPR_NOT_SUPPORTED;
+		IFX_MARK_PREDICATE_NOT_SUPPORTED(info, context);
+
+		/*
+		 * Check the parent pushdownInfo wether it is
+		 * a bool expression. In this case remove it altogether, too.
+		 */
+		if (context->count > 1)
+		{
+			IfxPushdownOprInfo *parentInfo;
+
+			parentInfo = list_nth(context->predicates, context->count - 2);
+
+			if ((parentInfo->type == IFX_OPR_OR)
+				|| (parentInfo->type == IFX_OPR_AND)
+				|| (parentInfo->type == IFX_OPR_NOT))
+			{
+				/*
+				 * mark it as not supported, even though it's valid
+				 * boolean expression. Doing this way will prevent
+				 * it from being printed out.
+				 *
+				 * Don_t use IFX_MARK_PREDICATE_NOT_SUPPORTED(), since
+				 * boolean expression don't increment num_scan_elems.
+				 */
+				elog(DEBUG2, "removed parent bool expr %s",
+					 text_to_cstring(parentInfo->expr_string));
+
+				parentInfo->type = IFX_OPR_NOT_SUPPORTED;
+			}
+		}
+
 		/* done */
 		return true;
 	}
 
 	return false;
-
 }

@@ -1844,6 +1844,7 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	pushdownCxt.foreign_relid = foreignTableOid;
 	pushdownCxt.predicates    = NIL;
 	pushdownCxt.count         = 0;
+	pushdownCxt.num_scan_elems = 0;
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
@@ -1856,19 +1857,41 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	foreach(cell, baserel->baserestrictinfo)
 	{
 		RestrictInfo *info;
-		IfxPushdownOprInfo *pushAndInfo;
 
 		info = (RestrictInfo *) lfirst(cell);
 
 		ifx_predicate_tree_walker((Node *)info->clause, &pushdownCxt);
 
+		elog(DEBUG3, "num_scan_elems = %d", pushdownCxt.num_scan_elems);
+		/*
+		 * Check if we have found any predicates which can be pushed
+		 * down to the informix server. ifx_predicate_tree_walker() has
+		 * marked any unsupported expression accordingly and decremented
+		 * the num_scan_elems counter respectively. Thus, it is sufficient
+		 * to check the num_scan_elems counter wether there is any predicate
+		 * remaining...
+		 */
+		if (pushdownCxt.num_scan_elems <= 0)
+		{
+			pushdownCxt.num_scan_elems = 0;
+			continue;
+		}
+
+		/*
+		 * Reset the num_scan_elems counter per baserestrictinfo item scan.
+		 */
+		pushdownCxt.num_scan_elems = 0;
+
 		/*
 		 * Each list element from baserestrictinfo is AND'ed together.
 		 * Record a corresponding IfxPushdownOprInfo structure in
-		 * the context, so that it get decoded properly below.
+		 * the context, so that it get decoded properly below, but only if
+		 * the filter step didn't exclude the expression from pushing down.
 		 */
 		if (lnext(cell) != NULL)
 		{
+			IfxPushdownOprInfo *pushAndInfo;
+
 			pushAndInfo              = palloc(sizeof(IfxPushdownOprInfo));
 			pushAndInfo->type        = IFX_OPR_AND;
 			pushAndInfo->expr_string = cstring_to_text("AND");
@@ -1897,18 +1920,20 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 
 		info = (IfxPushdownOprInfo *) list_nth(pushdownCxt.predicates, i);
 
+		/* ignore filtered expressions */
+		if (info->type == IFX_OPR_NOT_SUPPORTED)
+		{
+			continue;
+		}
+
+		/* ...but handle all others */
 		if ((info->type != IFX_OPR_OR)
 			&& (info->type != IFX_OPR_AND)
 			&& (info->type != IFX_OPR_NOT))
 		{
-			if (info->type != IFX_OPR_NOT_SUPPORTED)
-			{
-				appendStringInfo(buf, " %s %s",
-								 (i > 1) ? oprStr : "",
-								 text_to_cstring(info->expr_string));
-			}
-			else
-				continue;
+			appendStringInfo(buf, " %s %s",
+							 (i > 1) ? oprStr : "",
+							 text_to_cstring(info->expr_string));
 		}
 		else
 		{
