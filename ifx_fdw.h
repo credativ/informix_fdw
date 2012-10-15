@@ -187,8 +187,6 @@ typedef struct IfxPushdownOprContext
 	Oid   foreign_relid; /* OID of foreign table */
 	List *predicates;    /* list of IfxPushDownOprInfo */
 	int   count;         /* number of elements in predicates list */
-	int   num_scan_elems; /* Number of new elements per scan of
-						     ifx_predicate_tree_walker */
 } IfxPushdownOprContext;
 
 /*

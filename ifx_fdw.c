@@ -1844,7 +1844,6 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	pushdownCxt.foreign_relid = foreignTableOid;
 	pushdownCxt.predicates    = NIL;
 	pushdownCxt.count         = 0;
-	pushdownCxt.num_scan_elems = 0;
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
@@ -1862,31 +1861,10 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 
 		ifx_predicate_tree_walker((Node *)info->clause, &pushdownCxt);
 
-		elog(DEBUG3, "num_scan_elems = %d", pushdownCxt.num_scan_elems);
-		/*
-		 * Check if we have found any predicates which can be pushed
-		 * down to the informix server. ifx_predicate_tree_walker() has
-		 * marked any unsupported expression accordingly and decremented
-		 * the num_scan_elems counter respectively. Thus, it is sufficient
-		 * to check the num_scan_elems counter wether there is any predicate
-		 * remaining...
-		 */
-		if (pushdownCxt.num_scan_elems <= 0)
-		{
-			pushdownCxt.num_scan_elems = 0;
-			continue;
-		}
-
-		/*
-		 * Reset the num_scan_elems counter per baserestrictinfo item scan.
-		 */
-		pushdownCxt.num_scan_elems = 0;
-
 		/*
 		 * Each list element from baserestrictinfo is AND'ed together.
 		 * Record a corresponding IfxPushdownOprInfo structure in
-		 * the context, so that it get decoded properly below, but only if
-		 * the filter step didn't exclude the expression from pushing down.
+		 * the context, so that it get decoded properly below.
 		 */
 		if (lnext(cell) != NULL)
 		{

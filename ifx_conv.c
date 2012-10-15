@@ -946,14 +946,11 @@ IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
 }
 
 #define IFX_MARK_PREDICATE_NOT_SUPPORTED(a, b) \
-	(a)->type = IFX_OPR_NOT_SUPPORTED; (b)->num_scan_elems--; \
-	elog(DEBUG3, "num_scan_elems = %d", context->num_scan_elems);
+	(a)->type = IFX_OPR_NOT_SUPPORTED;
 
 #define IFX_MARK_PREDICATE_ELEM(a, b) \
 	(b)->predicates = lappend((b)->predicates, (a)); \
-	(b)->count++; \
-	(b)->num_scan_elems++; \
-	elog(DEBUG3, "mark predicate num_scan_elems = %d", (b)->num_scan_elems);
+	(b)->count++;
 
 #define IFX_MARK_PREDICATE_BOOL(a, b) \
 	(b)->predicates = lappend((b)->predicates, (a)); \
@@ -1052,7 +1049,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	 * Check wether this is an OpExpr. If true,
 	 * recurse into it...
 	 */
-	if (IsA(node, OpExpr))
+	else if (IsA(node, OpExpr))
 	{
 		OpExpr *opr;
 
@@ -1065,6 +1062,42 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
 		{
 			text *node_string;
+			bool  result;
+			ListCell *cell;
+			bool      operand_supported;
+
+			/*
+			 * Examine the operands of this operator expression. Please
+			 * note that we don't get further here, we stop at the first
+			 * layer even there are more nested expressions.
+			 */
+			operand_supported = true;
+			foreach(cell, opr->args)
+			{
+				Node *oprarg = lfirst(cell);
+
+				switch(oprarg->type)
+				{
+					case T_Var:
+					case T_Const:
+						break;
+					default:
+						operand_supported = false;
+						break;
+				}
+
+				/* exit immediately */
+				if(!operand_supported)
+					break;
+			}
+
+			/*
+			 * If any operand not supported is found, don't
+			 * bother adding this operator expression to the pushdown
+			 * predicate list.
+			 */
+			if (!operand_supported)
+				return true; /* done */
 
 			IFX_MARK_PREDICATE_ELEM(info, context);
 
@@ -1081,60 +1114,14 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			elog(DEBUG1, "deparsed pushdown predicate %d, %s",
 				 context->count - 1,
 				 text_to_cstring(info->expr_string));
-			return expression_tree_walker(node, ifx_predicate_tree_walker,
-										  (void *) context);
 		}
-	}
-
-	/*
-	 * We're done in case no valid supported expressions
-	 * were found.
-	 */
-	if (context->count <= 0)
-		return true;
-
-	info = list_nth(context->predicates, context->count - 1);
-
-	if (! IsA(node, Var) && ! IsA(node, Const))
-	{
-		elog(DEBUG3, "removed opr %d with type %d from pushdown list",
-			 context->count - 1,
-			 info->type);
-
-		IFX_MARK_PREDICATE_NOT_SUPPORTED(info, context);
-
-		/*
-		 * Check the parent pushdownInfo wether it is
-		 * a bool expression. In this case remove it altogether, too.
-		 */
-		if (context->count > 1)
+		else
 		{
-			IfxPushdownOprInfo *parentInfo;
-
-			parentInfo = list_nth(context->predicates, context->count - 2);
-
-			if ((parentInfo->type == IFX_OPR_OR)
-				|| (parentInfo->type == IFX_OPR_AND)
-				|| (parentInfo->type == IFX_OPR_NOT))
-			{
-				/*
-				 * mark it as not supported, even though it's valid
-				 * boolean expression. Doing this way will prevent
-				 * it from being printed out.
-				 *
-				 * Don_t use IFX_MARK_PREDICATE_NOT_SUPPORTED(), since
-				 * boolean expression don't increment num_scan_elems.
-				 */
-				elog(DEBUG2, "removed parent bool expr %s",
-					 text_to_cstring(parentInfo->expr_string));
-
-				parentInfo->type = IFX_OPR_NOT_SUPPORTED;
-			}
+			/* Operator not supported */
+			return true;
 		}
-
-		/* done */
-		return true;
 	}
 
+	/* reached in case no further nodes to be examined */
 	return false;
 }
