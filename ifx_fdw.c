@@ -1917,7 +1917,6 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 		{
 			/* save current boolean opr context */
 			oprStr = text_to_cstring(info->expr_string);
-			elog(DEBUG2, "decoded boolean expr %s", oprStr);
 		}
 	}
 

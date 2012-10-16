@@ -985,8 +985,6 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		BoolExpr *boolexpr;
 		ListCell *cell;
 
-		elog(DEBUG2, "decode BoolExpr");
-
 		boolexpr = (BoolExpr *) node;
 
 		/*
@@ -1000,8 +998,6 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		foreach(cell, boolexpr->args)
 		{
 			Node *bool_arg = (Node *) lfirst(cell);
-
-			elog(DEBUG2, "decode BoolExpr arg");
 
 			ifx_predicate_tree_walker(bool_arg, context);
 
@@ -1053,8 +1049,6 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	{
 		OpExpr *opr;
 
-		elog(DEBUG2, "decode OpExpr");
-
 		info = palloc(sizeof(IfxPushdownOprInfo));
 		info->expr = opr  = (OpExpr *)node;
 		info->expr_string = NULL;
@@ -1062,7 +1056,6 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
 		{
 			text *node_string;
-			bool  result;
 			ListCell *cell;
 			bool      operand_supported;
 
