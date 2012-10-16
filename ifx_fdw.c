@@ -86,7 +86,7 @@ static void ifxSetupFdwScan(IfxConnectionInfo    **coninfo,
 							List    **plan_values,
 							Oid       foreignTableOid);
 
-static IfxFdwExecutionState *makeIfxFdwExecutionState();
+static IfxFdwExecutionState *makeIfxFdwExecutionState(void);
 
 static StringInfoData *
 ifxFdwOptionsToStringBuf(Oid context);

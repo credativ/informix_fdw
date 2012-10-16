@@ -38,8 +38,8 @@
  */
 #define IFX_FT_HASHTABLE "IFX_FT_CACHE"
 
-static void ifxFTCache_init();
-static void ifxConnCache_init();
+static void ifxFTCache_init(void);
+static void ifxConnCache_init(void);
 
 extern bool IfxCacheIsInitialized;
 extern InformixCache ifxCache;

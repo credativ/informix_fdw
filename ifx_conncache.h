@@ -74,7 +74,7 @@ typedef struct InformixCache
 bool IfxCacheIsInitialized;
 InformixCache ifxCache;
 
-void InformixCacheInit();
+void InformixCacheInit(void);
 
 /*
  * Register a new INFORMIX foreign table to the cache.

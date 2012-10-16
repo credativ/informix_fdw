@@ -1069,7 +1069,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			/*
 			 * Examine the operands of this operator expression. Please
 			 * note that we don't get further here, we stop at the first
-			 * layer even there are more nested expressions.
+			 * layer even when there are more nested expressions.
 			 */
 			operand_supported = true;
 			foreach(cell, opr->args)
