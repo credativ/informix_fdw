@@ -397,10 +397,10 @@ void ifxSetDescriptorCount(char *descr_name, int count);
  * Error handling
  */
 IfxSqlStateClass ifxSetException(IfxStatementInfo *state);
-IfxSqlStateClass ifxConnectionStatus();
-int ifxExceptionCount();
+IfxSqlStateClass ifxConnectionStatus(void);
+int ifxExceptionCount(void);
 void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message);
-int ifxGetSqlCode();
+int ifxGetSqlCode(void);
 
 /*
  * Functions to access specific datatypes
