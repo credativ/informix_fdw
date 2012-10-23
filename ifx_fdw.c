@@ -135,6 +135,7 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info,
 
 static char *ifxFilterQuals(PlannerInfo *planInfo,
 							RelOptInfo *baserel,
+							List **excl_restrictInfo,
 							Oid foreignTableOid);
 
 static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
@@ -381,7 +382,13 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 */
 	if (coninfo->predicate_pushdown)
 	{
+		/*
+		 * Also save a list of excluded RestrictInfo structures not carrying any
+		 * predicate found to be pushed down by ifxFilterQuals(). Those will
+		 * passed later to ifxGetForeignPlan()...
+		 */
 		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
+													&(planState->excl_restrictInfo),
 													foreignTableId);
 		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
 	}
@@ -495,6 +502,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	FdwPlan              *plan;
 	List                 *plan_values;
 	IfxFdwExecutionState *state;
+	List                 *excl_restrictInfo;
 
 	elog(DEBUG3, "informix_fdw: plan scan");
 
@@ -518,6 +526,7 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	if (coninfo->predicate_pushdown)
 	{
 		state->stmt_info.predicate = ifxFilterQuals(planInfo, baserel,
+													&excl_restrictInfo,
 													foreignTableOid);
 		elog(DEBUG2, "predicate for pushdown: %s", state->stmt_info.predicate);
 	}
@@ -1828,9 +1837,20 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid)
  *
  * Walk through all FDW-related predicate expressions passed
  * by baserel->restrictinfo and examine them for pushdown.
+ *
+ * Any predicates able to be pushed down are converted into a
+ * character string, suitable to be passed directly as SQL to
+ * an informix server. An empty string is returned in case
+ * no predicates are found.
+ *
+ * NOTE: excl_restrictInfo is a List, holding all rejected RestrictInfo
+ * structs found not able to be pushed down. This is currently only
+ * used in PostgreSQL version starting with 9.2, 9.1 version always
+ * returns an empty list!
  */
 static char * ifxFilterQuals(PlannerInfo *planInfo,
 							 RelOptInfo *baserel,
+							 List **excl_restrictInfo,
 							 Oid foreignTableOid)
 {
 	IfxPushdownOprContext pushdownCxt;
@@ -1842,8 +1862,12 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	Assert(foreignTableOid != InvalidOid);
 
 	pushdownCxt.foreign_relid = foreignTableOid;
+	pushdownCxt.foreign_rtid  = baserel->relid;
 	pushdownCxt.predicates    = NIL;
 	pushdownCxt.count         = 0;
+
+	/* Be paranoid, excluded RestrictInfo list initialized to be empty */
+	*excl_restrictInfo = NIL;
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
@@ -1856,10 +1880,18 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	foreach(cell, baserel->baserestrictinfo)
 	{
 		RestrictInfo *info;
+		int found;
 
 		info = (RestrictInfo *) lfirst(cell);
 
+		found = pushdownCxt.count;
 		ifx_predicate_tree_walker((Node *)info->clause, &pushdownCxt);
+
+		if (found == pushdownCxt.count)
+		{
+			elog(DEBUG2, "RestrictInfo doesn't hold anything interesting, skipping");
+			*excl_restrictInfo = lappend(*excl_restrictInfo, info);
+		}
 
 		/*
 		 * Each list element from baserestrictinfo is AND'ed together.

@@ -142,6 +142,11 @@ typedef struct IfxFdwPlanState
 {
 	IfxConnectionInfo *coninfo;
 	IfxFdwExecutionState *state;
+
+	/*
+	 * Excluded RestrictInfo after pushdown analysis.
+	 */
+	List *excl_restrictInfo;
 } IfxFdwPlanState;
 
 #endif
@@ -185,6 +190,7 @@ typedef struct IfxPushdownOprInfo
 typedef struct IfxPushdownOprContext
 {
 	Oid   foreign_relid; /* OID of foreign table */
+	Index foreign_rtid;  /* range table index of foreign table */
 	List *predicates;    /* list of IfxPushDownOprInfo */
 	int   count;         /* number of elements in predicates list */
 } IfxPushdownOprContext;

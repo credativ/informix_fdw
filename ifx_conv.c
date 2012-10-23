@@ -24,7 +24,10 @@
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 #include "ifx_fdw.h"
@@ -945,6 +948,22 @@ IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
 	return IFX_OPR_UNKNOWN;
 }
 
+/*
+ * Create a list with a RTE for the given foreign table.
+ */
+static List *make_deparse_context(Oid foreignRelid)
+{
+	/*
+	 * Get the relation name for the given foreign table.
+	 *
+	 * XXX: This currently works only, because we rely on the fact that
+	 *      a foreign table is equally named like on the foreign server.
+	 *      Bad style (tm), but i'm not sure how to make this transparently
+	 *      without using additional FDW options.
+	 */;
+	return deparse_context_for(get_rel_name(foreignRelid), foreignRelid);
+}
+
 #define IFX_MARK_PREDICATE_NOT_SUPPORTED(a, b) \
 	(a)->type = IFX_OPR_NOT_SUPPORTED;
 
@@ -1048,6 +1067,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	else if (IsA(node, OpExpr))
 	{
 		OpExpr *opr;
+		List   *dpc;
 
 		info = palloc(sizeof(IfxPushdownOprInfo));
 		info->expr = opr  = (OpExpr *)node;
@@ -1055,9 +1075,9 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
 		{
-			text *node_string;
 			ListCell *cell;
 			bool      operand_supported;
+			Node     *copy_obj;
 
 			/*
 			 * Examine the operands of this operator expression. Please
@@ -1072,6 +1092,18 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 				switch(oprarg->type)
 				{
 					case T_Var:
+					{
+						Var *var = (Var *) oprarg;
+
+						elog(DEBUG2, "varno %d, bogus_varno %d, varlevelsup %d",
+							 var->varno, context->foreign_rtid, var->varlevelsup);
+
+						if (var->varno != context->foreign_rtid ||
+							var->varlevelsup != 0)
+							operand_supported = false;
+
+						break;
+					}
 					case T_Const:
 						break;
 					default:
@@ -1092,17 +1124,27 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			if (!operand_supported)
 				return true; /* done */
 
+			/*
+			 * Mark this predicate for pushdown.
+			 */
 			IFX_MARK_PREDICATE_ELEM(info, context);
 
 			/*
-			 * Try to deparse the OpExpr and save it
-			 * into the IfxPushdownOprInfo structure...
+			 * Copy the expression node. We don't want to allow
+			 * ChangeVarNodes() to fiddle directly on the baserestrictinfo
+			 * nodes.
 			 */
-			node_string = cstring_to_text(nodeToString(info->expr));
-			info->expr_string = DatumGetTextP(OidFunctionCall3((regproc)2509,
-															   PointerGetDatum(node_string),
-															   ObjectIdGetDatum(context->foreign_relid),
-															   BoolGetDatum(true)));
+			copy_obj = copyObject(node);
+
+			/*
+			 * Adjust varno. The RTE currently present aren't adjusted according
+			 * to the FDW entries we get for the ForeignScan node. We call
+			 * ChangeVarNodes() to adjust them to make them usable by deparsing
+			 * later.
+			 */
+			ChangeVarNodes(copy_obj, context->foreign_rtid, 1, 0);
+			dpc = make_deparse_context(context->foreign_relid);
+			info->expr_string = cstring_to_text(deparse_expression(copy_obj, dpc, false, false));
 
 			elog(DEBUG1, "deparsed pushdown predicate %d, %s",
 				 context->count - 1,
