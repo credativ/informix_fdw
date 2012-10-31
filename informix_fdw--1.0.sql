@@ -27,7 +27,9 @@ CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
                                                    OUT username text,
                                                    OUT usage integer,
                                                    OUT db_locale text,
-                                                   OUT client_locale text)
+                                                   OUT client_locale text,
+                                                   OUT uses_tx boolean,
+                                                   OUT db_ansi boolean)
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'ifxGetConnections'
 LANGUAGE C VOLATILE STRICT;

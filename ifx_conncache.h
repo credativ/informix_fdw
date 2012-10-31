@@ -51,6 +51,8 @@ typedef struct IfxCachedConnection
 	char *db_locale;
 	char *client_locale;
 	int usage;
+	int tx_enabled;
+	int db_ansi;
 	Oid establishedByOid;
 } IfxCachedConnection;
 

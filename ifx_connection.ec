@@ -29,8 +29,11 @@ static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
 
 /*
  * Establish a named INFORMIX database connection with transactions
+ *
+ * This also initializes various database properties of the
+ * coninfo structure, e.g. wether the database supports transactions.
  */
-extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
+void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifxdsn;
@@ -51,6 +54,29 @@ extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 
 	EXEC SQL CONNECT TO :ifxdsn AS :ifxconname
 		USER :ifxuser USING :ifxpass WITH CONCURRENT TRANSACTION;
+
+	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+	{
+		EXEC SQL BEGIN WORK;
+		EXEC SQL SET ISOLATION REPEATABLE READ;
+		EXEC SQL SET TRANSACTION READ ONLY;
+
+		/* save state into connection info */
+		coninfo->tx_enabled = 1;
+	}
+
+	if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W')
+		coninfo->db_ansi = 1;
+}
+
+void ifxRollbackTransaction()
+{
+	EXEC SQL ROLLBACK WORK;
+}
+
+void ifxCommitTransaction()
+{
+	EXEC SQL COMMIT WORK;
 }
 
 int ifxGetSQLCAErrd(signed short ca)

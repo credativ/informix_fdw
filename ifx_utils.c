@@ -65,7 +65,7 @@ ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo)
  * for errors before calling this function.
  */
 static void ifxFdwExecutionStateToList(Const *const_vals[],
-								IfxFdwExecutionState *state)
+									   IfxFdwExecutionState *state)
 {
 	Assert(state != NULL);
 

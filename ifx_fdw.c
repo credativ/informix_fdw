@@ -219,6 +219,7 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 {
 	bool                  conn_cached;
 	IfxSqlStateClass      err;
+	IfxCachedConnection  *cached_handle;
 
 	/*
 	 * If not already done, initialize cache data structures.
@@ -247,7 +248,7 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 	/*
 	 * Lookup the connection name in the connection cache.
 	 */
-	ifxConnCache_add(foreignTableOid, *coninfo, &conn_cached);
+	cached_handle = ifxConnCache_add(foreignTableOid, *coninfo, &conn_cached);
 
 	/*
 	 * Establish a new INFORMIX connection with transactions,
@@ -269,6 +270,39 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 		elog(DEBUG2, "reusing cached informix connection \"%s\"",
 			 (*coninfo)->conname);
 	}
+
+	/*
+	 * Give a notice if the connection supports transactions.
+	 * Don't forget to register this information into the cached connection
+	 * handle as well, since we didn't have this information available
+	 * during connection startup and cached connection initialization
+	 */
+	if ((*coninfo)->tx_enabled == 1)
+	{
+		elog(DEBUG1, "informix database connection using transactions");
+		cached_handle->tx_enabled = (*coninfo)->tx_enabled;
+	}
+
+	/* ...the same for ANSI mode */
+	if ((*coninfo)->db_ansi == 1)
+	{
+		elog(DEBUG1, "informix database runs in ANSI-mode");
+		cached_handle->db_ansi = (*coninfo)->db_ansi;
+	}
+
+	/*
+	 * Give a warning if we have mismatching DBLOCALE settings.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_DB_LOCALE_MISMATCH) == 'W')
+		elog(WARNING, "mismatching DBLOCALE \"%s\"",
+			 (*coninfo)->db_locale);
+
+	/*
+	 * Give a NOTICE in case this is an INFORMIX SE
+	 * database instance.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W')
+		elog(NOTICE, "connected to an non-Informix SE instance");
 
 	/*
 	 * Check connection status. This should happen directly
@@ -301,16 +335,6 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 			elog(ERROR, "could not open connection to informix server: SQLCODE=%d",
 				 ifxGetSqlCode());
 		}
-	}
-
-	/*
-	 * Check if this database was opened using
-	 * transactions.
-	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
-	{
-		elog(DEBUG1, "informix database connection using transactions");
-		(*coninfo)->tx_enabled = 1;
 	}
 }
 
@@ -412,6 +436,13 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 */
 	coninfo->planData.estimated_rows = (double) ifxGetSQLCAErrd(SQLCA_NROWS_PROCESSED);
 	coninfo->planData.costs          = (double) ifxGetSQLCAErrd(SQLCA_NROWS_WEIGHT);
+
+	/*
+	 * Estimate total_cost in conjunction with the per-tuple cpu cost
+	 * for FETCHing each particular tuple later on.
+	 */
+	coninfo->planData.total_costs    = coninfo->planData.costs
+		+ (coninfo->planData.estimated_rows * cpu_tuple_cost);
 
 	/* should be calculated nrows from foreign table */
 	baserel->rows        = coninfo->planData.estimated_rows;
@@ -1031,7 +1062,22 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
  */
 static void ifxReScanForeignScan(ForeignScanState *state)
 {
+	IfxFdwExecutionState *fdw_state;
+	fdw_state = (IfxFdwExecutionState *) state->fdw_state;
+
 	elog(DEBUG1, "informix_fdw: rescan");
+
+	/*
+	 * We're encounter a rescan condition on our foreign table.
+	 * For now, we re-open the cursor, since we currently aren't
+	 * able to use a SCROLL CURSOR (because we want support simple
+	 * large objects...).
+	 *
+	 * Note that the result set may have changed in
+	 * the meantime, we currently don't enforce any repeatable read
+	 * isolation level on the database side).
+	 */
+	ifxCloseCursor(&(fdw_state->stmt_info));
 }
 
 /*
@@ -2048,7 +2094,11 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	if (coninfo == NULL)
 		return;
 
+	/* Assume non-tx enabled database, determined later */
 	coninfo->tx_enabled = 0;
+
+	/* Assume non-ANSI database */
+	coninfo->db_ansi = 0;
 
     /* enable predicate pushdown */
 	coninfo->predicate_pushdown = 1;
@@ -2178,8 +2228,8 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 	if (conn_processed < conn_expected)
 	{
 		IfxCachedConnection *conn_cached;
-		Datum                values[9];
-		bool                 nulls[9];
+		Datum                values[11];
+		bool                 nulls[11];
 		HeapTuple            tuple;
 		Datum                result;
 
@@ -2230,6 +2280,18 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 			nulls[8] = true;
 			values[8] = PointerGetDatum(NULL);
 		}
+
+		/*
+		 * Show transaction usage.
+		 */
+		values[9] = Int32GetDatum(conn_cached->tx_enabled);
+		nulls[9]  = false;
+
+		/*
+		 * Show wether database is ANSI enabled or not.
+		 */
+		values[10] = Int32GetDatum(conn_cached->db_ansi);
+		nulls[10]  = false;
 
 		/*
 		 * Build the result tuple.

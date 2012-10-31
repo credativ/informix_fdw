@@ -168,6 +168,15 @@ ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 		item->username         = pstrdup(coninfo->username);
 		item->database         = pstrdup(coninfo->database);
 
+		/* This is a no-op. When looking up the connection handle, those
+		 * settings might not yet be initialized properly. Copy it anyways to
+		 * make sure we make it consistent with the connection handle. The caller
+		 * should set those settings which can vary across cache retrieval
+		 * itself.
+		 */
+		item->tx_enabled       = coninfo->tx_enabled;
+		item->db_ansi          = coninfo->db_ansi;
+
 		/* can be NULL */
 		if (coninfo->db_locale != NULL)
 			item->db_locale        = pstrdup(coninfo->db_locale);

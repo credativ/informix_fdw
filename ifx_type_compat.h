@@ -216,6 +216,7 @@ typedef struct IfxPlanData
 {
 	double estimated_rows;
 	double costs;
+	double total_costs;
 
 	/*
 	 * Table statistics derived
@@ -260,6 +261,7 @@ typedef struct IfxConnectionInfo
 	char *client_locale;
 	char *db_locale;
 	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
+	short db_ansi; /* 0 = non-ANSI database, 1 = ANSI-enabled database */
 	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
 
 	/* plan data */
@@ -392,6 +394,8 @@ void ifxDeallocateDescriptor(char *descr_name);
 char ifxGetSQLCAWarn(signed short warn);
 int ifxGetSQLCAErrd(signed short ca);
 void ifxSetDescriptorCount(char *descr_name, int count);
+void ifxCommitTransaction(void);
+void ifxRollbackTransaction(void);
 
 /*
  * Error handling
