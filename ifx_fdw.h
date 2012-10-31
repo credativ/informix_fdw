@@ -118,6 +118,11 @@ typedef struct IfxFdwExecutionState
 	int pgAttrCount;
 
 	/*
+	 * If a rescan occurs, set to true.
+	 */
+	bool rescan;
+
+	/*
 	 * Dynamic list of foreign table attribute
 	 * definitions.
 	 */

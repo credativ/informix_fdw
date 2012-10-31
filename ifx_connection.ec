@@ -267,7 +267,8 @@ void ifxOpenCursorForPrepared(IfxStatementInfo *state)
 	EXEC SQL OPEN :ifx_cursor_name;
 }
 
-void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name)
+void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
+								 IfxCursorUsage cursorType)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifx_stmt_name;
@@ -277,15 +278,18 @@ void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name)
 	/*
 	 * Check if cursor support is really available.
 	 */
-	/* if (state->cursorUsage != IFX_DEFAULT_CURSOR) */
-	/* 	return; */
+	if (cursorType == IFX_NO_CURSOR)
+		return;
 
 	ifx_stmt_name = stmt_name;
 	ifx_cursor_name = cursor_name;
 
-	EXEC SQL DECLARE :ifx_cursor_name
-		CURSOR FOR :ifx_stmt_name;
-
+	if (cursorType == IFX_SCROLL_CURSOR)
+		EXEC SQL DECLARE :ifx_cursor_name
+			SCROLL CURSOR FOR :ifx_stmt_name;
+	else
+		EXEC SQL DECLARE :ifx_cursor_name
+			CURSOR FOR :ifx_stmt_name;
 }
 
 void ifxDestroyConnection(char *conname)
@@ -311,6 +315,20 @@ void ifxFetchRowFromCursor(IfxStatementInfo *state)
 	ifx_cursor_name = state->cursor_name;
 
 	EXEC SQL FETCH NEXT :ifx_cursor_name USING DESCRIPTOR ifx_sqlda;
+}
+
+void ifxFetchFirstRowFromCursor(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_cursor_name;
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda *ifx_sqlda;
+
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+	ifx_cursor_name = state->cursor_name;
+
+	EXEC SQL FETCH FIRST :ifx_cursor_name USING DESCRIPTOR ifx_sqlda;
 }
 
 /*

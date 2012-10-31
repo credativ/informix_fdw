@@ -348,7 +348,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState()
 	IfxFdwExecutionState *state = palloc(sizeof(IfxFdwExecutionState));
 
 	bzero(state->stmt_info.conname, IFX_CONNAME_LEN + 1);
-	state->stmt_info.cursorUsage = IFX_DEFAULT_CURSOR;
+	state->stmt_info.cursorUsage = IFX_SCROLL_CURSOR;
 
 	state->stmt_info.query        = NULL;
 	state->stmt_info.predicate    = NULL;
@@ -367,6 +367,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState()
 	state->pgAttrCount = 0;
 	state->pgAttrDefs  = NULL;
 	state->values = NULL;
+	state->rescan = false;
 
 	return state;
 }
@@ -1077,7 +1078,7 @@ static void ifxReScanForeignScan(ForeignScanState *state)
 	 * the meantime, we currently don't enforce any repeatable read
 	 * isolation level on the database side).
 	 */
-	ifxCloseCursor(&(fdw_state->stmt_info));
+	fdw_state->rescan = true;
 }
 
 /*
@@ -1753,7 +1754,15 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	/*
 	 * Fetch tuple from cursor
 	 */
-	ifxFetchRowFromCursor(&state->stmt_info);
+	if (state->rescan)
+	{
+		ifxFetchFirstRowFromCursor(&state->stmt_info);
+		state->rescan = false;
+	}
+	else
+	{
+		ifxFetchRowFromCursor(&state->stmt_info);
+	}
 
 	/*
 	 * Catch any informix exception. We also need to
@@ -2057,7 +2066,8 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info,
 	 */
 	elog(DEBUG1, "declare cursor \"%s\"", info->cursor_name);
 	ifxDeclareCursorForPrepared(info->stmt_name,
-								info->cursor_name);
+								info->cursor_name,
+								info->cursorUsage);
 	ifxCatchExceptions(info, IFX_STACK_DECLARE);
 }
 

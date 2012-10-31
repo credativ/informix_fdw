@@ -88,6 +88,7 @@
 typedef enum IfxCursorUsage
 {
 	IFX_DEFAULT_CURSOR,
+	IFX_SCROLL_CURSOR,
 	IFX_NO_CURSOR
 } IfxCursorUsage;
 
@@ -381,10 +382,12 @@ void ifxPrepareQuery(char *query, char *stmt_name);
 void ifxAllocateDescriptor(char *descr_name, int num_items);
 void ifxDescribeAllocatorByName(IfxStatementInfo *state);
 int ifxDescriptorColumnCount(IfxStatementInfo *state);
-void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name);
+void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
+								 IfxCursorUsage cursorType);
 void ifxOpenCursorForPrepared(IfxStatementInfo *state);
 size_t ifxGetColumnAttributes(IfxStatementInfo *state);
 void ifxFetchRowFromCursor(IfxStatementInfo *state);
+void ifxFetchFirstRowFromCursor(IfxStatementInfo *state);
 void ifxDeallocateSQLDA(IfxStatementInfo *state);
 void ifxSetupDataBufferAligned(IfxStatementInfo *state);
 void ifxCloseCursor(IfxStatementInfo *state);
