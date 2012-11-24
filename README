@@ -113,6 +113,10 @@ conditions:
   you can name a column in a foreign table different than on your remote informix
   table, it cannot be successfully pushded down and will throw an error (in that case
   you need to turn of predicate pushdown).
+- Currently, the FDW allows to push down predicates with <, <=, >, >= on text/varchar
+  columns as well. This might lead to incorrect results, when the selected locale
+  settings doesn't match. However, it seems far to conservative to restrict this at all,
+  but be careful when using such predicates and check your results carefully.
 
 = GLS Support =
 
@@ -151,6 +155,4 @@ client_locale        | en_US.utf8
 
 9.2 will introduce a number of interesting changes:
 
-- Adjust API for PlanForeignScan() to new path generation
-- Use FDW helper functions
 - ANALYZE support for foreign tables
