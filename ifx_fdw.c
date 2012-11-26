@@ -2117,6 +2117,8 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->gl_datetime   = IFX_ISO_TIMESTAMP;
 	coninfo->db_locale     = NULL;
 	coninfo->client_locale = NULL;
+	coninfo->query         = NULL;
+	coninfo->tablename     = NULL;
 }
 
 static StringInfoData *

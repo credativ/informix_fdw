@@ -850,6 +850,58 @@ int ifxGetInt4(IfxStatementInfo *state, int ifx_attnum)
 }
 
 /*
+ * ifxGetBigInt
+ *
+ * Retrieves the sqlvar value for the specified
+ * attribute number in case it is a BIGINT value.
+ *
+ * Returns the character representation of the
+ * value or NULL, in case the BIGINT value is
+ * NULL.
+ */
+char *ifxGetBigInt(IfxStatementInfo *state, int ifx_attnum, char *buf)
+{
+	bigint                val;
+	char                 *result;
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Init stuff.
+	 */
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+	result    = NULL;
+
+	/*
+	 * Check for NULL values.
+	 */
+	if ((*ifx_value->sqlind) == -1)
+	{
+		/* NULL value */
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NULL;
+		return result;
+	}
+	else
+	{
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_NULL;
+	}
+
+	/*
+	 * Copy the data into an int8 host variable.
+	 */
+	memcpy(&val, ifx_value->sqldata, sizeof(bigint));
+
+	/*
+	 * Convert the int8 value into a character string.
+	 */
+	if (biginttoasc(val, buf, IFX_INT8_CHAR_LEN, 10) == 0)
+		result = buf;
+
+	return result;
+}
+
+/*
  * ifxGetInt8
  *
  * Retrieves the sqlvar value for the specified
@@ -1130,10 +1182,13 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				 * the INTV qualifier, *not* the memory allocation size.
 				 */
 				break;
+			case SQLINFXBIGINT:
+				column_data->sqltype = CBIGINTTYPE;
+				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
+				break;
 			case SQLSERIAL:
 			case SQLINT8:
 			case SQLSERIAL8:
-			case SQLINFXBIGINT:
 			case SQLBIGSERIAL:
 				/* summarize all to INT8 */
 				state->ifxAttrDefs[ifx_attnum].type = SQLINT8;

@@ -414,6 +414,7 @@ int ifxGetSqlCode(void);
  * within result sets
  */
 char *ifxGetInt8(IfxStatementInfo *state, int attnum, char *buf);
+char *ifxGetBigInt(IfxStatementInfo *state, int attnum, char *buf);
 char *ifxGetDateAsString(IfxStatementInfo *state, int ifx_attnum,
 						 char *buf);
 char *ifxGetTimestampAsString(IfxStatementInfo *state, int ifx_attnum,

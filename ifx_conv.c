@@ -359,8 +359,26 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 
 					buf = (char *) palloc0(IFX_INT8_CHAR_LEN + 1);
 
-					/* extract the value from the sqlvar tuple */
-					buf = ifxGetInt8(&(state->stmt_info), attnum, buf);
+					/*
+					 * Extract the value from the sqlvar tuple.
+					 *
+					 * Take care for incompatible types BIGINT and INT8
+					 */
+					switch (IFX_ATTRTYPE_P(state, attnum))
+					{
+						case IFX_INT8:
+						case IFX_SERIAL8:
+							/* INT8 */
+							buf = ifxGetInt8(&(state->stmt_info), attnum, buf);
+							break;
+						case IFX_INFX_INT8:
+							/* BIGINT */
+							buf = ifxGetBigInt(&(state->stmt_info), attnum, buf);
+							break;
+						default:
+							pfree(buf);
+							buf = NULL;
+					}
 
 					/*
 					 * Check for null pointer in buf. This is not expected
