@@ -41,17 +41,23 @@
  * Number of serialized Const nodes passed
  * from ifxPlanForeignScan()
  */
-#define N_SERIALIZED_FIELDS 6
+#define N_SERIALIZED_FIELDS 9
 
 /*
  * Identifier for serialized fields
+ *
+ * Don't forget to set N_SERIALIZED_FIELDS accordingly
+ * to the number of fields if adding/removing one!
  */
-#define SERIALIZED_PLAN_DATA   0
-#define SERIALIZED_QUERY       1
-#define SERIALIZED_STMT_NAME   2
-#define SERIALIZED_CURSOR_NAME 3
-#define SERIALIZED_CALLSTACK   4
-#define SERIALIZED_QUALS       5
+#define SERIALIZED_PLAN_DATA    0
+#define SERIALIZED_QUERY        1
+#define SERIALIZED_STMT_NAME    2
+#define SERIALIZED_CURSOR_NAME  3
+#define SERIALIZED_CALLSTACK    4
+#define SERIALIZED_QUALS        5
+#define SERIALIZED_CURSOR_TYPE  6
+#define SERIALIZED_SPECIAL_COLS 7
+#define SERIALIZED_REFID        8
 
 #define SERIALIZED_DATA(_vals_) Const * (_vals_)[N_SERIALIZED_FIELDS]
 

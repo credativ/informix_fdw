@@ -436,12 +436,18 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 	int   ifx_msg_id;
 	int   ifx_msg_len;
 	char  ifx_message[255];
+	char  ifx_class_origin[255];
+	char  ifx_subclass_origin[255];
 	EXEC SQL END DECLARE SECTION;
 
 
 	ifx_msg_id  = id;
 	bzero(ifx_message, 255);
+	bzero(ifx_class_origin, 255);
+	bzero(ifx_subclass_origin, 255);
 	bzero(message->text, 255);
+	bzero(message->class_origin, 255);
+	bzero(message->subclass_origin, 255);
 	ifx_msg_len = message->len = 0;
 
 	/* Save current SQLCODE and SQLSTATE */
@@ -451,12 +457,21 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 	/* Obtain error message */
 	EXEC SQL GET DIAGNOSTICS EXCEPTION :ifx_msg_id
 		:ifx_message = MESSAGE_TEXT,
-		:ifx_msg_len = MESSAGE_LENGTH;
+		:ifx_msg_len = MESSAGE_LENGTH,
+		:ifx_subclass_origin = SUBCLASS_ORIGIN,
+		:ifx_class_origin    = CLASS_ORIGIN;
 
 	/* copy fields to struct and we're done */
 	message->id      = id;
 	message->len     = ifx_msg_len;
+
 	strncpy(message->text, ifx_message, ifx_msg_len);
+	strlcpy(message->subclass_origin,
+			ifx_subclass_origin,
+			sizeof(message->subclass_origin));
+	strlcpy(message->class_origin,
+			ifx_class_origin,
+			sizeof(message->class_origin));
 }
 
 /*
@@ -501,7 +516,7 @@ IfxSqlStateClass ifxConnectionStatus()
  * Return the SQLCODE identifier for
  * the last executed ESQL/C command.
  */
-int ifxGetSqlCode()
+inline int ifxGetSqlCode()
 {
 	return SQLCODE;
 }
@@ -1165,12 +1180,22 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 
 				column_data->sqltype = CLOCATORTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
+
+				/*
+				 * Remember any encountered BLOB type. The caller can react on
+				 * any special blob types accordingly then.
+				 */
+				state->special_cols |= IFX_HAS_BLOBS;
 				break;
 			}
 			case SQLVCHAR:
 			case SQLNCHAR:
 			case SQLNVCHAR:
+				column_data->sqltype = CSTRINGTYPE;
+				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
+				break;
 			case SQLLVARCHAR:
+				state->special_cols |= IFX_HAS_OPAQUE;
 				column_data->sqltype = CSTRINGTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
@@ -1212,6 +1237,7 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 			case SQLBOOL:
 				column_data->sqltype = CBOOLTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
+				state->special_cols |= IFX_HAS_OPAQUE;
 				break;
 			default:
 				return 0;

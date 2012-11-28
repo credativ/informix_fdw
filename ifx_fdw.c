@@ -43,6 +43,7 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "client_locale",    ForeignTableRelationId },
 	{ "db_locale",        ForeignTableRelationId },
 	{ "disable_predicate_pushdown", ForeignTableRelationId },
+	{ "enable_blobs",               ForeignTableRelationId },
 	{ NULL,                         ForeignTableRelationId }
 };
 
@@ -86,7 +87,7 @@ static void ifxSetupFdwScan(IfxConnectionInfo    **coninfo,
 							List    **plan_values,
 							Oid       foreignTableOid);
 
-static IfxFdwExecutionState *makeIfxFdwExecutionState(void);
+static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid);
 
 static StringInfoData *
 ifxFdwOptionsToStringBuf(Oid context);
@@ -103,9 +104,9 @@ ifxGetDatabaseString(IfxConnectionInfo *coninfo);
 static StringInfoData *
 ifxGenerateConnName(IfxConnectionInfo *coninfo);
 static char *
-ifxGenStatementName(IfxConnectionInfo *coninfo);
+ifxGenStatementName(IfxConnectionInfo *coninfo, int stmt_id);
 static char *
-ifxGenDescrName(IfxConnectionInfo *coninfo);
+ifxGenDescrName(IfxConnectionInfo *coninfo, int descr_id);
 
 static void
 ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def);
@@ -114,7 +115,7 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo);
 
 static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid);
 
-static char *ifxGenCursorName(IfxConnectionInfo *coninfo);
+static char *ifxGenCursorName(IfxConnectionInfo *coninfo, int curid);
 
 static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate);
 
@@ -240,12 +241,6 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 	elog(DEBUG1, "informix connection dsn \"%s\"", (*coninfo)->dsn);
 
 	/*
-	 * Make a generic informix execution state
-	 * structure.
-	 */
-	*state = makeIfxFdwExecutionState();
-
-	/*
 	 * Lookup the connection name in the connection cache.
 	 */
 	cached_handle = ifxConnCache_add(foreignTableOid, *coninfo, &conn_cached);
@@ -270,6 +265,12 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 		elog(DEBUG2, "reusing cached informix connection \"%s\"",
 			 (*coninfo)->conname);
 	}
+
+	/*
+	 * Make a generic informix execution state
+	 * structure.
+	 */
+	*state = makeIfxFdwExecutionState(cached_handle->usage);
 
 	/*
 	 * Give a notice if the connection supports transactions.
@@ -342,10 +343,16 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
  * Returns a fully initialized pointer to
  * an IfxFdwExecutionState structure. All pointers
  * are initialized to NULL.
+ *
+ * refid should be a unique number identifying the returned
+ * structure throughout the backend.
  */
-static IfxFdwExecutionState *makeIfxFdwExecutionState()
+static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 {
 	IfxFdwExecutionState *state = palloc(sizeof(IfxFdwExecutionState));
+
+	/* Assign the specified reference id. */
+	state->stmt_info.refid = refid;
 
 	bzero(state->stmt_info.conname, IFX_CONNAME_LEN + 1);
 	state->stmt_info.cursorUsage = IFX_SCROLL_CURSOR;
@@ -360,6 +367,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState()
 	state->stmt_info.ifxAttrDefs  = NULL;
 	state->stmt_info.call_stack   = IFX_STACK_EMPTY;
 	state->stmt_info.row_size     = 0;
+	state->stmt_info.special_cols = IFX_NO_SPECIAL_COLS;
 
 	bzero(state->stmt_info.sqlstate, 6);
 	state->stmt_info.exception_count = 0;
@@ -728,13 +736,20 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 		{
 			case IFX_RT_ERROR:
 				/*
-				 * log FATAL
+				 * log Informix runtime error.
 				 *
 				 * There's no ERRCODE_FDW_FATAL, so we go with a HV000 error
-				 * code for now, but print out the error message as FATAL.
+				 * code for now, but print out the error message as ERROR.
+				 *
+				 * A runtime error normally means a SQL error. Formerly, we did
+				 * a FATAL here, but this stroke me as far to hard (it will exit
+				 * the backend). Go with an ERROR instead...
 				 */
 				ifxRewindCallstack(state);
-				ereport(FATAL, (errcode(ERRCODE_FDW_ERROR),
+			case IFX_ERROR:
+			case IFX_ERROR_INVALID_NAME:
+				/* log ERROR */
+				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
 								errmsg("informix FDW error: \"%s\"",
 									   message.text),
 								errdetail("SQLSTATE %s (SQLCODE=%d)",
@@ -746,14 +761,6 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 								  errmsg("informix FDW warning: \"%s\"",
 										 message.text),
 								  errdetail("SQLSTATE %s", message.sqlstate)));
-				break;
-			case IFX_ERROR:
-			case IFX_ERROR_INVALID_NAME:
-				/* log ERROR */
-				ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
-								errmsg("informix FDW error: \"%s\"",
-									   message.text),
-								errdetail("SQLSTATE %s", message.sqlstate)));
 				break;
 			case IFX_ERROR_TABLE_NOT_FOUND:
 				/* log missing FDW table */
@@ -1069,14 +1076,7 @@ static void ifxReScanForeignScan(ForeignScanState *state)
 	elog(DEBUG1, "informix_fdw: rescan");
 
 	/*
-	 * We're encounter a rescan condition on our foreign table.
-	 * For now, we re-open the cursor, since we currently aren't
-	 * able to use a SCROLL CURSOR (because we want support simple
-	 * large objects...).
-	 *
-	 * Note that the result set may have changed in
-	 * the meantime, we currently don't enforce any repeatable read
-	 * isolation level on the database side).
+	 * We're in a rescan condition on our foreign table.
 	 */
 	fdw_state->rescan = true;
 }
@@ -1237,6 +1237,14 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 			 */
 			coninfo->predicate_pushdown = 0;
 		}
+
+		if (strcmp(def->defname, "enable_blobs") == 0)
+		{
+			/* we don't bother about the value passed
+			 * to enable_blobs atm.
+			 */
+			coninfo->enable_blobs = 1;
+		}
 	}
 
 	/*
@@ -1259,32 +1267,34 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
  * Returns a palloc'ed string containing a statement identifier
  * suitable to pass to an Informix database.
  */
-static char *ifxGenStatementName(IfxConnectionInfo *coninfo)
+static char *ifxGenStatementName(IfxConnectionInfo *coninfo,
+								 int stmt_id)
 {
 	char *stmt_name;
 	size_t stmt_name_len;
 
-	stmt_name_len = strlen(coninfo->conname) + 15;
+	stmt_name_len = strlen(coninfo->conname) + 26;
 	stmt_name     = (char *) palloc(stmt_name_len + 1);
 	bzero(stmt_name, stmt_name_len + 1);
 
-	snprintf(stmt_name, stmt_name_len, "%s_stmt%d",
-			 coninfo->conname, MyBackendId);
+	snprintf(stmt_name, stmt_name_len, "%s_stmt%d_%d",
+			 coninfo->conname, MyBackendId, stmt_id);
 
 	return stmt_name;
 }
 
-static char *ifxGenDescrName(IfxConnectionInfo *coninfo)
+static char *ifxGenDescrName(IfxConnectionInfo *coninfo,
+							 int descr_id)
 {
 	char *descr_name;
 	size_t descr_name_len;
 
-	descr_name_len = strlen(coninfo->conname) + 16;
+	descr_name_len = strlen(coninfo->conname) + 27;
 	descr_name     = (char *)palloc(descr_name_len + 1);
 	bzero(descr_name, descr_name_len + 1);
 
-	snprintf(descr_name, descr_name_len, "%s_descr%d",
-			 coninfo->conname, MyBackendId);
+	snprintf(descr_name, descr_name_len, "%s_descr%d_%d",
+			 coninfo->conname, MyBackendId, descr_id);
 
 	return descr_name;
 }
@@ -1292,18 +1302,22 @@ static char *ifxGenDescrName(IfxConnectionInfo *coninfo)
 
 /*
  * Generate a unique cursor identifier
+ *
+ * The specified curid should be a unique number
+ * identifying the returned cursor name uniquely throughout
+ * the backend.
  */
-static char *ifxGenCursorName(IfxConnectionInfo *coninfo)
+static char *ifxGenCursorName(IfxConnectionInfo *coninfo, int curid)
 {
 	char *cursor_name;
 	size_t len;
 
-	len = strlen(coninfo->conname) + 10;
+	len = strlen(coninfo->conname) + 26;
 	cursor_name = (char *) palloc(len + 1);
 	bzero(cursor_name, len + 1);
 
-	snprintf(cursor_name, len, "%s_cur%d",
-			 coninfo->conname, MyBackendId);
+	snprintf(cursor_name, len, "%s_cur%d_%d",
+			 coninfo->conname, MyBackendId, curid);
 	return cursor_name;
 }
 
@@ -1392,9 +1406,10 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	cached = ifxConnCache_add(foreignTableOid, coninfo,
 							  &conn_cached);
 
+	/* should not happen here */
 	Assert(conn_cached && cached != NULL);
 
-	festate = makeIfxFdwExecutionState();
+	festate = makeIfxFdwExecutionState(-1);
 
 	/*
 	 * Record our FDW state structures.
@@ -1433,6 +1448,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 */
 	ifxPgColumnData(foreignTableOid, festate);
 
+	/* EXPLAIN without ANALYZE... */
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 	{
 		elog(DEBUG1, "informix_fdw: explain only");
@@ -1470,6 +1486,33 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	}
 
 	/*
+	 * Throw an error in case we select from a relation with
+	 * BLOB types and enable_blobs FDW option is unset. We must not
+	 * use a SCROLL cursor in this case. Switching the cursor options
+	 * at this point is too late, since we already DESCRIBEd and PREPAREd
+	 * the cursor. Alternatively, we could re-PREPARE the cursor as a
+	 * NO SCROLL cursor again, but this strikes me as too dangerous (consider
+	 * changing table definitions in the meantime).
+	 *
+	 * NOTE: A non-scrollable cursor requires a serialized transaction to
+	 *       be safe. However, we don't enforce this isolation atm, since
+	 *       Informix databases with no logging would not be queryable at all.
+	 *       But someone have to keep in mind, that a ReScan of the foreign
+	 *       table could lead to inconsistent data due to changed results
+	 *       sets.
+	 */
+	if ((festate->stmt_info.special_cols & IFX_HAS_BLOBS)
+		&& (festate->stmt_info.cursorUsage == IFX_SCROLL_CURSOR))
+	{
+		ifxRewindCallstack(&festate->stmt_info);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("could not use a SCROLL cursor to query an "
+							   "informix table with blobs"),
+						errhint("set enable_blobs=1 to your foreign table "
+								"to use a NO SCROLL cursor")));
+	}
+
+	/*
 	 * NOTE:
 	 *
 	 * ifxGetColumnAttributes() obtained all information about the
@@ -1482,7 +1525,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	 */
 	festate->stmt_info.data = (char *) palloc0(festate->stmt_info.row_size);
 	festate->stmt_info.indicator = (short *) palloc0(sizeof(short)
-													* festate->stmt_info.ifxAttrCount);
+													 * festate->stmt_info.ifxAttrCount);
 
 	/*
 	 * Assign sqlvar pointers to the allocated memory area.
@@ -1746,17 +1789,29 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 
 	elog(DEBUG3, "informix_fdw: iterate scan");
 
-	tupleSlot->tts_mintuple   = NULL;
-	tupleSlot->tts_buffer     = InvalidBuffer;
-	tupleSlot->tts_tuple      = NULL;
-	tupleSlot->tts_shouldFree = false;
+	tupleSlot->tts_mintuple      = NULL;
+	tupleSlot->tts_buffer        = InvalidBuffer;
+	tupleSlot->tts_tuple         = NULL;
+	tupleSlot->tts_shouldFree    = false;
 
 	/*
 	 * Fetch tuple from cursor
 	 */
 	if (state->rescan)
 	{
-		ifxFetchFirstRowFromCursor(&state->stmt_info);
+		if (state->stmt_info.cursorUsage == IFX_SCROLL_CURSOR)
+			ifxFetchFirstRowFromCursor(&state->stmt_info);
+		else
+		{
+			elog(DEBUG3, "re-opening informix cursor in rescan state");
+			ifxCloseCursor(&state->stmt_info);
+			ifxCatchExceptions(&state->stmt_info, 0);
+
+			ifxOpenCursorForPrepared(&state->stmt_info);
+			ifxCatchExceptions(&state->stmt_info, 0);
+
+			ifxFetchRowFromCursor(&state->stmt_info);
+		}
 		state->rescan = false;
 	}
 	else
@@ -1816,7 +1871,7 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	{
 		bool isnull;
 
-		elog(DEBUG3, "get column ifx attnum %d", i);
+		elog(DEBUG4, "get column ifx attnum %d", i);
 
 		/*
 		 * It might happen that the FDW table has dropped
@@ -2041,18 +2096,20 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info,
 	 * Generate a statement identifier. Required to uniquely
 	 * identify the prepared statement within Informix.
 	 */
-	info->stmt_name = ifxGenStatementName(coninfo);
+	info->stmt_name = ifxGenStatementName(coninfo,
+										  info->refid);
 
 	/*
 	 * An identifier for the dynamically allocated
 	 * DESCRIPTOR area.
 	 */
-	info->descr_name = ifxGenDescrName(coninfo);
+	info->descr_name = ifxGenDescrName(coninfo,
+									   info->refid);
 
 	/*
 	 * ...and finally the cursor name.
 	 */
-	info->cursor_name = ifxGenCursorName(coninfo);
+	info->cursor_name = ifxGenCursorName(coninfo, info->refid);
 
 	/* Prepare the query. */
 	elog(DEBUG1, "prepare query \"%s\"", info->query);
@@ -2062,8 +2119,21 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info,
 
 	/*
 	 * Declare the cursor for the prepared
-	 * statement.
+	 * statement. Check out, if we need to switch the cursor
+	 * type depending on special datatypes first.
 	 */
+	if (coninfo->enable_blobs)
+	{
+		elog(NOTICE, "informix_fdw: enable_blobs specified, forcing NO SCROLL cursor");
+
+		if (!coninfo->tx_enabled)
+			ereport(WARNING,
+					(errcode(ERRCODE_FDW_INCONSISTENT_DESCRIPTOR_INFORMATION),
+					 errmsg("informix_fdw: using NO SCROLL cursor without transactions")));
+
+		info->cursorUsage = IFX_DEFAULT_CURSOR;
+	}
+
 	elog(DEBUG1, "declare cursor \"%s\"", info->cursor_name);
 	ifxDeclareCursorForPrepared(info->stmt_name,
 								info->cursor_name,
@@ -2112,6 +2182,9 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 
     /* enable predicate pushdown */
 	coninfo->predicate_pushdown = 1;
+
+	/* disable enable_blobs per default */
+	coninfo->enable_blobs = 0;
 
 	coninfo->gl_date       = IFX_ISO_DATE;
 	coninfo->gl_datetime   = IFX_ISO_TIMESTAMP;

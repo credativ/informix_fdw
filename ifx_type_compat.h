@@ -37,7 +37,7 @@
  * Maximum length of a signed int8 value
  * in its character representation.
  */
-#define IFX_INT8_CHAR_LEN 19
+#define IFX_INT8_CHAR_LEN 21
 
 /*
  * Maximum length for decimal
@@ -56,6 +56,14 @@
 #define IFX_STACK_ALLOCATE 4
 #define IFX_STACK_DESCRIBE 8
 #define IFX_STACK_OPEN     16
+
+/*
+ * Special flags set during DESCRIBE phase to
+ * identify special columns (e.g. BLOBS)
+ */
+#define IFX_NO_SPECIAL_COLS 0
+#define IFX_HAS_BLOBS       1
+#define IFX_HAS_OPAQUE      2
 
 /*
  * IS8601 compatible DATE and DATETIME
@@ -127,6 +135,8 @@ typedef struct IfxSqlStateMessage
 	char  sqlcode;
 	char  sqlstate[6];
 	char  text[255];
+	char  class_origin[255];
+	char  subclass_origin[255];
 } IfxSqlStateMessage;
 
 /*
@@ -264,6 +274,8 @@ typedef struct IfxConnectionInfo
 	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
 	short db_ansi; /* 0 = non-ANSI database, 1 = ANSI-enabled database */
 	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
+	short enable_blobs; /* 0 = no special BLOB support,
+						   1 = special BLOB support */
 
 	/* plan data */
 	IfxPlanData planData;
@@ -285,9 +297,21 @@ typedef struct IfxStatementInfo
 
 	/*
 	 * Which kind of Informix Cursor to use.
-	 * Currently this is always set to IFX_DEFAULT_CURSOR.
+	 * Default must be initialized to IFX_SCROLLL_CURSOR.
 	 */
 	IfxCursorUsage cursorUsage;
+
+	/*
+	 * Reference ID of the connection handle this
+	 * statement handle was created for. This is effectively
+	 * the usage counter passed to this structure when
+	 * a foreign table scan is prepared. Used to uniquely
+	 * identify the associated cursor.
+	 *
+	 * Unassociated statement handles must be initialized
+	 * with -1.
+	 */
+	int refid;
 
 	/*
 	 * SQLSTATE value retrieved by the last action.
@@ -369,6 +393,12 @@ typedef struct IfxStatementInfo
 	short *indicator;
 
 	/*
+	 * Special flags set during DESCRIBE phase. Helps
+	 * to identify special column types.
+	 */
+	short special_cols;
+
+	/*
 	 * Dynamic list of attribute definitions
 	 */
 	IfxAttrDef *ifxAttrDefs;
@@ -407,7 +437,7 @@ IfxSqlStateClass ifxSetException(IfxStatementInfo *state);
 IfxSqlStateClass ifxConnectionStatus(void);
 int ifxExceptionCount(void);
 void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message);
-int ifxGetSqlCode(void);
+inline int ifxGetSqlCode(void);
 
 /*
  * Functions to access specific datatypes

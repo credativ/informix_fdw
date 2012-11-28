@@ -44,6 +44,12 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 															 SERIALIZED_CALLSTACK);
 	state->stmt_info.predicate = ifxGetSerializedStringField(params,
 															 SERIALIZED_QUALS);
+	state->stmt_info.cursorUsage = ifxGetSerializedInt32Field(params,
+															  SERIALIZED_CURSOR_TYPE);
+	state->stmt_info.special_cols = ifxGetSerializedInt16Field(params,
+															   SERIALIZED_SPECIAL_COLS);
+	state->stmt_info.refid        = ifxGetSerializedInt32Field(params,
+															   SERIALIZED_REFID);
 }
 
 bytea *
@@ -83,6 +89,15 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 
 	const_vals[SERIALIZED_QUALS]
 		= makeFdwStringConst(state->stmt_info.predicate);
+
+	const_vals[SERIALIZED_CURSOR_TYPE]
+		= makeFdwInt4Const(state->stmt_info.cursorUsage);
+
+	const_vals[SERIALIZED_SPECIAL_COLS]
+		= makeFdwInt2Const(state->stmt_info.special_cols);
+
+	const_vals[SERIALIZED_REFID]
+		= makeFdwInt4Const(state->stmt_info.refid);
 }
 
 /*
