@@ -1793,6 +1793,7 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	tupleSlot->tts_buffer        = InvalidBuffer;
 	tupleSlot->tts_tuple         = NULL;
 	tupleSlot->tts_shouldFree    = false;
+	tupleSlot->tts_shouldFreeMin = false;
 
 	/*
 	 * Fetch tuple from cursor
