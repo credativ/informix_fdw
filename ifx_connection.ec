@@ -466,10 +466,10 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 	message->len     = ifx_msg_len;
 
 	strncpy(message->text, ifx_message, ifx_msg_len);
-	strlcpy(message->subclass_origin,
+	strncpy(message->subclass_origin,
 			ifx_subclass_origin,
 			sizeof(message->subclass_origin));
-	strlcpy(message->class_origin,
+	strncpy(message->class_origin,
 			ifx_class_origin,
 			sizeof(message->class_origin));
 }
