@@ -33,6 +33,7 @@ struct IfxFdwOption
 static struct IfxFdwOption ifx_valid_options[] =
 {
 	{ "informixserver",   ForeignServerRelationId },
+	{ "informixdir",      ForeignServerRelationId },
 	{ "user",             UserMappingRelationId },
 	{ "password",         UserMappingRelationId },
 	{ "database",         ForeignTableRelationId },
