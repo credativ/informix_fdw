@@ -67,6 +67,7 @@ extern Datum ifx_fdw_validator(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(ifx_fdw_handler);
 PG_FUNCTION_INFO_V1(ifx_fdw_validator);
 PG_FUNCTION_INFO_V1(ifxGetConnections);
+PG_FUNCTION_INFO_V1(ifxCloseConnection);
 
 /*******************************************************************************
  * FDW internal macros
@@ -191,6 +192,8 @@ static void ifxPrepareScan(IfxConnectionInfo *coninfo,
 
 Datum
 ifxGetConnections(PG_FUNCTION_ARGS);
+Datum
+ifxCloseConnection(PG_FUNCTION_ARGS);
 
 /*******************************************************************************
  * Implementation starts here
@@ -1413,6 +1416,24 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	festate = makeIfxFdwExecutionState(-1);
 
 	/*
+	 * Make the connection current (otherwise we might
+	 * get confused).
+	 */
+	if (conn_cached)
+	{
+		ifxSetConnection(coninfo);
+	}
+
+	/*
+	 * Check connection status.
+	 */
+	if ((ifxConnectionStatus() != IFX_CONNECTION_OK)
+		&& (ifxConnectionStatus() != IFX_CONNECTION_WARN))
+	{
+		elog(ERROR, "could not set requested informix connection");
+	}
+
+	/*
 	 * Record our FDW state structures.
 	 */
 	node->fdw_state = (void *) festate;
@@ -1782,13 +1803,43 @@ static void ifxEndForeignScan(ForeignScanState *node)
 static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 {
 	TupleTableSlot       *tupleSlot = node->ss.ss_ScanTupleSlot;
+	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *state;
 	IfxSqlStateClass      errclass;
-	int i;
+	Oid                   foreignTableOid;
+	bool                  conn_cached;
+	int                   i;
 
 	state = (IfxFdwExecutionState *) node->fdw_state;
 
 	elog(DEBUG3, "informix_fdw: iterate scan");
+
+	/*
+	 * Make the informix connection belonging to this
+	 * iteration current.
+	 */
+	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
+	coninfo= ifxMakeConnectionInfo(foreignTableOid);
+
+	ifxConnCache_add(foreignTableOid, coninfo, &conn_cached);
+
+	/*
+	 * Make the connection current (otherwise we might
+	 * get confused).
+	 */
+	if (conn_cached)
+	{
+		ifxSetConnection(coninfo);
+	}
+
+	/*
+	 * Check connection status.
+	 */
+	if ((ifxConnectionStatus() != IFX_CONNECTION_OK)
+		&& (ifxConnectionStatus() != IFX_CONNECTION_WARN))
+	{
+		elog(ERROR, "could not set requested informix connection");
+	}
 
 	tupleSlot->tts_mintuple      = NULL;
 	tupleSlot->tts_buffer        = InvalidBuffer;
@@ -2241,6 +2292,55 @@ ifxIsValidOption(const char *option, Oid context)
 }
 
 Datum
+ifxCloseConnection(PG_FUNCTION_ARGS)
+{
+	IfxCachedConnection *conn_cached;
+	char                *conname;
+	bool                 found;
+
+	/*
+	 * Check if connection cache is already
+	 * initialized. If not, we don't have anything
+	 * to do an can exit immediately.
+	 */
+	if (!IfxCacheIsInitialized)
+		PG_RETURN_BOOL(false);
+
+	/* Get connection name from argument */
+	conname = text_to_cstring(PG_GETARG_TEXT_P(0));
+	elog(DEBUG1, "connection identifier \"%s\"",
+		 conname);
+	Assert(conname);
+
+	/*
+	 * Lookup connection.
+	 *
+	 * We remove the connection handle from the cache first,
+	 * closing it afterwards then. This is assumed to be safe,
+	 * even when the function is used in a query predicate
+	 * where the connection itself is used again. Subsequent
+	 * references to this connection will find the cache returning
+	 * NULL when requesting the connection identifier and will
+	 * reconnect again implicitely.
+	 */
+	conn_cached = ifxConnCache_rm(conname, &found);
+
+	/* Check wether the handle was valid */
+	if (!found || !conn_cached)
+	{
+		elog(DEBUG1, "unknown informix connection name: \"%s\"",
+			 conname);
+		PG_RETURN_VOID();
+	}
+
+	/* okay, we have a valid connection handle...close it */
+	ifxDisconnectConnection(conname);
+
+	/* Check for any Informix exceptions */
+	PG_RETURN_VOID();
+}
+
+Datum
 ifxGetConnections(PG_FUNCTION_ARGS)
 {
 	FuncCallContext *fcontext;
@@ -2398,12 +2498,13 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 	else
 	{
 		call_data = (struct ifx_sp_call_data *) fcontext->user_fctx;
+
 		/*
 		 * Done processing. Terminate hash_seq_search(), since we haven't
 		 * processed forward until NULL (but only if we had processed
 		 * any connections).
 		 */
-		if (fcontext->max_calls > 0)
+		if ((fcontext->max_calls >= 0) && IfxCacheIsInitialized)
 			hash_seq_term(call_data->hash_status);
 
 		SRF_RETURN_DONE(fcontext);

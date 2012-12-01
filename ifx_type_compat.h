@@ -407,6 +407,7 @@ typedef struct IfxStatementInfo
 
 extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
+void ifxDisconnectConnection(char *conname);
 void ifxDestroyConnection(char *conname);
 void ifxPrepareQuery(char *query, char *stmt_name);
 void ifxAllocateDescriptor(char *descr_name, int num_items);
