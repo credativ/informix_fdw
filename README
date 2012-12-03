@@ -7,15 +7,13 @@ There are likely still bugs and functional deficiencies in the code.
 You are encouraged to report any bugs to the author.
 
 The PostgreSQL Informix Foreign Datawrapper (FDW) module
-is a driver for accessing remote informix table from within
+is a driver for accessing remote Informix table from within
 PostgreSQL databases. Foreign Tables are transparently accessed
 as normal PostgreSQL tables, they can be used to join remote data
 against real PostgreSQL tables, import remote data and more. The FDW
 interface implemented in PostgreSQL starting with version 9.1
 supports the SQL/MED standard. Currently only read-only access
 to remote data is supported.
-
-Currently, only PostgreSQL 9.1 is supported.
 
 = Requirements =
 
@@ -79,7 +77,7 @@ OPTIONS ( query 'SELECT * FROM foo',
 = Supported datatypes =
 
 Currently, only fundamental Informix data types are supported. There's
-yno support for opaque or user defined types at the moment. Implemented
+no support for opaque or user defined types at the moment. Implemented
 datatype conversion routines:
 
 BOOLEAN
@@ -88,7 +86,8 @@ DATE
 SMALLINT
 INT2
 INT4
-INT8/BIGINT
+INT8
+BIGINT
 SERIAL
 SERIAL8
 VARCHAR
@@ -100,6 +99,130 @@ BYTE
 TEXT
 NUMERIC
 
+= FDW Options =
+
+* informixserver - required
+
+  Specifies the Informix server identifier passed to the
+  INFORMIXSERVER environment variable. This value is required and must
+  match the identifier specified in your Informix sqlhosts file.
+
+* informixdir - required
+
+  Specifies the path to your Informix installation (either CSDK or locale
+  server installation path). This sets the specified value to the INFORMXDIR
+  environment variable during connection establishing.
+
+* database - required
+
+  The database name where the foreign table is located.
+
+* user - required
+
+  The Informix database username
+
+* password - required
+
+  The Informix user password.
+
+* disable_predicate_pushdown
+
+  Disables predicate pushdown infrastructure. No WHERE expressions are
+  pushed down to the Informix server anymore (for details about predicate
+  pushdown, see the sections below).
+
+* gl_datetime
+
+  Sets the date/time format transmitted from the Informix server.
+  This effectively sets GL_DATETIME environment variable to the given
+  format. If not specified, the FDW uses "%iY-%m-%d %H:%M:%S" per default.
+
+  NOTE: This format *must* not be a format not understood by the PostgreSQL
+        server. If conversion to a PostgreSQL type is requested by a date/time
+        value incompatible with any format understood by PostgreSQL, an error
+        will occur.
+
+* gl_date
+
+  Sets the date format transmitted from the Informix server.
+  This effectively sets the GL_DATE environment variable to the given
+  format. If not specified, the FDW uses "%iY-%m-%d" per default.
+
+  NOTE: This format *must* not be a format not understood by the PostgreSQL
+        server. If conversion to a PostgreSQL type is requested by a date/time
+        value incompatible with any format understood by PostgreSQL, an error
+        will occur.
+
+        Even if specified somewhere in the code, the Informix FDW doesn't set
+        DBDATE at the moment. Current Informix versions prefer the GL_DATE
+        environment variable in favor of DBDATE.
+
+* client_locale - required
+
+  Sets the CLIENT_LOCALE environment variable to specify the locale
+  settings the client uses. Please note that the *client* setting in this
+  regard is the PostgreSQL backend, so this settings is required to match
+  the current locale settings used in your PostgreSQL connection. This setting
+  is required for each foreign table.
+
+  NOTE: This setting depends on the available client locales installed with
+        your Informix installations. The name to be passed differs from the
+        setting actually taken from PostgreSQL, since PostgreSQL relys on
+        the operating system locale, where Informix uses its own. This can lead
+        to some confusion to find the correct setting and might cause
+        compatibility problems (incompatible string comparisons et al.). The
+        FDW for example currently allows strings expressions embedded in
+        query predicates to be pushed down to the Informix server. Take care in this
+        case, since the mentioned incompatibilities could lead to wrong
+        results. I don't want to restrict this setting for now and leave it up
+        to the user to make sure, the settings actually work in their environment.
+
+* db_locale
+
+  Specifies the locale settings passed to the DB_LOCALE environment variable.
+  This value must be compatible with the CLIENT_LOCALE setting choosen with
+  the client_locale FDW setting described above. Ideally, this setting reflect
+  the locale settings choosen on the Informix database.
+
+  NOTE: The Informix FDW will raise an error with incompatible settings.
+
+* enable_blobs
+
+  This variable sets a hint to the Informix FDW that the foreign table
+  has BLOBs. Set it to enable_blobs = '1' to enable BLOB support or omit
+  this option to disable it (it doesn't matter which value you pass
+  to enable_blobs, it only needs to be present).
+
+  NOTE: If you have a foreign table with BLOBs but don't want to select
+        any of these, you can safely omit this setting. However, you have to
+        make sure, that you don't query the columns at all (pass your own
+        query string to the query variable in this case). If you select BLOB
+        columns without having set enable_blobs, an error will be raised.
+
+        Also consider that selecting foreign tables with BLOBs isn't safe
+        with non-logging Informix databases under certain conditions. The FDW
+        will raise a WARNING if you encounter such a situation.
+
+        The reason for this restricition is that the Informix FDW uses
+        a SCROLL cursor internally per default. However, Informix doesn't
+        support SCROLL cursors in case someone is selecting BLOBs from
+        a table. We switch to NO SCROLL in case enable_blobs is specified,
+        but this leaves us with the last restriction below, where you can
+        get inconsistent reads when having an Informix database without
+        logging.
+
+* query
+
+  The foreign table will issue the specified query to the Informix server to
+  materialize the result set.
+
+* table
+
+  The foreign table will build its own query against the given table on the
+  Informix server.
+
+  NOTE: Either table or query is required for a foreign table.
+
 = Predicate Pushdown =
 
 The Informix FDW is able to pushdown query predicates which meet the following
@@ -110,7 +233,7 @@ conditions:
 - OP must be one of the following operators:
   <, >, =, <=, >=, LIKE
 - Matching of column references is done on a per-name basis: that means even
-  you can name a column in a foreign table different than on your remote informix
+  you can name a column in a foreign table different than on your remote Informix
   table, it cannot be successfully pushded down and will throw an error (in that case
   you need to turn of predicate pushdown).
 - Currently, the FDW allows to push down predicates with <, <=, >, >= on text/varchar
@@ -127,7 +250,7 @@ of the PostgreSQL database.
 
 = Helper functions =
 
-To get a list of cached informix database connections in a PostgreSQL
+To get a list of cached Informix database connections in a PostgreSQL
 session, use the ifx_fdw_get_connections() procedure:
 
 #= SELECT * FROM ifx_fdw_get_connections();
@@ -143,6 +266,10 @@ db_locale            | en_us.819
 client_locale        | en_US.utf8
 
 = Caveats =
+
+- Even if not currently enforced, the informix FDW heavily relies
+  on the fact, that a foreign table has the same name like its counterpart
+  on the remote Informix server.
 
 == Datatype conversion issues ==
 
