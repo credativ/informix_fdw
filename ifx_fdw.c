@@ -2304,7 +2304,7 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	 * to do an can exit immediately.
 	 */
 	if (!IfxCacheIsInitialized)
-		PG_RETURN_BOOL(false);
+		PG_RETURN_VOID();
 
 	/* Get connection name from argument */
 	conname = text_to_cstring(PG_GETARG_TEXT_P(0));
