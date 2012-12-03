@@ -33,3 +33,8 @@ CREATE OR REPLACE FUNCTION ifx_fdw_get_connections(OUT connection_name text,
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'ifxGetConnections'
 LANGUAGE C VOLATILE STRICT;
+
+CREATE OR REPLACE FUNCTION ifx_fdw_close_connection(IN connection_name text)
+RETURNS void
+AS 'MODUL_PATHNAME', 'ifxCloseConnection'
+LANGUAGE C VOLATILE STRICT;

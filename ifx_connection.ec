@@ -79,6 +79,17 @@ void ifxCommitTransaction()
 	EXEC SQL COMMIT WORK;
 }
 
+void ifxDisconnectConnection(char *conname)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_conname;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_conname = conname;
+
+	EXEC SQL DISCONNECT :ifx_conname;
+}
+
 int ifxGetSQLCAErrd(signed short ca)
 {
 	return sqlca.sqlerrd[ca];
