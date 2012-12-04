@@ -271,6 +271,29 @@ client_locale        | en_US.utf8
   on the fact, that a foreign table has the same name like its counterpart
   on the remote Informix server.
 
+- There is currently a hole in the predicate pushdown implementation:
+
+  The code assumes, that it is safe to omit arguments from a boolean expression,
+  even if it is a OR expression. This is obviously wrong, e.g. for the following
+  example:
+
+  <Var> = 1 OR <FuncExpr>(<Var>) = 2
+
+  Since the Informix FDW currently doesn't push down FuncExpr at all, it will
+  omit this expression from the predicate list, which will lead to a wrong
+  result. Currently the only solution to get such a query right against a
+  foreign Informix table is to turn predicate pushdown off. This is subject
+  to change in the very near future, but the only reasonable solution seems to
+  to abandon the expression completely.
+
+- The predicate pushdown feature allows to push down predicates of the
+  following type:
+
+  <Var> [<,<=,>,>=] 'string literal'
+
+  This could lead to problems in case of incompatible locale and|or collation
+  definitions on the PostgreSQL and Informix side.
+
 == Datatype conversion issues ==
 
 - Informix SQLDATE allows 0000-00-00, this is treated as NULL
