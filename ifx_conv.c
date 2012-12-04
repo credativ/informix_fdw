@@ -39,6 +39,9 @@ static regproc getTypeCastFunction(IfxFdwExecutionState *state,
 								   Oid sourceOid, Oid targetOid);
 static regproc getTypeInputFunction(IfxFdwExecutionState *state,
 									Oid inputOid);
+static void
+deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
+					   IfxPushdownOprInfo *info);
 
 /*******************************************************************************
  * Implementation starts here
@@ -1079,23 +1082,99 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	}
 
 	/*
+	 * Check for <var> IS NULL or <var> IS NOT NULL
+	 */
+	else if (IsA(node, NullTest))
+	{
+		NullTest *ntest;
+		bool      operand_supported;
+
+		info = palloc(sizeof(IfxPushdownOprInfo));
+		info->expr = (Expr *)node;
+		info->expr_string = NULL;
+		ntest = (NullTest *)node;
+
+		/*
+		 * NullTest on composite types can be thrown away immediately.
+		 */
+		if (ntest->argisrow)
+			return true;
+
+		/*
+		 * [NOT] NULL ...
+		 */
+		switch (ntest->nulltesttype)
+		{
+			case IS_NULL:
+				info->type = IFX_IS_NULL;
+				break;
+			case IS_NOT_NULL:
+				info->type = IFX_IS_NOT_NULL;
+				break;
+		}
+
+		/*
+		 * Assume this expression to be able to be pushed
+		 * down...
+		 */
+		operand_supported = true;
+
+		/*
+		 * ...else check wether the expression is passed suitable
+		 * for pushdown.
+		 */
+		switch (((Expr *)(ntest->arg))->type)
+		{
+			case T_Var:
+			{
+				Var *var = (Var *) ntest->arg;
+
+				elog(DEBUG2, "varno %d, bogus_varno %d, varlevelsup %d",
+					 var->varno, context->foreign_rtid, var->varlevelsup);
+
+				if (var->varno != context->foreign_rtid ||
+					var->varlevelsup != 0)
+					operand_supported = false;
+				break;
+			}
+			default:
+				operand_supported = false;
+		}
+
+		/*
+		 * If no supported expression is found, return.
+		 */
+		if (!operand_supported)
+			return true;
+
+		/*
+		 * Mark this expression for pushdown.
+		 */
+		IFX_MARK_PREDICATE_ELEM(info, context);
+
+		/*
+		 * Deparse the expression node...
+		 */
+		deparse_predicate_node(node, context, info);
+	}
+
+	/*
 	 * Check wether this is an OpExpr. If true,
 	 * recurse into it...
 	 */
 	else if (IsA(node, OpExpr))
 	{
 		OpExpr *opr;
-		List   *dpc;
 
 		info = palloc(sizeof(IfxPushdownOprInfo));
-		info->expr = opr  = (OpExpr *)node;
+		info->expr = (Expr *)node;
+		opr  = (OpExpr *)node;
 		info->expr_string = NULL;
 
 		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
 		{
 			ListCell *cell;
 			bool      operand_supported;
-			Node     *copy_obj;
 
 			/*
 			 * Examine the operands of this operator expression. Please
@@ -1148,25 +1227,9 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			IFX_MARK_PREDICATE_ELEM(info, context);
 
 			/*
-			 * Copy the expression node. We don't want to allow
-			 * ChangeVarNodes() to fiddle directly on the baserestrictinfo
-			 * nodes.
+			 * Deparse the expression node...
 			 */
-			copy_obj = copyObject(node);
-
-			/*
-			 * Adjust varno. The RTE currently present aren't adjusted according
-			 * to the FDW entries we get for the ForeignScan node. We call
-			 * ChangeVarNodes() to adjust them to make them usable by deparsing
-			 * later.
-			 */
-			ChangeVarNodes(copy_obj, context->foreign_rtid, 1, 0);
-			dpc = make_deparse_context(context->foreign_relid);
-			info->expr_string = cstring_to_text(deparse_expression(copy_obj, dpc, false, false));
-
-			elog(DEBUG1, "deparsed pushdown predicate %d, %s",
-				 context->count - 1,
-				 text_to_cstring(info->expr_string));
+			deparse_predicate_node(node, context, info);
 		}
 		else
 		{
@@ -1177,4 +1240,37 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 	/* reached in case no further nodes to be examined */
 	return false;
+}
+
+/*
+ * Deparse the given Node into a string assigned
+ * to the specified IfxPushdownOprInfo pointer.
+ */
+static void
+deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
+					   IfxPushdownOprInfo *info)
+{
+	List *dpc; /* deparse context */
+	Node *copy_obj;
+
+	/*
+	 * Copy the expression node. We don't want to allow
+	 * ChangeVarNodes() to fiddle directly on the baserestrictinfo
+	 * nodes.
+	 */
+	copy_obj = copyObject(node);
+
+	/*
+	 * Adjust varno. The RTE currently present aren't adjusted according
+	 * to the FDW entries we get for the ForeignScan node. We call
+	 * ChangeVarNodes() to adjust them to make them usable by deparsing
+	 * later.
+	 */
+	ChangeVarNodes(copy_obj, context->foreign_rtid, 1, 0);
+	dpc = make_deparse_context(context->foreign_relid);
+	info->expr_string = cstring_to_text(deparse_expression(copy_obj, dpc, false, false));
+
+	elog(DEBUG1, "deparsed pushdown predicate %d, %s",
+		 context->count - 1,
+		 text_to_cstring(info->expr_string));
 }

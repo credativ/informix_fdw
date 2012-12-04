@@ -173,6 +173,8 @@ typedef enum IfxOprType
 	IFX_OPR_OR,
 	IFX_OPR_NOT,
 	IFX_OPR_NOT_SUPPORTED,
+	IFX_IS_NULL,
+	IFX_IS_NOT_NULL,
 	IFX_OPR_UNKNOWN
 } IfxOprType;
 
@@ -182,9 +184,8 @@ typedef enum IfxOprType
 typedef struct IfxPushdownOprInfo
 {
 	IfxOprType type;
-	OpExpr    *expr;          /* pointer to operator expression */
+	Expr      *expr;          /* pointer to operator expression */
 	text      *expr_string;   /* decoded string representation of expr */
-	AttrNumber pg_attnum;     /* attribute number of foreign table */
 } IfxPushdownOprInfo;
 
 /*

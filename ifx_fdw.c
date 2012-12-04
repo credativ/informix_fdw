@@ -2099,19 +2099,21 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 			continue;
 		}
 
-		/* ...but handle all others */
-		if ((info->type != IFX_OPR_OR)
-			&& (info->type != IFX_OPR_AND)
-			&& (info->type != IFX_OPR_NOT))
+		switch (info->type)
 		{
-			appendStringInfo(buf, " %s %s",
-							 (i > 1) ? oprStr : "",
-							 text_to_cstring(info->expr_string));
-		}
-		else
-		{
-			/* save current boolean opr context */
-			oprStr = text_to_cstring(info->expr_string);
+			case IFX_OPR_OR:
+			case IFX_OPR_AND:
+			case IFX_OPR_NOT:
+				/* save current boolean opr context */
+				oprStr = text_to_cstring(info->expr_string);
+				break;
+			case IFX_IS_NULL:
+			case IFX_IS_NOT_NULL:
+				/* fall through, no special action necessary */
+			default:
+				appendStringInfo(buf, " %s %s",
+								 (i > 1) ? oprStr : "",
+								 text_to_cstring(info->expr_string));
 		}
 	}
 
