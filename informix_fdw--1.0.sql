@@ -36,5 +36,5 @@ LANGUAGE C VOLATILE STRICT;
 
 CREATE OR REPLACE FUNCTION ifx_fdw_close_connection(IN connection_name text)
 RETURNS void
-AS 'MODUL_PATHNAME', 'ifxCloseConnection'
+AS 'MODULE_PATHNAME', 'ifxCloseConnection'
 LANGUAGE C VOLATILE STRICT;
