@@ -1,0 +1,7 @@
+\set INFORMIXSERVER $$'ol_informix1170'$$
+\set INFORMIXDIR $$'/Applications/IBM/informix'$$
+\set INFORMIXDB $$'test'$$
+\set INFORMIXUSER $$'informix'$$
+\set INFORMIXPASSWORD $$'informix'$$
+\set CLIENT_LOCALE $$'en_US.utf8'$$
+\set DB_LOCALE $$'en_US.819'$$

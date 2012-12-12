@@ -4,3 +4,4 @@ ifx_connection.c
 *.so
 *.o
 .deps/
+sql/regression_variables

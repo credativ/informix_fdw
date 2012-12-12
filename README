@@ -33,9 +33,94 @@ http://www.postgresql.org/docs/9.1/static/sql-createextension.html
 
 = Compiling =
 
-INFORMIXDIR=/path/to/your/csdk/installation make install
+INFORMIXDIR=/path/to/your/csdk/installation USE_PGXS=1 make install
+
+= Regression tests =
+
+If you are a developer and has access to an Informix instance, you can
+run the regression test suite. This currently contains two different
+regression tests:
+
+informix_fdw - Checks core functionality
+informix_fdw_utf8 - Additional tests for Informix UTF8 databases
+
+The latter is currently very generic and likely to be heavily improved
+in the future. The regression tests aren't defined in the Makefile itself,
+since they require a running Informix database instance and you need to
+import a test database into it.
+
+The following steps are required to prepare the regression test suite
+
+* You need a running Informix instance and full access to it, since you
+  need to import the test database. Once you got access, you need to
+  extract the dumps located in the archives from
+
+  informix/ifx_testdb.tar.bz2
+  informix/ifx_testdb_utf8.tar.bz2
+
+  Once extracted, you will find the new subdirectories
+
+  test.exp
+  test_utf8.exp
+
+  in your working directory. These contain the dump data for the test
+  and test_utf8 database. If you can't have a test or test_utf8 database, but a
+  database with a different naming, you need to rename the directory and the
+  embedded SQL scripts there to match the database name you have choosen.
+  If everything is prepared, import the dump into your target database:
+
+  $ dbimport -i test.exp test
+  $ dbimport -i test_utf8.exp test_utf8
+
+* Prepare your private configuration for the regression tests
+
+  There is a template configuration file located in
+
+  sql/regression_variables.template
+
+  Copy this file into
+
+  sql/regression_variables
+
+  and adjust all settings according to your Informix setup.
+
+* Now you can run the test suite:
+
+  $ REGRESS=informix_fdw INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
+  $ REGRESS=informix_fdw_utf8 INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
+
+  When no errors occured due to configuration or setup errors, you should see
+  the following output for each of both regression test:
+
+============== dropping database "contrib_regression" ==============
+DROP DATABASE
+============== creating database "contrib_regression" ==============
+CREATE DATABASE
+ALTER DATABASE
+============== running regression test queries        ==============
+test informix_fdw             ... ok
+
+=====================
+ All 1 tests passed. 
+=====================
+
+Have a look into the the file regression.diffs if there are any errors,
+and if no setup or configuration issues are involved, drop me an email
+with the contents of that file attached ;)
 
 = Example Setup =
+
+Informix database servers use different kindes of connection
+methods (Shared Memory, TCP, ...). It is your responsibility to define
+a proper Informix connection setup. Informix connections are named
+connections via the environment variable INFORMIXSERVER. You don't
+need to export them before connecting to PostgreSQL and using a
+foreign table to your Informix server, the FDW will do all the required
+stuff for you. However, you need a working INFORMIXSERVER setting in
+your Client SDK installation (e.g. $INFORMIXDIR/etc/sqlhosts and
+/etc/services are configured properly). Once you have that working,
+the Informix FDW can be used as follows, assumed you have an Informix
+connection named 'centosifx_tcp':
 
 CREATE EXTENSION informix_fdw;
 
