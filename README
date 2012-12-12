@@ -47,7 +47,9 @@ informix_fdw_utf8 - Additional tests for Informix UTF8 databases
 The latter is currently very generic and likely to be heavily improved
 in the future. The regression tests aren't defined in the Makefile itself,
 since they require a running Informix database instance and you need to
-import a test database into it.
+import a test database into it. Also the regression dump files assume,
+you run the tests with the 'informix' user. If you want a different user,
+make sure you have the required rights to access the tables.
 
 The following steps are required to prepare the regression test suite
 
