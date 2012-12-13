@@ -21,19 +21,19 @@ CREATE EXTENSION informix_fdw;
 --
 CREATE SERVER test_server
 FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver :INFORMIXSERVER,
-         informixdir :INFORMIXDIR);
+OPTIONS (informixserver :'INFORMIXSERVER',
+         informixdir :'INFORMIXDIR');
 CREATE USER MAPPING FOR CURRENT_USER
 SERVER test_server
-OPTIONS (username :INFORMIXUSER, password :INFORMIXPASSWORD);
+OPTIONS (username :'INFORMIXUSER', password :'INFORMIXPASSWORD');
 CREATE FOREIGN TABLE test_utf8
 (
         test text
 )
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
+OPTIONS(database :'INFORMIXDB',
         table 'test_utf8',
-        client_locale :CLIENT_LOCALE);
+        client_locale :'CLIENT_LOCALE');
 SELECT * FROM test_utf8;
   test   
 ---------

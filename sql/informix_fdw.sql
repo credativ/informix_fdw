@@ -30,12 +30,12 @@ CREATE EXTENSION informix_fdw;
 
 CREATE SERVER test_server
 FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver :INFORMIXSERVER,
-         informixdir :INFORMIXDIR);
+OPTIONS (informixserver :'INFORMIXSERVER',
+         informixdir :'INFORMIXDIR');
 
 CREATE USER MAPPING FOR CURRENT_USER
 SERVER test_server
-OPTIONS (username :INFORMIXUSER, password :INFORMIXPASSWORD);
+OPTIONS (username :'INFORMIXUSER', password :'INFORMIXPASSWORD');
 
 --
 -- predicate pushdown test
@@ -43,9 +43,9 @@ OPTIONS (username :INFORMIXUSER, password :INFORMIXPASSWORD);
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
 SERVER test_server
 OPTIONS (table 'inttest',
-         client_locale :CLIENT_LOCALE,
-         db_locale :DB_LOCALE,
-         database :INFORMIXDB);
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB');
 
 SELECT * FROM inttest WHERE f1 = 101 ORDER BY f1;
 SELECT * FROM inttest WHERE f1 = 101 OR f2 IS NULL ORDER BY f1;
@@ -59,16 +59,16 @@ SELECT f2, f3 FROM inttest WHERE f1 >= 4294967296;
 CREATE FOREIGN TABLE byte_test(id integer, data bytea)
 SERVER test_server
 OPTIONS (table 'byte_test',
-        client_locale :CLIENT_LOCALE,
-        db_locale :DB_LOCALE,
-        database :INFORMIXDB);
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB');
 
 CREATE FOREIGN TABLE text_test(id integer, data_binary bytea, data_text text)
 SERVER test_server
 OPTIONS (query 'SELECT * FROM text_test',
-        client_locale :CLIENT_LOCALE,
-        db_locale :DB_LOCALE,
-        database :INFORMIXDB,
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB',
         enable_blobs '1');
 
 -- should fail
@@ -88,9 +88,9 @@ DROP FOREIGN TABLE text_test;
 CREATE FOREIGN TABLE text_test(id integer, data_binary bytea, data_text text)
 SERVER test_server
 OPTIONS (query 'SELECT id, data AS data_binary, data AS data_text FROM text_test',
-        client_locale :CLIENT_LOCALE,
-        db_locale :DB_LOCALE,
-        database :INFORMIXDB,
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB',
         enable_blobs '1');
 
 ALTER FOREIGN TABLE text_test OPTIONS (ADD disable_predicate_pushdown '1');
@@ -117,9 +117,9 @@ CREATE FOREIGN TABLE datetime_test (
     f4 bigint
 )
 SERVER test_server
-OPTIONS (client_locale :CLIENT_LOCALE,
-         database :INFORMIXDB,
-         db_locale :DB_LOCALE,
+OPTIONS (client_locale :'CLIENT_LOCALE',
+         database :'INFORMIXDB',
+         db_locale :'DB_LOCALE',
          gl_date '%iY-%m-%d',
          query 'SELECT f1 AS f1, "comment" AS f2, dt AS f3, id AS f4 FROM datetime_test'
 );
@@ -131,8 +131,8 @@ SELECT * FROM datetime_test ORDER BY f4;
 --
 CREATE FOREIGN TABLE dec_test (val1 numeric(9,2), val2 numeric(8,0))
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
-        client_locale :CLIENT_LOCALE,
+OPTIONS(database :'INFORMIXDB',
+        client_locale :'CLIENT_LOCALE',
         query 'SELECT value AS val1, value AS val2 FROM dec_test');
 
 SELECT * FROM dec_test ORDER BY val1;
@@ -147,8 +147,8 @@ CREATE FOREIGN TABLE nvarchar_test
         val3 bpchar(200)
 )
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
-        client_locale :CLIENT_LOCALE,
+OPTIONS(database :'INFORMIXDB',
+        client_locale :'CLIENT_LOCALE',
         query 'SELECT val AS val1, val AS val2, val AS val3 FROM nvarchar_test');
 
 -- Should succeed
@@ -163,8 +163,8 @@ CREATE FOREIGN TABLE nvarchar_test
         val3 bpchar(2) -- too short
 )
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
-        client_locale :CLIENT_LOCALE,
+OPTIONS(database :'INFORMIXDB',
+        client_locale :'CLIENT_LOCALE',
         query 'SELECT val AS val1, val AS val2, val AS val3 FROM nvarchar_test');
 
 -- Should fail
@@ -180,8 +180,8 @@ CREATE FOREIGN TABLE serial_test
         flag boolean
 )
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
-        client_locale :CLIENT_LOCALE,
+OPTIONS(database :'INFORMIXDB',
+        client_locale :'CLIENT_LOCALE',
         table 'serial_test');
 
 -- should succeed
@@ -205,8 +205,8 @@ CREATE FOREIGN TABLE bar_serial(
        name varchar(100)
 )
 SERVER test_server
-OPTIONS(database :INFORMIXDB,
-        client_locale :CLIENT_LOCALE,
+OPTIONS(database :'INFORMIXDB',
+        client_locale :'CLIENT_LOCALE',
         table 'bar_serial');
 
 -- one row, self join
