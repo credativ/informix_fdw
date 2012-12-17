@@ -24,6 +24,7 @@
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/explain.h"
+#include "commands/vacuum.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "miscadmin.h"

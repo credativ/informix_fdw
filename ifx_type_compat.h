@@ -236,6 +236,7 @@ typedef struct IfxPlanData
 	 */
 	double nrows;
 	double npages;
+	short pagesize;
 	short row_size;
 
 } IfxPlanData;
@@ -430,6 +431,7 @@ int ifxGetSQLCAErrd(signed short ca);
 void ifxSetDescriptorCount(char *descr_name, int count);
 void ifxCommitTransaction(void);
 void ifxRollbackTransaction(void);
+void ifxGetSystableStats(char *tablename, IfxPlanData *planData);
 
 /*
  * Error handling

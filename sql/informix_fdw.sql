@@ -249,6 +249,19 @@ CLOSE cur;
 COMMIT;
 
 --
+-- Test ANALYZE
+--
+
+-- should succeed, but with a no-op, since text_test
+-- is based on a query.
+SET client_min_messages TO WARNING;
+ANALYZE VERBOSE text_test;
+SET client_min_messages TO ERROR;
+
+-- should succeed
+ANALYZE inttest;
+
+--
 -- Clean up
 --
 DROP FOREIGN TABLE inttest;

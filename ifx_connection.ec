@@ -1276,6 +1276,36 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 }
 
 /*
+ * Get statistic information from Informix. These might
+ * not be accurate atm, but we need them for ANALYZE.
+ */
+void ifxGetSystableStats(char *tablename, IfxPlanData *planData)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_tablename;
+	double ifx_npused;
+	double ifx_nrows;
+	short ifx_row_size;
+	short ifx_pagesize;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_tablename = tablename;
+
+	EXEC SQL
+		SELECT npused, nrows, rowsize, pagesize INTO :ifx_npused,
+               :ifx_nrows, :ifx_row_size, :ifx_pagesize
+		FROM systables
+		WHERE tabname = :ifx_tablename;
+
+	planData->nrows = ifx_nrows;
+	planData->npages = ifx_npused;
+	planData->row_size = ifx_row_size;
+	planData->pagesize = ifx_pagesize;
+
+	return;
+}
+
+/*
  * Setup the data buffer for the sqlvar structs and
  * initialize all structures according the memory layout.
  */
