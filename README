@@ -26,8 +26,8 @@ http://www-01.ibm.com/software/data/informix/tools/csdk/
 
 for details. Furthermore, the FDW API is available since
 PostgreSQL 9.1, so at least 9.1 is required to use this
-module. Informix FDW is installed as an EXTENSION, for details
-see
+module. 9.3 is not supported yet. Informix FDW is installed as an EXTENSION, for
+details see
 
 http://www.postgresql.org/docs/9.1/static/sql-createextension.html
 
@@ -68,7 +68,7 @@ The following steps are required to prepare the regression test suite
   in your working directory. These contain the dump data for the test
   and test_utf8 database. If you can't have a test or test_utf8 database, but a
   database with a different naming, you need to rename the directory and the
-  embedded SQL scripts there to match the database name you have choosen.
+  embedded SQL scripts there to match the database name you have chosen.
   If everything is prepared, import the dump into your target database:
 
   $ dbimport -i test.exp test
@@ -91,7 +91,7 @@ The following steps are required to prepare the regression test suite
   $ REGRESS=informix_fdw INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
   $ REGRESS=informix_fdw_utf8 INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
 
-  When no errors occured due to configuration or setup errors, you should see
+  When no errors occurred due to configuration or setup errors, you should see
   the following output for each of both regression test:
 
 ============== dropping database "contrib_regression" ==============
@@ -112,7 +112,7 @@ with the contents of that file attached ;)
 
 = Example Setup =
 
-Informix database servers use different kindes of connection
+Informix database servers use different kinds of connection
 methods (Shared Memory, TCP, ...). It is your responsibility to define
 a proper Informix connection setup. Informix connections are named
 connections via the environment variable INFORMIXSERVER. You don't
@@ -134,7 +134,7 @@ CREATE USER MAPPING FOR CURRENT_USER
 SERVER centosifx_tcp
 OPTIONS (username 'informix', password 'informix');
 
-CREATE FOREIGN TABLE ifx_fdw_test (
+CREATE FOREIGN TABLE foo (
        id integer,
        value integer
     )
@@ -151,13 +151,15 @@ CREATE USER MAPPING FOR CURRENT_USER
 SERVER sles11_tcp
 OPTIONS (username 'informix', password 'informix');
 
-CREATE FOREIGN TABLE ifx_fdw_test (
+CREATE FOREIGN TABLE foo (
        id integer,
        value integer
     )
 SERVER sles11_tcp
 OPTIONS ( query 'SELECT * FROM foo',
           database 'test',
+          db_locale 'en_us.819',
+          client_locale 'en_US.utf8',
           informixserver 'ol_informix1170',
           informixdir '/Applications/IBM/informix');
 
@@ -254,7 +256,7 @@ NUMERIC
 
   NOTE: This setting depends on the available client locales installed with
         your Informix installations. The name to be passed differs from the
-        setting actually taken from PostgreSQL, since PostgreSQL relys on
+        setting actually taken from PostgreSQL, since PostgreSQL relies on
         the operating system locale, where Informix uses its own. This can lead
         to some confusion to find the correct setting and might cause
         compatibility problems (incompatible string comparisons et al.). The
@@ -267,9 +269,9 @@ NUMERIC
 * db_locale
 
   Specifies the locale settings passed to the DB_LOCALE environment variable.
-  This value must be compatible with the CLIENT_LOCALE setting choosen with
+  This value must be compatible with the CLIENT_LOCALE setting chosen with
   the client_locale FDW setting described above. Ideally, this setting reflect
-  the locale settings choosen on the Informix database.
+  the locale settings chosen on the Informix database.
 
   NOTE: The Informix FDW will raise an error with incompatible settings.
 
@@ -290,7 +292,7 @@ NUMERIC
         with non-logging Informix databases under certain conditions. The FDW
         will raise a WARNING if you encounter such a situation.
 
-        The reason for this restricition is that the Informix FDW uses
+        The reason for this restriction is that the Informix FDW uses
         a SCROLL cursor internally per default. However, Informix doesn't
         support SCROLL cursors in case someone is selecting BLOBs from
         a table. We switch to NO SCROLL in case enable_blobs is specified,
@@ -354,7 +356,7 @@ client_locale        | en_US.utf8
 
 = Caveats =
 
-- Even if not currently enforced, the informix FDW heavily relies
+- Even if not currently enforced, the Informix FDW heavily relies
   on the fact, that a foreign table has the same name like its counterpart
   on the remote Informix server.
 
