@@ -972,7 +972,7 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 	{
 		if (coninfo->client_locale)
 			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-							errmsg("conflicting or redundant options: gl_date(%s)",
+							errmsg("conflicting or redundant options: client_locale(%s)",
 								   defGetString(def))));
 
 		coninfo->client_locale = defGetString(def);
