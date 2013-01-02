@@ -148,10 +148,6 @@ static char *ifxFilterQuals(PlannerInfo *planInfo,
 static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 									IfxConnectionInfo *coninfo);
 
-static int
-ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
-					 int targrows, double *totalrows, double *totaldeadrows);
-
 /*******************************************************************************
  * FDW callback routines.
  */
@@ -170,6 +166,14 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 									  ForeignPath *best_path,
 									  List *tlist,
 									  List *scan_clauses);
+
+static int
+ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
+					 int targrows, double *totalrows, double *totaldeadrows);
+
+static bool
+ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
+					   BlockNumber *totalpages);
 
 #else
 
@@ -193,10 +197,6 @@ static void ifxEndForeignScan(ForeignScanState *node);
 
 static void ifxPrepareScan(IfxConnectionInfo *coninfo,
 						   IfxFdwExecutionState *state);
-
-static bool
-ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
-					   BlockNumber *totalpages);
 
 /*******************************************************************************
  * SQL status and helper functions.
@@ -432,6 +432,439 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 }
 
 #if PG_VERSION_NUM >= 90200
+
+/*
+ * Callback for ANALYZE
+ */
+static bool
+ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
+					   BlockNumber *totalpages)
+{
+	IfxConnectionInfo    *coninfo;
+	IfxCachedConnection  *cached_handle;
+	IfxFdwExecutionState *state;
+	ForeignTable         *foreignTable;
+	ListCell             *elem;
+	bool                  is_table;
+	IfxPlanData           planData;
+	IfxSqlStateClass      errclass;
+
+	/*
+	 * Examine wether query or table is specified to form
+	 * the foreign table. In case we get a query, don't allow
+	 * ANALYZE to be run...
+	 */
+	foreignTable = GetForeignTable(RelationGetRelid(relation));
+	is_table     = false;
+	*totalpages  = 1;
+
+	foreach(elem, foreignTable->options)
+	{
+		DefElem *def = (DefElem *) lfirst(elem);
+		if (strcmp(def->defname, "table") == 0)
+			is_table = true;
+	}
+
+	/*
+	 * We don't support analyzing a foreign table which is based
+	 * on a SELECT. Proceed only in case coninfo->table is specified.
+	 *
+	 * We cannot simply error out here, since in case someone wants
+	 * to ANALYZE a whole database this will abort the whole run...
+	 *
+	 * XXX: However, it might have already cached a database connection. Leave
+	 * it for now, but we might want to close it, not sure...
+	 */
+	if (!is_table)
+	{
+		/* analyze.c already prints a WARNING message, so leave it out here */
+		return false;
+	}
+
+	/*
+	 * Retrieve a connection from cache or open a new one.
+	 *
+	 * XXX: should we error out in case we get an connection error?
+	 *      This will abandon the whole ANALYZE run when
+	 *      issued against the whole database...
+	 */
+	if ((cached_handle = ifxSetupConnection(&coninfo,
+											RelationGetRelid(relation),
+											false)) == NULL)
+	{
+		/*
+		 * again, analyze.c will print a "skip message" in case we abort
+		 * this ANALYZE round, but give the user a hint what actually happened
+		 * as an additional WARNING.
+		 *
+		 * Safe to exit here, since no database visible changes are made so far.
+		 */
+		ereport(WARNING,
+				(errmsg("cannot establish remote database connection"),
+				 errdetail("error retrieving or creating cached connection handle")));
+		return false;
+	}
+
+	/*
+	 * Catch any possible errors. Create a generic execution state which
+	 * will carry any possible exceptions.
+	 */
+	state = makeIfxFdwExecutionState(cached_handle->usage);
+
+	/*
+	 * Retrieve basic statistics from Informix for this table,
+	 * calculate totalpages according to them.
+	 */
+	ifxGetSystableStats(coninfo->tablename, &planData);
+
+	/*
+	 * Suppress any ERRORs, we don't want to interrupt a database-wide
+	 * ANALYZE run...
+	 */
+	errclass = ifxSetException(&(state->stmt_info));
+
+	if (errclass != IFX_SUCCESS)
+	{
+
+		if (errclass == IFX_NOT_FOUND)
+		{
+			/* no data found, use default 1 page
+			 *
+			 * XXX: could that really happen??
+			 * systable *should* have a matching tuple for this
+			 * table...
+			 */
+			elog(DEBUG1, "informix fdw: no remote stats data found for table \"%s\"",
+				 RelationGetRelationName(relation));
+		}
+
+		/*
+		 * All other error/warning cases should be catched. We do
+		 * this here to suppress any ERROR, since we don't want to
+		 * abandon a database-wise ANALYZE run...
+		 *
+		 * XXX: Actually i don't like this coding, maybe its better
+		 *      to change ifxCatchExceptions() to mark any errors to
+		 *      be ignored...
+		 */
+		PG_TRY();
+		{
+			ifxCatchExceptions(&(state->stmt_info), 0);
+		}
+		PG_CATCH();
+		{
+			IfxSqlStateMessage message;
+
+			ifxGetSqlStateMessage(1, &message);
+			ereport(WARNING, (errcode(ERRCODE_FDW_ERROR),
+							  errmsg("informix FDW warning: \"%s\"",
+									 message.text),
+							  errdetail("SQLSTATE %s", message.sqlstate)));
+		}
+		PG_END_TRY();
+	}
+	else
+	{
+		elog(DEBUG2, "informix_fdw \"%s\" stats(nrows, npused, rowsize, pagesize): %2f, %2f, %d, %d",
+			 RelationGetRelationName(relation), planData.nrows,
+			 planData.npages, planData.row_size, planData.pagesize);
+
+		/*
+		 * Calculate and convert statistics information to
+		 * match expectations of PostgreSQL...
+		 *
+		 * Default Informix installations run with 2KB block size
+		 * but this could be configured depending on the tablespace.
+		 *
+		 * The idea is to calculate the numbers of pages to match
+		 * the blocksize PostgreSQL currently uses to get a smarter
+		 * cost estimate, thus the following formula is used:
+		 *
+		 * (npages * pagesize) / BLCKSZ
+		 *
+		 * If npage * pagesize is less than BLCKSZ, but the row estimate
+		 * returned show a number larger than 0, we assume one block.
+		 */
+		if (planData.nrows > 0)
+		{
+			*totalpages
+				= (BlockNumber) ((((planData.npages * planData.pagesize) / BLCKSZ) < 1)
+								 ? 1
+								 : (planData.npages * planData.pagesize) / BLCKSZ);
+		}
+		else
+			*totalpages = 0;
+
+		elog(DEBUG1, "totalpages = %d", *totalpages);
+	}
+
+	*func = ifxAcquireSampleRows;
+	return true;
+}
+
+/*
+ * Internal function for ANALYZE callback
+ *
+ * This is essentially the guts for ANALYZE <foreign table>
+ */
+static int
+ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
+					 int targrows, double *totalrows, double *totaldeadrows)
+{
+	Oid foreignTableId;
+	IfxConnectionInfo *coninfo;
+	IfxFdwExecutionState *state;
+	List                 *plan_values;
+	double                anl_state;
+	IfxSqlStateClass      errclass;
+	TupleDesc             tupDesc;
+	Datum                *values;
+	bool                 *nulls;
+	int                   rows_visited;
+	int                   rows_to_skip;
+
+	elog(DEBUG1, "informix_fdw: analyze");
+
+	/*
+	 * Initialize stuff
+	 */
+	*totalrows      = 0;
+	*totaldeadrows = 0;
+	rows_visited   = 0;
+	rows_to_skip   = -1; /* not set yet */
+	foreignTableId = RelationGetRelid(relation);
+
+	/*
+	 * Establish a connection to the Informix server
+	 * or get a previously cached one...there should
+	 * already be a cached connection for this table, if
+	 * ifxAnalyzeForeignTable() found some remote
+	 * statistics to be reused...
+	 *
+	 * This also initializes all required infrastructure
+	 * to scan the remote table.
+	 */
+	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableId);
+
+	/*
+	 * XXX: Move this into a separate function, shared
+	 * code with ifxBeginForeignScan()!!!
+	 */
+
+	/*
+	 * Prepare the scan. This creates a cursor we can use to
+	 */
+	ifxPrepareScan(coninfo, state);
+
+	/*
+	 * Get column definitions for local table...
+	 */
+	ifxPgColumnData(foreignTableId, state);
+
+	/*
+	 * Populate the DESCRIPTOR area, required to get
+	 * the column values later...
+	 */
+	elog(DEBUG1, "populate descriptor area for statement \"%s\"",
+		 state->stmt_info.stmt_name);
+	ifxDescribeAllocatorByName(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, IFX_STACK_ALLOCATE | IFX_STACK_DESCRIBE);
+
+	/*
+	 * Get the number of columns.
+	 */
+	state->stmt_info.ifxAttrCount = ifxDescriptorColumnCount(&state->stmt_info);
+	elog(DEBUG1, "get descriptor column count %d",
+		 state->stmt_info.ifxAttrCount);
+	ifxCatchExceptions(&state->stmt_info, 0);
+	state->stmt_info.ifxAttrDefs = palloc(state->stmt_info.ifxAttrCount
+										  * sizeof(IfxAttrDef));
+
+	/*
+	 * Populate result set column info array.
+	 */
+	if ((state->stmt_info.row_size = ifxGetColumnAttributes(&state->stmt_info)) == 0)
+	{
+		/* oops, no memory to allocate? Something surely went wrong,
+		 * so abort */
+		ifxRewindCallstack(&state->stmt_info);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("could not initialize informix column properties")));
+	}
+
+	/*
+	 * NOTE:
+	 *
+	 * ifxGetColumnAttributes() obtained all information about the
+	 * returned column and stored them within the informix SQLDA and
+	 * sqlvar structs. However, we don't want to allocate memory underneath
+	 * our current memory context, thus we allocate the required memory structure
+	 * on top here. ifxSetupDataBufferAligned() will assign the allocated
+	 * memory area to the SQLDA structure and will maintain the data offsets
+	 * properly aligned.
+	 */
+	state->stmt_info.data = (char *) palloc0(state->stmt_info.row_size);
+	state->stmt_info.indicator = (short *) palloc0(sizeof(short)
+												   * state->stmt_info.ifxAttrCount);
+
+	/*
+	 * Assign sqlvar pointers to the allocated memory area.
+	 */
+	ifxSetupDataBufferAligned(&state->stmt_info);
+
+	/*
+	 * Open the cursor.
+	 */
+	elog(DEBUG1, "open cursor \"%s\"",
+		 state->stmt_info.cursor_name);
+	ifxOpenCursorForPrepared(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, IFX_STACK_OPEN);
+
+	/*
+	 * Okay, we are ready to read the tuples from the remote
+	 * table now.
+	 */
+	anl_state = anl_init_selection_state(targrows);
+
+	/*
+	 * Prepare tuple...
+	 */
+	tupDesc = RelationGetDescr(relation);
+
+	/* XXX: might differ, if we have dynamic target list
+	 *      some time in the future */
+	values  = (Datum *) palloc(state->stmt_info.ifxAttrCount
+							   * sizeof(Datum));
+	nulls   = (bool *) palloc(state->stmt_info.ifxAttrCount
+							  * sizeof(bool));
+
+	/*
+	 * Allocate the data buffer structure required to
+	 * extract column values via our API...
+	 */
+	state->values = palloc(sizeof(IfxValue)
+						   * state->stmt_info.ifxAttrCount);
+
+	/* Start the scan... */
+	ifxFetchRowFromCursor(&(state->stmt_info));
+
+	/*
+	 * Catch exception, especially IFX_NOT_FOUND...
+	 */
+	errclass = ifxSetException(&(state->stmt_info));
+
+	while (errclass == IFX_SUCCESS)
+	{
+		int i;
+
+		*totalrows += 1;
+
+		/*
+		 * Allow user to cancel the ANALYZE run...
+		 */
+		vacuum_delay_point();
+
+		/*
+		 * Read the tuple...
+		 */
+		for (i = 0; i <= state->stmt_info.ifxAttrCount - 1; i++)
+		{
+			bool isnull;
+
+			elog(DEBUG4, "get column ifx attnum %d", i);
+
+			/* ignore dropped columns */
+			if (state->pgAttrDefs[i].attnum < 0)
+			{
+				values[i] = PointerGetDatum(NULL);
+				nulls[i]  = true;
+				continue;
+			}
+
+			/*
+			 * Get the converted value from Informix
+			 * (we get a PostgreSQL datum from the conversion
+			 * routines, suitable to be assigned directly to our
+			 * values array).
+			 */
+			ifxColumnValueByAttNum(state, i, &isnull);
+
+			/*
+			 * Take care for NULL returned by Informix.
+			 */
+			if (isnull)
+			{
+				values[i] = PointerGetDatum(NULL);
+				nulls[i]  = true;
+				continue;
+			}
+
+			/*
+			 * If a datum is not NULL, ifxColumnValueByAttNum()
+			 * had converted the column value into a proper
+			 * PostgreSQL datum.
+			 */
+			nulls[i] = false;
+			values[i] = state->values[i].val;
+		}
+
+		/*
+		 * Built a HeapTuple object from the current row.
+		 */
+		if (rows_visited < targrows)
+		{
+			rows[rows_visited++] = heap_form_tuple(tupDesc, values, nulls);
+		}
+		else
+		{
+			/*
+			 * Follow Vitter's algorithm as defined in
+			 * src/backend/command/analyze.c.
+			 *
+			 * See function acquire_sample_rows() for details.
+			 *
+			 */
+
+			if (rows_to_skip < 0)
+				rows_to_skip = anl_get_next_S(*totalrows, targrows, &anl_state);
+
+			if (rows_to_skip <= 0)
+			{
+				/*
+				 * Found a suitable tuple, replace
+				 * a random tuple within the rows array
+				 */
+				int k = (int) (targrows * anl_random_fract());
+				Assert(k >= 0 && k < targrows);
+
+				/* Free the old tuple */
+				heap_freetuple(rows[k]);
+
+				/* Assign a new one... */
+				rows[k] = heap_form_tuple(tupDesc, values, nulls);
+			}
+
+			rows_to_skip -= 1;
+		}
+
+		/*
+		 * Next one ...
+		 */
+		ifxFetchRowFromCursor(&(state->stmt_info));
+		errclass = ifxSetException(&(state->stmt_info));
+	}
+
+	/* Done, cleanup ... */
+	ifxRewindCallstack(&state->stmt_info);
+
+	ereport(elevel,
+			(errmsg("\"%s\": remote Informix table contains %.0f rows; "
+					"%d rows in sample",
+					RelationGetRelationName(relation),
+					*totalrows, rows_visited)));
+
+	return rows_visited;
+}
 
 /*
  * Get the foreign informix relation estimates. This function
@@ -1115,438 +1548,6 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 	PG_RETURN_POINTER(fdwRoutine);
 }
 
-/*
- * Callback for ANALYZE
- */
-static bool
-ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
-					   BlockNumber *totalpages)
-{
-	IfxConnectionInfo    *coninfo;
-	IfxCachedConnection  *cached_handle;
-	IfxFdwExecutionState *state;
-	ForeignTable         *foreignTable;
-	ListCell             *elem;
-	bool                  is_table;
-	IfxPlanData           planData;
-	IfxSqlStateClass      errclass;
-
-	/*
-	 * Examine wether query or table is specified to form
-	 * the foreign table. In case we get a query, don't allow
-	 * ANALYZE to be run...
-	 */
-	foreignTable = GetForeignTable(RelationGetRelid(relation));
-	is_table     = false;
-	*totalpages  = 1;
-
-	foreach(elem, foreignTable->options)
-	{
-		DefElem *def = (DefElem *) lfirst(elem);
-		if (strcmp(def->defname, "table") == 0)
-			is_table = true;
-	}
-
-	/*
-	 * We don't support analyzing a foreign table which is based
-	 * on a SELECT. Proceed only in case coninfo->table is specified.
-	 *
-	 * We cannot simply error out here, since in case someone wants
-	 * to ANALYZE a whole database this will abort the whole run...
-	 *
-	 * XXX: However, it might have already cached a database connection. Leave
-	 * it for now, but we might want to close it, not sure...
-	 */
-	if (!is_table)
-	{
-		/* analyze.c already prints a WARNING message, so leave it out here */
-		return false;
-	}
-
-	/*
-	 * Retrieve a connection from cache or open a new one.
-	 *
-	 * XXX: should we error out in case we get an connection error?
-	 *      This will abandon the whole ANALYZE run when
-	 *      issued against the whole database...
-	 */
-	if ((cached_handle = ifxSetupConnection(&coninfo,
-											RelationGetRelid(relation),
-											false)) == NULL)
-	{
-		/*
-		 * again, analyze.c will print a "skip message" in case we abort
-		 * this ANALYZE round, but give the user a hint what actually happened
-		 * as an additional WARNING.
-		 *
-		 * Safe to exit here, since no database visible changes are made so far.
-		 */
-		ereport(WARNING,
-				(errmsg("cannot establish remote database connection"),
-				 errdetail("error retrieving or creating cached connection handle")));
-		return false;
-	}
-
-	/*
-	 * Catch any possible errors. Create a generic execution state which
-	 * will carry any possible exceptions.
-	 */
-	state = makeIfxFdwExecutionState(cached_handle->usage);
-
-	/*
-	 * Retrieve basic statistics from Informix for this table,
-	 * calculate totalpages according to them.
-	 */
-	ifxGetSystableStats(coninfo->tablename, &planData);
-
-	/*
-	 * Suppress any ERRORs, we don't want to interrupt a database-wide
-	 * ANALYZE run...
-	 */
-	errclass = ifxSetException(&(state->stmt_info));
-
-	if (errclass != IFX_SUCCESS)
-	{
-
-		if (errclass == IFX_NOT_FOUND)
-		{
-			/* no data found, use default 1 page
-			 *
-			 * XXX: could that really happen??
-			 * systable *should* have a matching tuple for this
-			 * table...
-			 */
-			elog(DEBUG1, "informix fdw: no remote stats data found for table \"%s\"",
-				 RelationGetRelationName(relation));
-		}
-
-		/*
-		 * All other error/warning cases should be catched. We do
-		 * this here to suppress any ERROR, since we don't want to
-		 * abandon a database-wise ANALYZE run...
-		 *
-		 * XXX: Actually i don't like this coding, maybe its better
-		 *      to change ifxCatchExceptions() to mark any errors to
-		 *      be ignored...
-		 */
-		PG_TRY();
-		{
-			ifxCatchExceptions(&(state->stmt_info), 0);
-		}
-		PG_CATCH();
-		{
-			IfxSqlStateMessage message;
-
-			ifxGetSqlStateMessage(1, &message);
-			ereport(WARNING, (errcode(ERRCODE_FDW_ERROR),
-							  errmsg("informix FDW warning: \"%s\"",
-									 message.text),
-							  errdetail("SQLSTATE %s", message.sqlstate)));
-		}
-		PG_END_TRY();
-	}
-	else
-	{
-		elog(DEBUG2, "informix_fdw \"%s\" stats(nrows, npused, rowsize, pagesize): %2f, %2f, %d, %d",
-			 RelationGetRelationName(relation), planData.nrows,
-			 planData.npages, planData.row_size, planData.pagesize);
-
-		/*
-		 * Calculate and convert statistics information to
-		 * match expectations of PostgreSQL...
-		 *
-		 * Default Informix installations run with 2KB block size
-		 * but this could be configured depending on the tablespace.
-		 *
-		 * The idea is to calculate the numbers of pages to match
-		 * the blocksize PostgreSQL currently uses to get a smarter
-		 * cost estimate, thus the following formula is used:
-		 *
-		 * (npages * pagesize) / BLCKSZ
-		 *
-		 * If npage * pagesize is less than BLCKSZ, but the row estimate
-		 * returned show a number larger than 0, we assume one block.
-		 */
-		if (planData.nrows > 0)
-		{
-			*totalpages
-				= (BlockNumber) ((((planData.npages * planData.pagesize) / BLCKSZ) < 1)
-								 ? 1
-								 : (planData.npages * planData.pagesize) / BLCKSZ);
-		}
-		else
-			*totalpages = 0;
-
-		elog(DEBUG1, "totalpages = %d", *totalpages);
-	}
-
-	*func = ifxAcquireSampleRows;
-	return true;
-}
-
-/*
- * Internal function for ANALYZE callback
- *
- * This is essentially the guts for ANALYZE <foreign table>
- */
-static int
-ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
-					 int targrows, double *totalrows, double *totaldeadrows)
-{
-	Oid foreignTableId;
-	IfxConnectionInfo *coninfo;
-	IfxFdwExecutionState *state;
-	List                 *plan_values;
-	double                anl_state;
-	IfxSqlStateClass      errclass;
-	TupleDesc             tupDesc;
-	Datum                *values;
-	bool                 *nulls;
-	int                   rows_visited;
-	int                   rows_to_skip;
-
-	elog(DEBUG1, "informix_fdw: analyze");
-
-	/*
-	 * Initialize stuff
-	 */
-	*totalrows      = 0;
-	*totaldeadrows = 0;
-	rows_visited   = 0;
-	rows_to_skip   = -1; /* not set yet */
-	foreignTableId = RelationGetRelid(relation);
-
-	/*
-	 * Establish a connection to the Informix server
-	 * or get a previously cached one...there should
-	 * already be a cached connection for this table, if
-	 * ifxAnalyzeForeignTable() found some remote
-	 * statistics to be reused...
-	 *
-	 * This also initializes all required infrastructure
-	 * to scan the remote table.
-	 */
-	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableId);
-
-	/*
-	 * XXX: Move this into a separate function, shared
-	 * code with ifxBeginForeignScan()!!!
-	 */
-
-	/*
-	 * Prepare the scan. This creates a cursor we can use to
-	 */
-	ifxPrepareScan(coninfo, state);
-
-	/*
-	 * Get column definitions for local table...
-	 */
-	ifxPgColumnData(foreignTableId, state);
-
-	/*
-	 * Populate the DESCRIPTOR area, required to get
-	 * the column values later...
-	 */
-	elog(DEBUG1, "populate descriptor area for statement \"%s\"",
-		 state->stmt_info.stmt_name);
-	ifxDescribeAllocatorByName(&state->stmt_info);
-	ifxCatchExceptions(&state->stmt_info, IFX_STACK_ALLOCATE | IFX_STACK_DESCRIBE);
-
-	/*
-	 * Get the number of columns.
-	 */
-	state->stmt_info.ifxAttrCount = ifxDescriptorColumnCount(&state->stmt_info);
-	elog(DEBUG1, "get descriptor column count %d",
-		 state->stmt_info.ifxAttrCount);
-	ifxCatchExceptions(&state->stmt_info, 0);
-	state->stmt_info.ifxAttrDefs = palloc(state->stmt_info.ifxAttrCount
-										  * sizeof(IfxAttrDef));
-
-	/*
-	 * Populate result set column info array.
-	 */
-	if ((state->stmt_info.row_size = ifxGetColumnAttributes(&state->stmt_info)) == 0)
-	{
-		/* oops, no memory to allocate? Something surely went wrong,
-		 * so abort */
-		ifxRewindCallstack(&state->stmt_info);
-		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
-						errmsg("could not initialize informix column properties")));
-	}
-
-	/*
-	 * NOTE:
-	 *
-	 * ifxGetColumnAttributes() obtained all information about the
-	 * returned column and stored them within the informix SQLDA and
-	 * sqlvar structs. However, we don't want to allocate memory underneath
-	 * our current memory context, thus we allocate the required memory structure
-	 * on top here. ifxSetupDataBufferAligned() will assign the allocated
-	 * memory area to the SQLDA structure and will maintain the data offsets
-	 * properly aligned.
-	 */
-	state->stmt_info.data = (char *) palloc0(state->stmt_info.row_size);
-	state->stmt_info.indicator = (short *) palloc0(sizeof(short)
-												   * state->stmt_info.ifxAttrCount);
-
-	/*
-	 * Assign sqlvar pointers to the allocated memory area.
-	 */
-	ifxSetupDataBufferAligned(&state->stmt_info);
-
-	/*
-	 * Open the cursor.
-	 */
-	elog(DEBUG1, "open cursor \"%s\"",
-		 state->stmt_info.cursor_name);
-	ifxOpenCursorForPrepared(&state->stmt_info);
-	ifxCatchExceptions(&state->stmt_info, IFX_STACK_OPEN);
-
-	/*
-	 * Okay, we are ready to read the tuples from the remote
-	 * table now.
-	 */
-	anl_state = anl_init_selection_state(targrows);
-
-	/*
-	 * Prepare tuple...
-	 */
-	tupDesc = RelationGetDescr(relation);
-
-	/* XXX: might differ, if we have dynamic target list
-	 *      some time in the future */
-	values  = (Datum *) palloc(state->stmt_info.ifxAttrCount
-							   * sizeof(Datum));
-	nulls   = (bool *) palloc(state->stmt_info.ifxAttrCount
-							  * sizeof(bool));
-
-	/*
-	 * Allocate the data buffer structure required to
-	 * extract column values via our API...
-	 */
-	state->values = palloc(sizeof(IfxValue)
-						   * state->stmt_info.ifxAttrCount);
-
-	/* Start the scan... */
-	ifxFetchRowFromCursor(&(state->stmt_info));
-
-	/*
-	 * Catch exception, especially IFX_NOT_FOUND...
-	 */
-	errclass = ifxSetException(&(state->stmt_info));
-
-	while (errclass == IFX_SUCCESS)
-	{
-		int i;
-
-		*totalrows += 1;
-
-		/*
-		 * Allow user to cancel the ANALYZE run...
-		 */
-		vacuum_delay_point();
-
-		/*
-		 * Read the tuple...
-		 */
-		for (i = 0; i <= state->stmt_info.ifxAttrCount - 1; i++)
-		{
-			bool isnull;
-
-			elog(DEBUG4, "get column ifx attnum %d", i);
-
-			/* ignore dropped columns */
-			if (state->pgAttrDefs[i].attnum < 0)
-			{
-				values[i] = PointerGetDatum(NULL);
-				nulls[i]  = true;
-				continue;
-			}
-
-			/*
-			 * Get the converted value from Informix
-			 * (we get a PostgreSQL datum from the conversion
-			 * routines, suitable to be assigned directly to our
-			 * values array).
-			 */
-			ifxColumnValueByAttNum(state, i, &isnull);
-
-			/*
-			 * Take care for NULL returned by Informix.
-			 */
-			if (isnull)
-			{
-				values[i] = PointerGetDatum(NULL);
-				nulls[i]  = true;
-				continue;
-			}
-
-			/*
-			 * If a datum is not NULL, ifxColumnValueByAttNum()
-			 * had converted the column value into a proper
-			 * PostgreSQL datum.
-			 */
-			nulls[i] = false;
-			values[i] = state->values[i].val;
-		}
-
-		/*
-		 * Built a HeapTuple object from the current row.
-		 */
-		if (rows_visited < targrows)
-		{
-			rows[rows_visited++] = heap_form_tuple(tupDesc, values, nulls);
-		}
-		else
-		{
-			/*
-			 * Follow Vitter's algorithm as defined in
-			 * src/backend/command/analyze.c.
-			 *
-			 * See function acquire_sample_rows() for details.
-			 *
-			 */
-
-			if (rows_to_skip < 0)
-				rows_to_skip = anl_get_next_S(*totalrows, targrows, &anl_state);
-
-			if (rows_to_skip <= 0)
-			{
-				/*
-				 * Found a suitable tuple, replace
-				 * a random tuple within the rows array
-				 */
-				int k = (int) (targrows * anl_random_fract());
-				Assert(k >= 0 && k < targrows);
-
-				/* Free the old tuple */
-				heap_freetuple(rows[k]);
-
-				/* Assign a new one... */
-				rows[k] = heap_form_tuple(tupDesc, values, nulls);
-			}
-
-			rows_to_skip -= 1;
-		}
-
-		/*
-		 * Next one ...
-		 */
-		ifxFetchRowFromCursor(&(state->stmt_info));
-		errclass = ifxSetException(&(state->stmt_info));
-	}
-
-	/* Done, cleanup ... */
-	ifxRewindCallstack(&state->stmt_info);
-
-	ereport(elevel,
-			(errmsg("\"%s\": remote Informix table contains %.0f rows; "
-					"%d rows in sample",
-					RelationGetRelationName(relation),
-					*totalrows, rows_visited)));
-
-	return rows_visited;
-}
 
 /*
  * ifxReScanForeignScan
