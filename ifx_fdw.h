@@ -67,9 +67,9 @@ typedef struct IfxQueryData
  */
 typedef struct PgAttrDef
 {
-	int2 attnum;
-	Oid  atttypid;
-	int  atttypmod;
+	int16 attnum;
+	Oid   atttypid;
+	int   atttypmod;
 	char* attname;
 } PgAttrDef;
 

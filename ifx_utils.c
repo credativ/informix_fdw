@@ -85,19 +85,19 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 		= makeFdwStringConst(state->stmt_info.cursor_name);
 
 	const_vals[SERIALIZED_CALLSTACK]
-		= makeFdwInt2Const(state->stmt_info.call_stack);
+		= makeFdwInt16Const(state->stmt_info.call_stack);
 
 	const_vals[SERIALIZED_QUALS]
 		= makeFdwStringConst(state->stmt_info.predicate);
 
 	const_vals[SERIALIZED_CURSOR_TYPE]
-		= makeFdwInt4Const(state->stmt_info.cursorUsage);
+		= makeFdwInt32Const(state->stmt_info.cursorUsage);
 
 	const_vals[SERIALIZED_SPECIAL_COLS]
-		= makeFdwInt2Const(state->stmt_info.special_cols);
+		= makeFdwInt16Const(state->stmt_info.special_cols);
 
 	const_vals[SERIALIZED_REFID]
-		= makeFdwInt4Const(state->stmt_info.refid);
+		= makeFdwInt32Const(state->stmt_info.refid);
 }
 
 /*
@@ -176,10 +176,10 @@ int ifxGetSerializedInt32Field(List *list, int ident)
 	return result;
 }
 
-int2 ifxGetSerializedInt16Field(List *list, int ident)
+int16 ifxGetSerializedInt16Field(List *list, int ident)
 {
 	Const *const_expr;
-	int2   result;
+	int16  result;
 
 	const_expr = (Const *) list_nth(list, ident);
 
@@ -201,7 +201,7 @@ Datum ifxSetSerializedInt32Field(List *list, int ident, int value)
 	return const_expr->constvalue;
 }
 
-Datum ifxSetSerializedInt16Field(List *list, int ident, int2 value)
+Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value)
 {
 	Const *const_expr;
 

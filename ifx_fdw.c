@@ -16,6 +16,10 @@
 #include "ifx_node_utils.h"
 #include "ifx_conncache.h"
 
+#if PG_VERSION_NUM > 90200
+#include "access/htup_details.h"
+#endif
+
 PG_MODULE_MAGIC;
 
 /*
@@ -1301,7 +1305,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 				ObjectIdGetDatum(foreignTableOid));
 	ScanKeyInit(&key[1], Anum_pg_attribute_attnum,
 				BTGreaterStrategyNumber, F_INT2GT,
-				Int16GetDatum((int2)0));
+				Int16GetDatum((int16)0));
 	scan = systable_beginscan(attrRel, AttributeRelidNumIndexId, true,
 							  SnapshotNow, 2, key);
 

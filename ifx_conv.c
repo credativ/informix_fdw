@@ -17,6 +17,11 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+
+#if PG_VERSION_NUM > 90200
+#include "access/htup_details.h"
+#endif
+
 #include "catalog/pg_cast.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_operator.h"
@@ -304,7 +309,7 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 	{
 		case INT2OID:
 		{
-			int2 val;
+			int16 val;
 
 			/* accepts int2 only */
 			if (IFX_ATTRTYPE_P(state, attnum) != IFX_SMALLINT)

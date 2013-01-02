@@ -27,13 +27,13 @@
 			  PointerGetDatum(cstring_to_text(_field_)),	\
               false, false)
 
-#define makeFdwInt2Const(_field_)\
-	makeConst(INT2OID, -1, InvalidOid, sizeof(int2),\
+#define makeFdwInt16Const(_field_)\
+	makeConst(INT2OID, -1, InvalidOid, sizeof(int16),\
               Int16GetDatum(_field_),\
               false, true)
 
-#define makeFdwInt4Const(_field_)\
-	makeConst(INT4OID, -1, InvalidOid, sizeof(int4),\
+#define makeFdwInt32Const(_field_)\
+	makeConst(INT4OID, -1, InvalidOid, sizeof(int32),\
               Int32GetDatum(_field_),\
               false, true)
 
@@ -70,11 +70,11 @@ List * ifxSerializePlanData(IfxConnectionInfo *coninfo,
 							PlannerInfo *plan);
 void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 						   void *fdw_private);
-int2 ifxGetSerializedInt16Field(List *list, int ident);
+int16 ifxGetSerializedInt16Field(List *list, int ident);
 int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);
 Datum ifxSetSerializedInt32Field(List *list, int ident, int value);
-Datum ifxSetSerializedInt16Field(List *list, int ident, int2 value);
+Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value);
 
 bytea *
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);

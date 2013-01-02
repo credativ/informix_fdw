@@ -453,7 +453,7 @@ char *ifxGetDateAsString(IfxStatementInfo *state, int ifx_attnum,
 char *ifxGetTimestampAsString(IfxStatementInfo *state, int ifx_attnum,
 							  char *buf);
 char ifxGetBool(IfxStatementInfo *state, int ifx_attnum);
-int2 ifxGetInt2(IfxStatementInfo *state, int attnum);
+short ifxGetInt2(IfxStatementInfo *state, int attnum);
 int ifxGetInt4(IfxStatementInfo *state, int attnum);
 char *ifxGetText(IfxStatementInfo *state, int attnum);
 char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
