@@ -26,7 +26,7 @@ http://www-01.ibm.com/software/data/informix/tools/csdk/
 
 for details. Furthermore, the FDW API is available since
 PostgreSQL 9.1, so at least 9.1 is required to use this
-module. 9.3 is not supported yet. Informix FDW is installed as an EXTENSION, for
+module. Informix FDW is installed as an EXTENSION, for
 details see
 
 http://www.postgresql.org/docs/9.1/static/sql-createextension.html
