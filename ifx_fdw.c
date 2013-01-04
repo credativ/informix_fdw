@@ -16,7 +16,7 @@
 #include "ifx_node_utils.h"
 #include "ifx_conncache.h"
 
-#if PG_VERSION_NUM > 90200
+#if PG_VERSION_NUM >= 90300
 #include "access/htup_details.h"
 #endif
 
