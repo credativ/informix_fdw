@@ -71,6 +71,7 @@ typedef struct PgAttrDef
 	Oid   atttypid;
 	int   atttypmod;
 	char* attname;
+	bool  attnotnull;
 } PgAttrDef;
 
 /*

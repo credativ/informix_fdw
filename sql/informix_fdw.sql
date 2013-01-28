@@ -193,6 +193,19 @@ SELECT f1, f2, flag FROM serial_test WHERE flag IS NULL;
 -- should succeed
 SELECT f2 FROM serial_test WHERE f1 = 100 OR flag IS NULL;
 
+--
+-- Check NOT NULL constraints
+--
+ALTER FOREIGN TABLE inttest ALTER f2 SET NOT NULL;
+
+-- should fail
+SELECT f1, f2, f3 FROM inttest WHERE f2 IS NULL;
+
+ALTER FOREIGN TABLE inttest ALTER f2 DROP NOT NULL;
+
+--should succeed
+SELECT f1, f2, f3 FROM inttest WHERE f2 IS NULL;
+
 --------------------------------------------------------------------------------
 -- The following tests checks the behavior of the Informix FDW
 -- when used in self joins or joins to different foreign Informix tables.

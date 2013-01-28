@@ -1346,6 +1346,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		festate->pgAttrDefs[attrIndex - 1].atttypid = attrTuple->atttypid;
 		festate->pgAttrDefs[attrIndex - 1].atttypmod = attrTuple->atttypmod;
 		festate->pgAttrDefs[attrIndex - 1].attname = pstrdup(NameStr(attrTuple->attname));
+		festate->pgAttrDefs[attrIndex - 1].attnotnull = attrTuple->attnotnull;
 	}
 
 	systable_endscan(scan);
@@ -2436,6 +2437,21 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 		 */
 		if (isnull)
 		{
+			/*
+			 * If we encounter a NULL value from Informix where
+			 * the local definition is NOT NULL, we throw an error.
+			 *
+			 * The PostgreSQL optimizer makes some assumptions about
+			 * columns and their NULLability, so treat 'em accordingly.
+			 */
+			if (state->pgAttrDefs[i].attnotnull)
+			{
+				/* Reset remote resources */
+				ifxRewindCallstack(&(state->stmt_info));
+				elog(ERROR, "NULL value for column \"%s\" violates local NOT NULL constraint",
+					 state->pgAttrDefs[i].attname);
+			}
+
 			tupleSlot->tts_isnull[i] = true;
 			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
 			continue;
