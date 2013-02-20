@@ -206,7 +206,7 @@ typedef struct IfxPushdownOprContext
 /*
  * Number of required connection parameters
  */
-#define IFX_REQUIRED_CONN_KEYWORDS 3
+#define IFX_REQUIRED_CONN_KEYWORDS 4
 
 /*
  * Helper macros to access various struct members.

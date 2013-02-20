@@ -1629,7 +1629,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	UserMapping   *userMap;
 	List          *options;
 	ListCell      *elem;
-	bool           mandatory[4] = { false, false, false, false };
+	bool           mandatory[IFX_REQUIRED_CONN_KEYWORDS] = { false, false, false, false };
 	int            i;
 
 	Assert(coninfo != NULL);
