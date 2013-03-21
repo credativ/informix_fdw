@@ -16,6 +16,7 @@
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
 #include "nodes/nodes.h"
+#include "utils/bytea.h"
 
 /*******************************************************************************
  * Helper macros.
@@ -68,6 +69,9 @@
 List * ifxSerializePlanData(IfxConnectionInfo *coninfo,
 							IfxFdwExecutionState *state,
 							PlannerInfo *plan);
+void
+ifxDeserializePlanData(IfxPlanData *planData,
+					   void *fdw_private);
 void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 						   void *fdw_private);
 int16 ifxGetSerializedInt16Field(List *list, int ident);
@@ -75,8 +79,5 @@ int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);
 Datum ifxSetSerializedInt32Field(List *list, int ident, int value);
 Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value);
-
-bytea *
-ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);
 
 #endif

@@ -1148,7 +1148,7 @@ static void ifxGetForeignPaths(PlannerInfo *root,
 			 create_foreignscan_path(root, baserel,
 									 baserel->rows,
 									 planState->coninfo->planData.costs,
-									 planState->coninfo->planData.costs,
+									 planState->coninfo->planData.total_costs,
 									 NIL,
 									 NULL,
 									 NIL));
@@ -2847,6 +2847,7 @@ ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
 	IfxFdwExecutionState *festate;
 	List                 *plan_values;
+	IfxPlanData           planData;
 
 	festate = (IfxFdwExecutionState *) node->fdw_state;
 
@@ -2855,10 +2856,12 @@ ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	 */
 	plan_values = PG_SCANSTATE_PRIVATE_P(node);
 	ifxDeserializeFdwData(festate, plan_values);
+	ifxDeserializePlanData(&planData, plan_values);
 
 	/* Give some possibly useful info about startup costs */
 	if (es->costs)
 	{
+		ExplainPropertyFloat("Informix costs", planData.costs, 2, es);
 		ExplainPropertyText("Informix query", festate->stmt_info.query, es);
 	}
 }

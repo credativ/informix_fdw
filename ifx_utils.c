@@ -16,6 +16,9 @@
 
 static void ifxFdwExecutionStateToList(Const *const_vals[],
 									   IfxFdwExecutionState *state);
+static Datum
+ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);
+
 
 /*
  * Deserialize data from fdw_private, passed
@@ -52,14 +55,50 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 															   SERIALIZED_REFID);
 }
 
-bytea *
+/*
+ * Copies the plan data hold by the specified
+ * IfxConnectionInfo pointer into a bytea datum,
+ * suitable to be passed over by ifxSerializePlanData().
+ */
+static Datum
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo)
 {
-	bytea *data;
+	bytea *result;
 
-	data = (bytea *) palloc(sizeof(IfxPlanData) + VARHDRSZ);
-	memcpy(VARDATA(data), &(coninfo->planData), sizeof(IfxPlanData));
-	return data;
+	result = (bytea *) palloc(sizeof(IfxPlanData) + VARHDRSZ);
+	SET_VARSIZE(result, sizeof(IfxPlanData));
+	memcpy(VARDATA(result), &(coninfo->planData), sizeof(IfxPlanData));
+	return PointerGetDatum(result);
+}
+
+/*
+ * Deserializes a IfxPlanData pointer from the
+ * given list of Const values. Suitable to be used to
+ * retrieve a IfxPlanData struct formerly serialized
+ * by ifxSerializePlanData().
+ */
+void
+ifxDeserializePlanData(IfxPlanData *planData,
+					   void *fdw_private)
+{
+	Const *const_expr;
+	bytea *bvalue;
+	List  *vals;
+
+	vals = (List *) fdw_private;
+	const_expr = (Const *) list_nth(vals, SERIALIZED_PLAN_DATA);
+
+	Assert((const_expr != NULL)
+		   && (planData != NULL)
+		   && (const_expr->consttype == BYTEAOID));
+
+	bvalue = DatumGetByteaP(const_expr->constvalue);
+
+	elog(DEBUG1, "deserialized planData %s\n, varsize %d",
+		 nodeToString(const_expr),
+		 VARSIZE(bvalue));
+
+	memcpy(planData, VARDATA(bvalue), sizeof(IfxPlanData));
 }
 
 /*
@@ -136,7 +175,7 @@ List * ifxSerializePlanData(IfxConnectionInfo *coninfo,
 	 */
 
 	vals[SERIALIZED_PLAN_DATA] = makeConst(BYTEAOID, -1, InvalidOid, -1,
-										   PointerGetDatum(ifxFdwPlanDataAsBytea(coninfo)),
+										   ifxFdwPlanDataAsBytea(coninfo),
 										   false, false);
 	ifxFdwExecutionStateToList(vals, state);
 
