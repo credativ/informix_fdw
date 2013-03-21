@@ -813,7 +813,7 @@ int2 ifxGetInt2(IfxStatementInfo *state, int ifx_attnum)
 	result = 0;
 
 	/*
-	 * Copy the data into from the sqlvar data area.
+	 * Copy the data into from sqlvar data area.
 	 * Check for NULL-ness before and mark the value
 	 * accordingly.
 	 */

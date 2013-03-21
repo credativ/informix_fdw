@@ -275,6 +275,48 @@ SET client_min_messages TO ERROR;
 ANALYZE inttest;
 
 --
+-- ALTER FOREIGN TABLE ... DROP COLUMN
+--
+
+--
+-- Drop first column
+--
+ALTER FOREIGN TABLE inttest DROP COLUMN f1;
+
+--
+-- Should fail, since table definition doesn't match anymore
+-- (BIGINT -> INT4 conversion attempt rejected)
+--
+SELECT * FROM inttest WHERE f2 = 120;
+
+-- ANALYZE as well...
+ANALYZE inttest;
+
+--
+-- Adjust foreign table definition to match local columns
+--
+ALTER FOREIGN TABLE inttest OPTIONS(ADD query 'SELECT f2, f3 FROM inttest', DROP table);
+
+SELECT * FROM inttest ORDER BY f2, f3 LIMIT 5;
+
+--
+-- Add f1 column again
+--
+ALTER FOREIGN TABLE inttest ADD COLUMN f1 bigint;
+
+--
+-- Should still fail, can't match column list
+--
+SELECT * FROM inttest WHERE f1 = 101;
+
+--
+-- Adjust foreign table again to match column list.
+--
+ALTER FOREIGN TABLE inttest OPTIONS(SET query 'SELECT f2, f3, f1 FROM inttest');
+
+SELECT f1, f2, f3 FROM inttest WHERE f1 = 102;
+
+--
 -- Clean up
 --
 DROP FOREIGN TABLE inttest;

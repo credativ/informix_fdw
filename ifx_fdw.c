@@ -20,6 +20,8 @@
 #include "access/htup_details.h"
 #endif
 
+#include "utils/lsyscache.h"
+
 PG_MODULE_MAGIC;
 
 /*
@@ -152,6 +154,13 @@ static char *ifxFilterQuals(PlannerInfo *planInfo,
 static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 									IfxConnectionInfo *coninfo);
 
+static IfxSqlStateClass
+ifxFetchTuple(IfxFdwExecutionState *state);
+
+static void
+ifxGetValuesFromTuple(IfxFdwExecutionState *state,
+					  TupleTableSlot *tupleSlot);
+
 /*******************************************************************************
  * FDW callback routines.
  */
@@ -214,6 +223,155 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
 /*******************************************************************************
  * Implementation starts here
  */
+
+/*
+ * Allocates memory for the specified structures to
+ * make the usable to store Informix values retrieved by
+ * ifxGetValuesFromTuple().
+ */
+static void
+ifxSetupTupleTableSlot(IfxFdwExecutionState *state,
+					   TupleTableSlot *tupleSlot)
+{
+
+	Assert((tupleSlot != NULL) && (state != NULL));
+
+	tupleSlot->tts_isempty = false;
+	tupleSlot->tts_nvalid = state->pgAttrCount;
+	tupleSlot->tts_values = (Datum *) palloc(sizeof(Datum)
+											 * tupleSlot->tts_nvalid);
+	tupleSlot->tts_isnull = (bool *) palloc(sizeof(bool)
+											* tupleSlot->tts_nvalid);
+
+}
+
+/*
+ * Converts the current fetched tuple from informix into
+ * PostgreSQL datums and store them into the specified
+ * TupleTableSlot.
+ */
+static void
+ifxGetValuesFromTuple(IfxFdwExecutionState *state,
+					  TupleTableSlot *tupleSlot)
+{
+	int i;
+
+	/*
+	 * Allocate slots for column value data.
+	 *
+	 * Used to retrieve Informix values by ifxColumnValueByAttnum().
+	 */
+	state->values = palloc0fast(sizeof(IfxValue)
+								* state->stmt_info.ifxAttrCount);
+
+	for (i = 0; i <= state->pgAttrCount - 1; i++)
+	{
+		bool isnull;
+
+		elog(DEBUG5, "get column pg/ifx mapped attnum %d/%d",
+			 i, PG_MAPPED_IFX_ATTNUM(state, i));
+
+		/*
+		 * It might happen that the FDW table has dropped
+		 * columns...check for them and insert a NULL value instead..
+		 */
+		if (state->pgAttrDefs[i].attnum < 0)
+		{
+			tupleSlot->tts_isnull[i] = true;
+			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
+			continue;
+		}
+
+		/*
+		 * Retrieve a converted datum from the current
+		 * column and store it within state context. This also
+		 * sets and checks the indicator variable to record any
+		 * NULL occurences.
+		 */
+		ifxColumnValueByAttNum(state, i, &isnull);
+
+		/*
+		 * Same for retrieved NULL values from informix.
+		 */
+		if (isnull)
+		{
+			/*
+			 * If we encounter a NULL value from Informix where
+			 * the local definition is NOT NULL, we throw an error.
+			 *
+			 * The PostgreSQL optimizer makes some assumptions about
+			 * columns and their NULLability, so treat 'em accordingly.
+			 */
+			if (state->pgAttrDefs[i].attnotnull)
+			{
+				/* Reset remote resources */
+				ifxRewindCallstack(&(state->stmt_info));
+				elog(ERROR, "NULL value for column \"%s\" violates local NOT NULL constraint",
+					 state->pgAttrDefs[i].attname);
+			}
+
+			tupleSlot->tts_isnull[i] = true;
+			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
+			continue;
+		}
+
+		/*
+		 * ifxColumnValueByAttnum() has already converted the current
+		 * column value into a datum. We just need to assign it to the
+		 * tupleSlot and we're done.
+		 */
+		tupleSlot->tts_isnull[i] = false;
+		tupleSlot->tts_values[i] = state->values[PG_MAPPED_IFX_ATTNUM(state, i)].val;
+	}
+}
+
+/*
+ * Moves the cursor one row forward and fetches the tuple
+ * into the internal SQLDA informix structure referenced
+ * by the specified state handle.
+ *
+ * If the specified IfxFdwExecutionState was prepared with a
+ * ReScan event, ifxFetchTuple() will set the cursor to
+ * the first tuple, in case the current cursor is SCROLLable.
+ * If not, the cursor is reopened for a rescan.
+ */
+static IfxSqlStateClass
+ifxFetchTuple(IfxFdwExecutionState *state)
+{
+
+	/*
+	 * Fetch tuple from cursor
+	 */
+	if (state->rescan)
+	{
+		if (state->stmt_info.cursorUsage == IFX_SCROLL_CURSOR)
+			ifxFetchFirstRowFromCursor(&state->stmt_info);
+		else
+		{
+			elog(DEBUG3, "re-opening informix cursor in rescan state");
+			ifxCloseCursor(&state->stmt_info);
+			ifxCatchExceptions(&state->stmt_info, 0);
+
+			ifxOpenCursorForPrepared(&state->stmt_info);
+			ifxCatchExceptions(&state->stmt_info, 0);
+
+			ifxFetchRowFromCursor(&state->stmt_info);
+		}
+		state->rescan = false;
+	}
+	else
+	{
+		ifxFetchRowFromCursor(&state->stmt_info);
+	}
+
+	/*
+	 * Catch any informix exception. We also need to
+	 * check for IFX_NOT_FOUND, in which case no more rows
+	 * must be processed.
+	 */
+	return ifxSetException(&(state->stmt_info));
+
+}
 
 /*
  * Entry point for scan preparation. Does all the leg work
@@ -681,6 +839,20 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 	elog(DEBUG1, "get descriptor column count %d",
 		 state->stmt_info.ifxAttrCount);
 	ifxCatchExceptions(&state->stmt_info, 0);
+
+	/*
+	 * XXX: It makes no sense to have a local column list with *more*
+	 * columns than the remote table. I can't think of any use case
+	 * for this atm, anyone?
+	 */
+	if (PG_VALID_COLS_COUNT(state) > state->stmt_info.ifxAttrCount)
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("foreign table \"%s\" has more columns than remote source",
+							   get_rel_name(foreignTableId))));
+	}
+
 	state->stmt_info.ifxAttrDefs = palloc(state->stmt_info.ifxAttrCount
 										  * sizeof(IfxAttrDef));
 
@@ -737,9 +909,9 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 
 	/* XXX: might differ, if we have dynamic target list
 	 *      some time in the future */
-	values  = (Datum *) palloc(state->stmt_info.ifxAttrCount
+	values  = (Datum *) palloc(state->pgAttrCount
 							   * sizeof(Datum));
-	nulls   = (bool *) palloc(state->stmt_info.ifxAttrCount
+	nulls   = (bool *) palloc(state->pgAttrCount
 							  * sizeof(bool));
 
 	/*
@@ -764,18 +936,19 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 		*totalrows += 1;
 
 		/*
-		 * Allow user to cancel the ANALYZE run...
+		 * Allow delay...
 		 */
 		vacuum_delay_point();
 
 		/*
 		 * Read the tuple...
 		 */
-		for (i = 0; i <= state->stmt_info.ifxAttrCount - 1; i++)
+		for (i = 0; i <= state->pgAttrCount - 1; i++)
 		{
 			bool isnull;
 
-			elog(DEBUG4, "get column ifx attnum %d", i);
+			elog(DEBUG5, "get column pg/ifx mapped attnum %d/%d",
+				 i, PG_MAPPED_IFX_ATTNUM(state, i));
 
 			/* ignore dropped columns */
 			if (state->pgAttrDefs[i].attnum < 0)
@@ -809,7 +982,7 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 			 * PostgreSQL datum.
 			 */
 			nulls[i] = false;
-			values[i] = state->values[i].val;
+			values[i] = state->values[PG_MAPPED_IFX_ATTNUM(state, i)].val;
 		}
 
 		/*
@@ -1285,16 +1458,19 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	ScanKeyData       key[2];
 	Form_pg_attribute attrTuple;
 	Relation          foreignRel;
-	int               attrIndex;
+	int               pgAttrIndex;
+	int               ifxAttrIndex;
 
-	attrIndex = 0;
+	pgAttrIndex  = 0;
+	ifxAttrIndex = 0;
+	festate->pgDroppedAttrCount = 0;
 
 	/* open foreign table, should be locked already */
 	foreignRel = heap_open(foreignTableOid, NoLock);
 	festate->pgAttrCount = RelationGetNumberOfAttributes(foreignRel);
 	heap_close(foreignRel, NoLock);
 
-	festate->pgAttrDefs = palloc(sizeof(PgAttrDef) * festate->pgAttrCount);
+	festate->pgAttrDefs = palloc0fast(sizeof(PgAttrDef) * festate->pgAttrCount);
 
 	/*
 	 * Get all attributes for the given foreign table.
@@ -1311,27 +1487,49 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		/* don't rely on attnum directly */
-		++attrIndex;
 		attrTuple = (Form_pg_attribute) GETSTRUCT(tuple);
 
-		/* Check for dropped columns. Any match is recorded
-		 * by setting the corresponding attribute number to -1.
+		/*
+		 * Current PostgreSQL attnum.
+		 */
+		++pgAttrIndex;
+
+		/*
+		 * Ignore dropped columns.
 		 */
 		if (attrTuple->attisdropped)
 		{
-			festate->pgAttrDefs[attrIndex - 1].attnum = -1;
-			festate->pgAttrDefs[attrIndex - 1].atttypid = -1;
-			festate->pgAttrDefs[attrIndex - 1].atttypmod = -1;
-			festate->pgAttrDefs[attrIndex - 1].attname = NULL;
+			festate->pgAttrDefs[pgAttrIndex - 1].attnum = -1;
+
+			/*
+			 * In case of dropped columns, we differ from the attribute
+			 * numbers used for Informix. Record them accordingly.
+			 */
+			festate->pgAttrDefs[pgAttrIndex - 1].ifx_attnum = -1;
+			festate->pgAttrDefs[pgAttrIndex - 1].atttypid = -1;
+			festate->pgAttrDefs[pgAttrIndex - 1].atttypmod = -1;
+			festate->pgAttrDefs[pgAttrIndex - 1].attname = NULL;
+			festate->pgDroppedAttrCount++;
 			continue;
 		}
+
+		/*
+		 * Don't rely on pgAttrIndex directly.
+		 *
+		 * RelationGetNumberOfAttributes() always counts the number
+		 * of attributes *including* dropped columns.
+		 *
+		 * Increment ifxAttrIndex only in case we don't have
+		 * a dropped column. Otherwise we won't match the
+		 * Informix attribute list.
+		 */
+		++ifxAttrIndex;
 
 		/*
 		 * Protect against corrupted numbers in pg_class.relnatts
 		 * and number of attributes retrieved from pg_attribute.
 		 */
-		if (attrIndex > festate->pgAttrCount)
+		if (pgAttrIndex > festate->pgAttrCount)
 		{
 			systable_endscan(scan);
 			heap_close(attrRel, AccessShareLock);
@@ -1342,13 +1540,19 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		 * Save the attribute and all required properties for
 		 * later usage.
 		 */
-		festate->pgAttrDefs[attrIndex - 1].attnum = attrTuple->attnum;
-		festate->pgAttrDefs[attrIndex - 1].atttypid = attrTuple->atttypid;
-		festate->pgAttrDefs[attrIndex - 1].atttypmod = attrTuple->atttypmod;
-		festate->pgAttrDefs[attrIndex - 1].attname = pstrdup(NameStr(attrTuple->attname));
-		festate->pgAttrDefs[attrIndex - 1].attnotnull = attrTuple->attnotnull;
+		festate->pgAttrDefs[pgAttrIndex - 1].attnum = attrTuple->attnum;
+		festate->pgAttrDefs[pgAttrIndex - 1].ifx_attnum = ifxAttrIndex;
+		festate->pgAttrDefs[pgAttrIndex - 1].atttypid = attrTuple->atttypid;
+		festate->pgAttrDefs[pgAttrIndex - 1].atttypmod = attrTuple->atttypmod;
+		festate->pgAttrDefs[pgAttrIndex - 1].attname = pstrdup(NameStr(attrTuple->attname));
+		festate->pgAttrDefs[pgAttrIndex - 1].attnotnull = attrTuple->attnotnull;
+
+		elog(DEBUG5, "mapped attnum PG/IFX %d => %d",
+			 festate->pgAttrDefs[pgAttrIndex - 1].attnum,
+			 PG_MAPPED_IFX_ATTNUM(festate, pgAttrIndex - 1));
 	}
 
+	/* finish */
 	systable_endscan(scan);
 	heap_close(attrRel, AccessShareLock);
 }
@@ -1738,8 +1942,17 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		}
 	}
 
+	if ((coninfo->query == NULL)
+		 && (coninfo->tablename == NULL))
+	{
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("invalid options for remote table \"%s\"",
+							   get_rel_name(foreignTable->relid)),
+						errdetail("either parameter \"query\" or \"table\" is missing")));
+	}
+
 	/*
-	 * Check for mandatory options
+	 * Check for all other mandatory options
 	 */
 	for (i = 0; i < IFX_REQUIRED_CONN_KEYWORDS; i++)
 	{
@@ -1979,6 +2192,20 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	elog(DEBUG1, "get descriptor column count %d",
 		 festate->stmt_info.ifxAttrCount);
 	ifxCatchExceptions(&festate->stmt_info, 0);
+
+	/*
+	 * XXX: It makes no sense to have a local column list with *more*
+	 * columns than the remote table. I can't think of any use case
+	 * for this atm, anyone?
+	 */
+	if (PG_VALID_COLS_COUNT(festate) > festate->stmt_info.ifxAttrCount)
+	{
+		ifxRewindCallstack(&(festate->stmt_info));
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("foreign table \"%s\" has more columns than remote source",
+							   get_rel_name(foreignTableOid))));
+	}
+
 	festate->stmt_info.ifxAttrDefs = palloc(festate->stmt_info.ifxAttrCount
 											* sizeof(IfxAttrDef));
 
@@ -2051,6 +2278,12 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 
 }
 
+/*
+ * Extract the corresponding Informix value for the given PostgreSQL attnum
+ * from the SQLDA structure. The specified attnum should be the target column
+ * of the local table definition and is translated internally to the matching
+ * source column on the remote table.
+ */
 static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 								   bool *isnull)
 {
@@ -2062,7 +2295,8 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 	/*
 	 * Setup...
 	 */
-	state->values[attnum].def = &state->stmt_info.ifxAttrDefs[attnum];
+	state->values[PG_MAPPED_IFX_ATTNUM(state, attnum)].def
+		= &state->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM(state, attnum)];
 	IFX_SETVAL_P(state, attnum, PointerGetDatum(NULL));
 	*isnull = false;
 
@@ -2295,7 +2529,6 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	IfxSqlStateClass      errclass;
 	Oid                   foreignTableOid;
 	bool                  conn_cached;
-	int                   i;
 
 	state = (IfxFdwExecutionState *) node->fdw_state;
 
@@ -2335,36 +2568,11 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	tupleSlot->tts_shouldFreeMin = false;
 
 	/*
-	 * Fetch tuple from cursor
-	 */
-	if (state->rescan)
-	{
-		if (state->stmt_info.cursorUsage == IFX_SCROLL_CURSOR)
-			ifxFetchFirstRowFromCursor(&state->stmt_info);
-		else
-		{
-			elog(DEBUG3, "re-opening informix cursor in rescan state");
-			ifxCloseCursor(&state->stmt_info);
-			ifxCatchExceptions(&state->stmt_info, 0);
-
-			ifxOpenCursorForPrepared(&state->stmt_info);
-			ifxCatchExceptions(&state->stmt_info, 0);
-
-			ifxFetchRowFromCursor(&state->stmt_info);
-		}
-		state->rescan = false;
-	}
-	else
-	{
-		ifxFetchRowFromCursor(&state->stmt_info);
-	}
-
-	/*
 	 * Catch any informix exception. We also need to
 	 * check for IFX_NOT_FOUND, in which case no more rows
 	 * must be processed.
 	 */
-	errclass = ifxSetException(&(state->stmt_info));
+	errclass = ifxFetchTuple(state);
 
 	if (errclass != IFX_SUCCESS)
 	{
@@ -2388,83 +2596,15 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 		ifxCatchExceptions(&(state->stmt_info), 0);
 	}
 
-	/*
-	 * Allocate slots for column value data.
-	 */
-	state->values = palloc(sizeof(IfxValue)
-						   * state->stmt_info.ifxAttrCount);
-
-	tupleSlot->tts_isempty = false;
-	tupleSlot->tts_nvalid = state->stmt_info.ifxAttrCount;
-	tupleSlot->tts_values = (Datum *) palloc(sizeof(Datum)
-											 * tupleSlot->tts_nvalid);
-	tupleSlot->tts_isnull = (bool *) palloc(sizeof(bool)
-											* tupleSlot->tts_nvalid);
+	ifxSetupTupleTableSlot(state, tupleSlot);
 
 	/*
 	 * The cursor should now be positioned at the current row
 	 * we want to retrieve. Loop through the columns and retrieve
 	 * their values. Note: No conversion into a PostgreSQL specific
-	 * datatype is done so far.
+	 * datatype is done yet.
 	 */
-	for (i = 0; i <= state->stmt_info.ifxAttrCount - 1; i++)
-	{
-		bool isnull;
-
-		elog(DEBUG4, "get column ifx attnum %d", i);
-
-		/*
-		 * It might happen that the FDW table has dropped
-		 * columns...check for them and insert a NULL value instead..
-		 */
-		if (state->pgAttrDefs[i].attnum < 0)
-		{
-			tupleSlot->tts_isnull[i] = true;
-			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
-			continue;
-		}
-
-		/*
-		 * Retrieve a converted datum from the current
-		 * column and store it within state context. This also
-		 * sets and checks the indicator variable to record any
-		 * NULL occurences.
-		 */
-		ifxColumnValueByAttNum(state, i, &isnull);
-
-		/*
-		 * Same for retrieved NULL values from informix.
-		 */
-		if (isnull)
-		{
-			/*
-			 * If we encounter a NULL value from Informix where
-			 * the local definition is NOT NULL, we throw an error.
-			 *
-			 * The PostgreSQL optimizer makes some assumptions about
-			 * columns and their NULLability, so treat 'em accordingly.
-			 */
-			if (state->pgAttrDefs[i].attnotnull)
-			{
-				/* Reset remote resources */
-				ifxRewindCallstack(&(state->stmt_info));
-				elog(ERROR, "NULL value for column \"%s\" violates local NOT NULL constraint",
-					 state->pgAttrDefs[i].attname);
-			}
-
-			tupleSlot->tts_isnull[i] = true;
-			tupleSlot->tts_values[i] = PointerGetDatum(NULL);
-			continue;
-		}
-
-		/*
-		 * ifxColumnValueByAttnum() has already converted the current
-		 * column value into a datum. We just need to assign it to the
-		 * tupleSlot and we're done.
-		 */
-		tupleSlot->tts_isnull[i] = false;
-		tupleSlot->tts_values[i] = state->values[i].val;
-	}
+	ifxGetValuesFromTuple(state, tupleSlot);
 
 	return tupleSlot;
 }

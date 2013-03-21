@@ -68,6 +68,7 @@ typedef struct IfxQueryData
 typedef struct PgAttrDef
 {
 	int16 attnum;
+	int16 ifx_attnum;
 	Oid   atttypid;
 	int   atttypmod;
 	char* attname;
@@ -112,6 +113,11 @@ typedef struct IfxValue
 typedef struct IfxFdwExecutionState
 {
 	IfxStatementInfo stmt_info;
+
+	/*
+	 * Number of dropped columns of foreign table.
+	 */
+	int pgDroppedAttrCount;
 
 	/*
 	 * Number of attributes in the foreign table.
@@ -213,13 +219,52 @@ typedef struct IfxPushdownOprContext
  */
 #define PG_ATTRTYPE_P(x, y) (x)->pgAttrDefs[(y)].atttypid
 #define PG_ATTRTYPEMOD_P(x, y) (x)->pgAttrDefs[(y)].atttypmod
-#define IFX_ATTRTYPE_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].type
-#define IFX_SETVAL_P(x, y, z) (x)->values[(y)].val = (z)
-#define IFX_GETVAL_P(x, y) (x)->values[(y)].val
-#define IFX_ATTR_ISNULL_P(x, y) ((x)->stmt_info.ifxAttrDefs[(y)].indicator == INDICATOR_NULL)
-#define IFX_ATTR_SETNOTVALID_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].indicator = INDICATOR_NOT_VALID
-#define IFX_ATTR_IS_VALID_P(x, y) ((x)->stmt_info.ifxAttrDefs[(y)].indicator != INDICATOR_NOT_VALID)
-#define IFX_ATTR_ALLOC_SIZE_P(x, y) (x)->stmt_info.ifxAttrDefs[(y)].mem_allocated
+
+/*
+ * Maps the local attribute number to the remote table.
+ *
+ * NOTE: One word about attribute number mapping:
+ *
+ *       The Informix FDW API doesn't rely on column names, instead we
+ *       try to map the local definition of a remote table (or query,
+ *       depending which was specified during CREATE FOREIGN TABLE). Since
+ *       column can be dropped and readded it might happen that we get
+ *       *holes* in the definition of a local table. We try to address this
+ *       with mapping PG and IFX column attributes, but it should be clear
+ *       that this whole magic doesn't cover all cases. PostgreSQL currently
+ *       doesn't support *logical* column orders (or reording columns
+ *       accordingly), so in case of a static table definition this doesn't
+ *       work in all cases. For SELECT definitions of a remote table (when
+ *       specified the 'query' option to CREATE FOREIGN TABLE) it might be
+ *       easier to re-specify the 'query' option with an adjusted SQL instead
+ *       of fiddling with column orders on local table definitions.
+ *
+ * IMPORTANT:
+ *
+ *       Each access to IfxFdwExecutionState structures and their member
+ *       fields in IfxStatementInfo should go through the PG_MAPPED_IFX_ATTNUM()
+ *       macro, otherwise it is not guaranteed that you will get proper
+ *       values back from the values datum list. The IFX_*() macros all
+ *       encapsulate their accesses through PG_MAPPED_IFX_ATTNUM(), so there is
+ *       no need to pass the attnum through PG_MAPPED_IFX_ATTNUM() explicitly when
+ *       using them. You have to think in *PostgreSQL attribute number* logic
+ *       when using those macros!
+ */
+#define PG_MAPPED_IFX_ATTNUM(x, y) ((x)->pgAttrDefs[(y)].ifx_attnum - 1)
+
+/*
+ * Number of valid (means visible) columns on foreign table.
+ * Excludes dropped columns for example.
+ */
+#define PG_VALID_COLS_COUNT(x) ((x)->pgAttrCount - (x)->pgDroppedAttrCount)
+
+#define IFX_ATTRTYPE_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].type
+#define IFX_SETVAL_P(x, y, z) (x)->values[PG_MAPPED_IFX_ATTNUM((x), (y))].val = (z)
+#define IFX_GETVAL_P(x, y) (x)->values[PG_MAPPED_IFX_ATTNUM((x), (y))].val
+#define IFX_ATTR_ISNULL_P(x, y) ((x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator == INDICATOR_NULL)
+#define IFX_ATTR_SETNOTVALID_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator = INDICATOR_NOT_VALID
+#define IFX_ATTR_IS_VALID_P(x, y) ((x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator != INDICATOR_NOT_VALID)
+#define IFX_ATTR_ALLOC_SIZE_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].mem_allocated
 
 /*
  * Datatype conversion routines.

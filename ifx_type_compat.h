@@ -400,6 +400,14 @@ typedef struct IfxStatementInfo
 	short special_cols;
 
 	/*
+	 * Attribute number map.
+	 *
+	 * Maps PostgreSQL attribute numbers to
+	 * Informix attribute numbers.
+	 */
+	int *pgIfxAttrMap;
+
+	/*
 	 * Dynamic list of attribute definitions
 	 */
 	IfxAttrDef *ifxAttrDefs;

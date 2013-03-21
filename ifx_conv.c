@@ -92,7 +92,8 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 	}
 
 	val = (char *)palloc0(IFX_DATE_BUFFER_LEN);
-	if (ifxGetDateAsString(&(state->stmt_info), attnum, val) == NULL)
+	if (ifxGetDateAsString(&(state->stmt_info),
+						   PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
 	{
 		/*
 		 * Got a SQL null value or conversion error. Leave it up to
@@ -171,7 +172,8 @@ Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum)
 	 */
 	val = (char *) palloc0(IFX_DATETIME_BUFFER_LEN);
 
-	if (ifxGetTimestampAsString(&(state->stmt_info), attnum, val) == NULL)
+	if (ifxGetTimestampAsString(&(state->stmt_info),
+								PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
 	{
 		/*
 		 * Got a SQL null value or conversion error. Leave it up to
@@ -247,7 +249,7 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 	 * Get the value from the informix column and check wether
 	 * the character string is valid. Don't go further, if not...
 	 */
-	if (ifxGetDecimal(&state->stmt_info, attnum, val) == NULL)
+	if (ifxGetDecimal(&state->stmt_info, PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
 	{
 		/* caller should handle indicator */
 		return result;
@@ -318,7 +320,8 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 				return PointerGetDatum(NULL);
 			}
 
-			val = ifxGetInt2(&(state->stmt_info), attnum);
+			val = ifxGetInt2(&(state->stmt_info),
+							 PG_MAPPED_IFX_ATTNUM(state, attnum));
 			result = Int16GetDatum(val);
 
 			break;
@@ -336,7 +339,8 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 				return PointerGetDatum(NULL);
 			}
 
-			val = ifxGetInt4(&(state->stmt_info), attnum);
+			val = ifxGetInt4(&(state->stmt_info),
+							 PG_MAPPED_IFX_ATTNUM(state, attnum));
 			result = Int32GetDatum(val);
 
 			break;
@@ -377,11 +381,13 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 						case IFX_INT8:
 						case IFX_SERIAL8:
 							/* INT8 */
-							buf = ifxGetInt8(&(state->stmt_info), attnum, buf);
+							buf = ifxGetInt8(&(state->stmt_info),
+											 PG_MAPPED_IFX_ATTNUM(state, attnum), buf);
 							break;
 						case IFX_INFX_INT8:
 							/* BIGINT */
-							buf = ifxGetBigInt(&(state->stmt_info), attnum, buf);
+							buf = ifxGetBigInt(&(state->stmt_info),
+											   PG_MAPPED_IFX_ATTNUM(state, attnum), buf);
 							break;
 						default:
 							pfree(buf);
@@ -440,12 +446,12 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 					if (sourceOid == INT4OID)
 						result = OidFunctionCall1(typcastfunc,
 												  Int32GetDatum(ifxGetInt4(&(state->stmt_info),
-																		   attnum)));
+																		   PG_MAPPED_IFX_ATTNUM(state, attnum))));
 					else
 						/* only INT2 left... */
 						result = OidFunctionCall1(typcastfunc,
 												  Int16GetDatum(ifxGetInt2(&(state->stmt_info),
-																		   attnum)));
+																		   PG_MAPPED_IFX_ATTNUM(state, attnum))));
 				}
 			}
 			PG_CATCH();
@@ -655,7 +661,9 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 	 * FETCH but don't try to deallocate it. This is done
 	 * later by the ESQL/C API after the FETCH finishes...
 	 */
-	val = ifxGetTextFromLocator(&(state->stmt_info), attnum, &buf_size);
+	val = ifxGetTextFromLocator(&(state->stmt_info),
+								PG_MAPPED_IFX_ATTNUM(state, attnum),
+								&buf_size);
 
 	/*
 	 * Check indicator value. In case we got NULL,
@@ -791,7 +799,7 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 	 * set. Caller must have checked for INDICATOR_NULL before...
 	 */
 	val = ifxGetText(&(state->stmt_info),
-					 attnum);
+					 PG_MAPPED_IFX_ATTNUM(state, attnum));
 
 	/*
 	 * Check the state of the value. In case of a NULL value,

@@ -5,3 +5,8 @@ ifx_connection.c
 *.o
 .deps/
 sql/regression_variables
+regression.diffs
+regression.out
+results/
+*.patch
+*.orig
