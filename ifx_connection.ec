@@ -1255,19 +1255,20 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 		}
 
 		/*
-		 * Sum up total row size.
-		 */
-		row_size += state->ifxAttrDefs[ifx_attnum].mem_allocated;
-
-		/*
 		 * Save current offset position.
 		 */
 		ifx_offset += state->ifxAttrDefs[ifx_attnum].mem_allocated;
 
+		/*
+		 * Get total row size. Rely on the *next* aligned offset, otherwise
+		 * we get a wrong number of total bytes to allocate.
+		 */
+		row_size = rtypalign(ifx_offset,
+							 column_data->sqltype);
+
 		/* Store the corresponding informix data type identifier. This is later
 		 * used to identify the PostgreSQL target type we need to convert to. */
 		state->ifxAttrDefs[ifx_attnum].type = (IfxSourceType) ifx_type;
-
 
 		column_data++;
 	}
