@@ -2892,6 +2892,7 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->client_locale = NULL;
 	coninfo->query         = NULL;
 	coninfo->tablename     = NULL;
+	coninfo->username      = "\0";
 }
 
 static StringInfoData *
