@@ -923,6 +923,9 @@ char *ifxGetBigInt(IfxStatementInfo *state, int ifx_attnum, char *buf)
 	 */
 	if (biginttoasc(val, buf, IFX_INT8_CHAR_LEN, 10) == 0)
 		result = buf;
+	else
+		/* other values returned are < 0, meaning conversion has failed */
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
 
 	return result;
 }
@@ -982,6 +985,9 @@ char *ifxGetInt8(IfxStatementInfo *state, int ifx_attnum, char *buf)
 	 */
 	if (ifx_int8toasc(&val, buf, IFX_INT8_CHAR_LEN) == 0)
 		result = buf;
+	else
+		/* other values returned are < 0, meaning conversion has failed */
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
 
 	return result;
 }
