@@ -40,19 +40,11 @@ typedef struct IfxFTCacheItem
 
 /*
  * Cached informix database connection.
+ * Derived from IfxPGCachedConnection.
  */
 typedef struct IfxCachedConnection
 {
-	char ifx_connection_name[IFX_CONNAME_LEN];
-	char *servername;
-	char *informixdir;
-	char *username;
-	char *database;
-	char *db_locale;
-	char *client_locale;
-	int usage;
-	int tx_enabled;
-	int db_ansi;
+	IfxPGCachedConnection con;
 	Oid establishedByOid;
 } IfxCachedConnection;
 
