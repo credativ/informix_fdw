@@ -49,6 +49,15 @@
 #include "ifx_type_compat.h"
 
 /*
+ * Defines actions for remote informix transactions.
+ */
+typedef enum
+{
+	IFX_TX_COMMIT,
+	IFX_TX_ROLLBACK }
+IfxXactAction;
+
+/*
  * Query information pushed down
  * from the planner state to the executor
  */

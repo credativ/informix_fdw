@@ -23,6 +23,12 @@ EXEC SQL include "decimal.h";
 /* Don't trap errors. Default, but force it explicitely */
 EXEC SQL WHENEVER SQLERROR CONTINUE;
 
+/*
+ * Number of current transactions (per connection)
+ * in progress per backend.
+ */
+unsigned int ifxXactInProgress = 0;
+
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
 												struct sqlvar_struct *ifx_value);
@@ -57,16 +63,6 @@ void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 
 	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
 	{
-		EXEC SQL BEGIN WORK;
-		EXEC SQL SET ISOLATION REPEATABLE READ;
-
-		/*
-		 * Don't set the transaction READ ONLY, starting with
-		 * PostgreSQL 9.3 we can't know anymore wether the transaction
-		 * would not issue DML commands...but stick for now with
-		 * REPEATABLE READ.
-		 */
-
 		/* save state into connection info */
 		coninfo->tx_enabled = 1;
 	}
@@ -75,14 +71,94 @@ void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 		coninfo->db_ansi = 1;
 }
 
-void ifxRollbackTransaction()
+int ifxStartTransaction(IfxPGCachedConnection *cached, IfxConnectionInfo *coninfo)
 {
-	EXEC SQL ROLLBACK WORK;
+	/*
+	 * No-op if non-logged database or parent transaction
+	 * already in progress...
+	 */
+	if ((coninfo->tx_enabled == 1)
+		&& (cached->tx_in_progress < 1))
+	{
+		EXEC SQL BEGIN WORK;
+		EXEC SQL SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		{
+			cached->tx_in_progress = 1;
+			++ifxXactInProgress;
+			return 0;
+		}
+		else
+		{
+			/*
+			 * Indicate something went wrong, leave it up
+			 * to the caller to inspect SQLSTATE
+			 */
+			return -1;
+		}
+	}
+
+	/* no-op treated as success! */
+	return 0;
 }
 
-void ifxCommitTransaction()
+int ifxRollbackTransaction(IfxPGCachedConnection *cached)
 {
-	EXEC SQL COMMIT WORK;
+	/*
+	 * No-op, if no transaction in progress.
+	 */
+
+	if (cached->tx_in_progress >= 1)
+	{
+		EXEC SQL ROLLBACK WORK;
+
+		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		{
+			--cached->tx_in_progress;
+			--ifxXactInProgress;
+			++cached->tx_num_rollback;
+			return 0;
+		}
+		else
+		{
+			/*
+			 * Indicate something went wrong, leave it up
+			 * to the caller to inspect SQLSTATE
+			 */
+			return -1;
+		}
+	}
+
+	/* no-op treated as success! */
+	return 0;
+}
+
+int ifxCommitTransaction(IfxPGCachedConnection *cached)
+{
+	if (cached->tx_in_progress >= 1)
+	{
+		EXEC SQL COMMIT WORK;
+
+		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		{
+			cached->tx_in_progress = 0;
+			--ifxXactInProgress;
+			++cached->tx_num_commit;
+			return 0;
+		}
+		else
+		{
+			/*
+			 * Indicate something went wrong, leave it up
+			 * to the caller to inspect SQLSTATE
+			 */
+			return -1;
+		}
+	}
+
+	/* no-op treated as success! */
+	return 0;
 }
 
 void ifxDisconnectConnection(char *conname)
@@ -152,6 +228,35 @@ void ifxSetEnv(IfxConnectionInfo *coninfo)
 		setenv("DB_LOCALE", coninfo->db_locale, 1);
 }
 
+/*
+ * Sets the connection specified by conname.
+ */
+int ifxSetConnectionIdent(char *conname)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifxconname;
+	EXEC SQL END DECLARE SECTION;
+
+	IfxSqlStateClass errclass;
+
+	ifxconname = conname;
+	EXEC SQL SET CONNECTION :ifxconname;
+
+	/*
+	 * In case we can't make this connection current abort
+	 * immediately, but let the caller know that something went
+	 * wrong by returning -1. It's up to him to examine SQLSTATE
+	 * then. Note that we only react on an SQLSTATE representing an
+	 * ERROR, warnings or other SQLSTATE classes are ignored.
+	 */
+	errclass = ifxGetSqlStateClass();
+
+	if (errclass == IFX_ERROR)
+		return -1;
+
+	return 0;
+}
+
 void ifxSetConnection(IfxConnectionInfo *coninfo)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
@@ -165,6 +270,15 @@ void ifxSetConnection(IfxConnectionInfo *coninfo)
 
 	ifxconname = coninfo->conname;
 	EXEC SQL SET CONNECTION :ifxconname;
+
+	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+	{
+		/* save state into connection info */
+		coninfo->tx_enabled = 1;
+	}
+
+	if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W')
+		coninfo->db_ansi = 1;
 }
 
 void ifxPrepareQuery(char *query, char *stmt_name)
@@ -373,22 +487,11 @@ void ifxFetchFirstRowFromCursor(IfxStatementInfo *state)
 }
 
 /*
- * Callback error handler.
- *
- * This function is intended to be called directly
- * after an ESQL call to check for an SQLSTATE error
- * condition. Once SQLSTATE is
- * set to an error code, the function returns the
- * SQLSTATE string with the statement info structure.
+ * Returns the class of the current SQLSTATE value.
  */
-IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
+IfxSqlStateClass ifxGetSqlStateClass(void)
 {
 	IfxSqlStateClass errclass = IFX_RT_ERROR;
-
-	/*
-	 * Save the SQLSTATE
-	 */
-	strncpy(state->sqlstate, SQLSTATE, 5);
 
 	if (SQLSTATE[0] == '0')
 	{
@@ -455,6 +558,32 @@ IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
 	 * a IFX_RT_ERROR code, to indicate a generic
 	 * runtime error for now.
 	 */
+	return errclass;
+}
+
+/*
+ * Callback error handler.
+ *
+ * This function is intended to be called directly
+ * after an ESQL call to check for an SQLSTATE error
+ * condition. Once SQLSTATE is
+ * set to an error code, the function returns the
+ * SQLSTATE string with the statement info structure.
+ */
+IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
+{
+	IfxSqlStateClass errclass = IFX_RT_ERROR;
+
+	/*
+	 * Save the SQLSTATE
+	 */
+	strncpy(state->sqlstate, SQLSTATE, 5);
+
+	/*
+	 * Examine in which category the current
+	 * SQLSTATE belongs.
+	 */
+	errclass = ifxGetSqlStateClass();
 
 	/*
 	 * Save number of possible sub-exceptions, so
@@ -462,6 +591,7 @@ IfxSqlStateClass ifxSetException(IfxStatementInfo *state)
 	 */
 	state->exception_count = ifxExceptionCount();
 
+	/* and we're done */
 	return errclass;
 }
 
