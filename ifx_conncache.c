@@ -99,9 +99,9 @@ static void ifxFTCache_init()
 	MemoryContext old_ctxt;
 
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(Oid);
-    hash_ctl.entrysize = sizeof(IfxFTCacheItem);
-    hash_ctl.hash = oid_hash;
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(IfxFTCacheItem);
+	hash_ctl.hash = oid_hash;
 
 	/*
 	 * Seems HTAB always allocates in TopMemoryContext if no

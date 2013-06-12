@@ -1281,9 +1281,6 @@ ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
 	 * an IFX_PLAN_SCAN, since we treat ifxAnalyzeForeignTable() which
 	 * does all the setup required to do ifxAcquireSampleRows() separately.
 	 *
-	 * This is contrary to what we are doing with
-	 * ifxPlanForeignScan()/ifxGetForeignRelSize() and ifxBeginForeignScan().
-	 *
 	 * XXX: should we error out in case we get an connection error?
 	 *      This will abandon the whole ANALYZE run when
 	 *      issued against the whole database...
@@ -2780,14 +2777,13 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	coninfo = ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
-	 * Tell connection cache that we are about to start to scan
+	 * Tell the connection cache that we are about to start to scan
 	 * the remote table.
 	 */
 	coninfo->scan_mode = IFX_BEGIN_SCAN;
 
 	/*
-	 * ifxPlanForeignScan() already should have added a cached
-	 * connection entry for the requested table.
+	 * We should have a cached connection entry for the requested table.
 	 */
 	cached = ifxConnCache_add(foreignTableOid, coninfo,
 							  &conn_cached);
@@ -3641,10 +3637,10 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/*
 	 * Check if connection cache is already
 	 * initialized. If not, we don't have anything
-	 * to do an can exit immediately.
+	 * to do and can exit immediately.
 	 */
 	if (!IfxCacheIsInitialized)
-		PG_RETURN_VOID();
+		elog(ERROR, "informix connection cache not yet initialized");
 
 	/* Get connection name from argument */
 	conname = text_to_cstring(PG_GETARG_TEXT_P(0));
@@ -3668,7 +3664,7 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/* Check wether the handle was valid */
 	if (!found || !conn_cached)
 	{
-		elog(DEBUG1, "unknown informix connection name: \"%s\"",
+		elog(ERROR, "unknown informix connection name: \"%s\"",
 			 conname);
 		PG_RETURN_VOID();
 	}
@@ -3676,7 +3672,20 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/* okay, we have a valid connection handle...close it */
 	ifxDisconnectConnection(conname);
 
-	/* Check for any Informix exceptions */
+    /* Check for any Informix exceptions */
+	if (ifxGetSqlStateClass() == IFX_ERROR)
+	{
+		IfxSqlStateMessage message;
+
+		ifxGetSqlStateMessage(1, &message);
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_ERROR),
+				 errmsg("could not close specified connection \"%s\"",
+						conname),
+				 errdetail("informix error: %s, SQLSTATE %s",
+						   message.text, message.sqlstate)));
+	}
+
 	PG_RETURN_VOID();
 }
 
@@ -3870,7 +3879,7 @@ ifxGetConnections(PG_FUNCTION_ARGS)
  * ifxXactFinalize()
  *
  * Commits or rollbacks a transaction on the remote
- * server, depending on the specified XactEvent.
+ * server, depending on the specified IfxXactAction.
  *
  * Internally, this function makes the specified informix
  * connection current and depending on the specified action
@@ -3878,7 +3887,7 @@ ifxGetConnections(PG_FUNCTION_ARGS)
  * should make sure, that there's really a transaction in
  * progress.
  *
- * if connection_error_ok is true, an error is thrown
+ * If connection_error_ok is true, an error is thrown
  * if the specified cached informix connection can't be made
  * current. Otherwise the loglevel is decreased to a WARNING,
  * indicating the exact SQLSTATE and error message what happened.
@@ -3947,7 +3956,7 @@ static int ifxXactFinalize(IfxCachedConnection *cached,
 }
 
 /*
- * Internal function fpr ifx_fdw_xact_callback().
+ * Internal function for ifx_fdw_xact_callback().
  *
  * Depending on the specified XactEvent, rolls a transaction back
  * or commits it on the remote server.
@@ -4014,7 +4023,7 @@ static void ifx_fdw_xact_callback(XactEvent event, void *arg)
 		return;
 
 	/*
-	 * We need to scan through all cached connection to check
+	 * We need to scan through all cached connections to check
 	 * wether they have in-progress transactions.
 	 */
 	hash_seq_init(&hsearch_status, ifxCache.connections);
@@ -4026,13 +4035,12 @@ static void ifx_fdw_xact_callback(XactEvent event, void *arg)
 		if (cached->con.tx_in_progress < 1)
 			continue;
 
+		elog(DEBUG3, "informix_fdw: xact_callback on connection \"%s\"",
+			 cached->con.ifx_connection_name);
+
 		/*
 		 * Execute required actions...
 		 */
 		ifx_fdw_xact_callback_internal(cached, event);
-
-		elog(DEBUG3, "informix_fdw: closing transaction on connection \"%s\"",
-			 cached->con.ifx_connection_name);
-
 	}
 }

@@ -244,13 +244,16 @@ typedef struct IfxPlanData
 
 /*
  * Foreign scan modes.
+ *
+ * Describes the specific steps performed through
+ * a foreign scan.
  */
 typedef enum
 {
-	IFX_PLAN_SCAN,
-	IFX_BEGIN_SCAN,
-	IFX_ITERATE_SCAN,
-	IFX_END_SCAN
+	IFX_PLAN_SCAN,    /* plan a new foreign scan, generate new refid for scan */
+	IFX_BEGIN_SCAN,   /* start/preparing foreign scan */
+	IFX_ITERATE_SCAN, /* foreign scan iteration step */
+	IFX_END_SCAN      /* end foreign scan */
 } IfxForeignScanMode;
 
 /*
@@ -278,12 +281,12 @@ typedef struct IfxConnectionInfo
 	char *query;
 
 	/*
-	 * Set to IFX_BEGIN_SCAN if a new foreign scan on a foreign table
+	 * Set to IFX_PLAN_SCAN if a new foreign scan on a foreign table
 	 * is requested.
 	 *
 	 * This is currently used in ifxPlanForeignScan() and
 	 * ifxGetForeignRelSize() to teach the connection cache
-	 * to generate a new scan id. In detail, ifxConCache_add()
+	 * to generate a new scan id only. In detail, ifxConCache_add()
 	 * will increase the usage counter of the cached connection
 	 * handle only, if a new scan is requested.
 	 */
@@ -310,7 +313,7 @@ typedef struct IfxConnectionInfo
 /*
  * This is a ancestor of IfxCachedConnection structure
  * suitable to be passed down to the Informix API. Since we can't
- * include Informix headers because of symbol collisions in pre 9.1
+ * include Informix headers because of symbol collisions in pre 9.2
  * versions, we just use a cast to this generic struct for passing
  * cached connection handles down to the Informix layer.
  */
