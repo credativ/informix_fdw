@@ -24,7 +24,7 @@ EXEC SQL include "decimal.h";
 EXEC SQL WHENEVER SQLERROR CONTINUE;
 
 /*
- * Number of current transactions (per connection)
+ * Number of current transactions
  * in progress per backend.
  */
 unsigned int ifxXactInProgress = 0;
@@ -83,7 +83,7 @@ int ifxStartTransaction(IfxPGCachedConnection *cached, IfxConnectionInfo *coninf
 		EXEC SQL BEGIN WORK;
 		EXEC SQL SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
-		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		if (ifxGetSqlStateClass() != IFX_ERROR)
 		{
 			cached->tx_in_progress = 1;
 			++ifxXactInProgress;
@@ -113,7 +113,7 @@ int ifxRollbackTransaction(IfxPGCachedConnection *cached)
 	{
 		EXEC SQL ROLLBACK WORK;
 
-		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		if (ifxGetSqlStateClass() != IFX_ERROR)
 		{
 			--cached->tx_in_progress;
 			--ifxXactInProgress;
@@ -140,7 +140,7 @@ int ifxCommitTransaction(IfxPGCachedConnection *cached)
 	{
 		EXEC SQL COMMIT WORK;
 
-		if (strncmp(SQLSTATE, "00000", 5) == 0)
+		if (ifxGetSqlStateClass() != IFX_ERROR)
 		{
 			cached->tx_in_progress = 0;
 			--ifxXactInProgress;
@@ -237,8 +237,6 @@ int ifxSetConnectionIdent(char *conname)
 	char *ifxconname;
 	EXEC SQL END DECLARE SECTION;
 
-	IfxSqlStateClass errclass;
-
 	ifxconname = conname;
 	EXEC SQL SET CONNECTION :ifxconname;
 
@@ -249,12 +247,10 @@ int ifxSetConnectionIdent(char *conname)
 	 * then. Note that we only react on an SQLSTATE representing an
 	 * ERROR, warnings or other SQLSTATE classes are ignored.
 	 */
-	errclass = ifxGetSqlStateClass();
-
-	if (errclass == IFX_ERROR)
+	if (ifxGetSqlStateClass() == IFX_ERROR)
 		return -1;
-
-	return 0;
+	else
+		return 0;
 }
 
 void ifxSetConnection(IfxConnectionInfo *coninfo)
