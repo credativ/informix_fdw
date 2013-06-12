@@ -483,7 +483,7 @@ ifxPlanForeignModify(PlannerInfo *root,
 	 * This does all the legwork to initialize the database connection
 	 * and associated handles.
 	 */
-	ifxSetupFdwScan(&coninfo, &state, &plan_values, rte->relid);
+	ifxSetupFdwScan(&coninfo, &state, &plan_values, rte->relid, IFX_PLAN_SCAN);
 
 	/*
 	 * Prepare params (retrieve affacted columns et al).
@@ -582,6 +582,7 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 	 */
 	cached_handle = ifxSetupConnection(&coninfo,
 									   foreignTableOid,
+									   IFX_BEGIN_SCAN,
 									   true);
 
 	/*
