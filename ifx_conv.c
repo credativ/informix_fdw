@@ -48,6 +48,11 @@ static void
 deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
 					   IfxPushdownOprInfo *info);
 
+#if PG_VERSION_NUM >= 90300
+static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
+									 Oid inputOid);
+#endif
+
 /*******************************************************************************
  * Implementation starts here
  */
@@ -472,6 +477,160 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 
 	return result;
 }
+
+#if PG_VERSION_NUM >= 90300
+
+/*
+ * Store the given string value into the specified
+ * SQLDA handle, depending on wich target type we have.
+ */
+void setIfxText(IfxFdwExecutionState *state,
+				TupleTableSlot *slot,
+				int attnum)
+{
+	/*
+	 * Sanity check, SQLDA available ?
+	 */
+	Assert(state->stmt_info.sqlda != NULL);
+
+	/*
+	 * In case we have a null value, set the indicator value accordingly.
+	 */
+	IFX_SET_INDICATOR_P(state, attnum,
+						((slot->tts_isnull[attnum]) ? INDICATOR_NULL : INDICATOR_NOT_NULL));
+
+	switch(IFX_ATTRTYPE_P(state, attnum))
+	{
+		case IFX_TEXT:
+		case IFX_BYTES:
+			break;
+		default:
+			break;
+	}
+}
+
+void setIfxInteger(IfxFdwExecutionState *state,
+				   TupleTableSlot *slot,
+				   int attnum)
+{
+	/*
+	 * Sanity check, SQLDA available ?
+	 */
+	Assert(state->stmt_info.sqlda != NULL);
+
+	/*
+	 * In case we have a null value, set the indiciator value accordingly.
+	 */
+	IFX_SET_INDICATOR_P(state, attnum,
+						((slot->tts_isnull[attnum]) ? INDICATOR_NULL : INDICATOR_NOT_NULL));
+
+	switch(IFX_ATTRTYPE_P(state, attnum))
+	{
+		case IFX_SMALLINT:
+		{
+			short val;
+
+			val = DatumGetInt16(slot->tts_values[attnum]);
+
+			/*
+			 * Copy the value into the SQLDA structure.
+			 */
+			ifxSetInt2(&state->stmt_info,
+					   PG_MAPPED_IFX_ATTNUM(state, attnum),
+					   val);
+
+			break;
+		}
+		case IFX_INTEGER:
+			/* fall through to IFX_SERIAL */
+		case IFX_SERIAL:
+		{
+			int val;
+
+			/*
+			 * Get the integer value.
+			 */
+			val = DatumGetInt32(slot->tts_values[attnum]);
+
+			/*
+			 * Copy the value into the SQLDA structure.
+			 */
+			ifxSetInteger(&state->stmt_info,
+						  PG_MAPPED_IFX_ATTNUM(state, attnum),
+						  val);
+			break;
+		}
+		case IFX_INT8:
+		case IFX_INFX_INT8:
+			/* fall through to IFX_SERIAL8 */
+		case IFX_SERIAL8:
+		{
+			char *strval;
+			regproc typout;
+
+			/*
+			 * Convert the int8 value to its character representation.
+			 */
+			typout = getTypeOutputFunction(state, PG_ATTRTYPE_P(state, attnum));
+			strval = DatumGetCString(OidFunctionCall1(typout, DatumGetInt64(slot->tts_values[attnum])));
+			if (IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+			{
+				/* INT8 (Informix ifx_int8_t) */
+				ifxSetInt8(&state->stmt_info,
+						   PG_MAPPED_IFX_ATTNUM(state, attnum),
+						   strval);
+			}
+			else
+			{
+				/* BIGINT */
+				ifxSetBigint(&state->stmt_info,
+							 PG_MAPPED_IFX_ATTNUM(state, attnum),
+							 strval);
+			}
+
+			/*
+			 * Check wether conversion was successful
+			 */
+			break;
+		}
+		default:
+			break;
+	}
+}
+
+static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
+									 Oid inputOid)
+{
+	regproc result;
+	HeapTuple type_tuple;
+
+	/*
+	 * Which output function to lookup?
+	 */
+	type_tuple = SearchSysCache1(TYPEOID, inputOid);
+
+	if (!HeapTupleIsValid(type_tuple))
+	{
+		/*
+		 * Oops, this is not expected...
+		 *
+		 * Don't throw an ERROR here immediately, but inform the caller
+		 * that something went wrong. We need to give the caller time
+		 * to cleanup itself...
+		 */
+		ifxRewindCallstack(&(state->stmt_info));
+		elog(ERROR,
+			 "cache lookup failed for output function for type %u",
+			 inputOid);
+	}
+
+	ReleaseSysCache(type_tuple);
+
+	result = ((Form_pg_type) GETSTRUCT(type_tuple))->typoutput;
+	return result;
+}
+
+#endif
 
 /*
  * Returns the type input function for the

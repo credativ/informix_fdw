@@ -45,7 +45,7 @@
 #define N_SERIALIZED_FIELDS 9
 
 /*
- * Identifier for serialized fields
+ * Identifier for serialized Const fields
  *
  * Don't forget to set N_SERIALIZED_FIELDS accordingly
  * to the number of fields if adding/removing one!
@@ -61,6 +61,7 @@
 #define SERIALIZED_REFID        8
 
 #define SERIALIZED_DATA(_vals_) Const * (_vals_)[N_SERIALIZED_FIELDS]
+#define AFFECTED_ATTR_NUMS_IDX (N_SERIALIZED_FIELDS)
 
 /*******************************************************************************
  * Node helper functions.
@@ -79,5 +80,8 @@ int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);
 Datum ifxSetSerializedInt32Field(List *list, int ident, int value);
 Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value);
-
+void ifxGenerateInsertSql(IfxFdwExecutionState *state,
+						  IfxConnectionInfo    *coninfo,
+						  PlannerInfo *root,
+						  Index        rtindex);
 #endif

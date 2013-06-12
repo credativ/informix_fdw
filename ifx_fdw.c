@@ -18,6 +18,8 @@
 
 #if PG_VERSION_NUM >= 90300
 #include "access/htup_details.h"
+#include "access/sysattr.h"
+#include "parser/parsetree.h"
 #endif
 
 #include "utils/lsyscache.h"
@@ -161,9 +163,64 @@ static void
 ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 					  TupleTableSlot *tupleSlot);
 
+#if PG_VERSION_NUM >= 90300
+
+static void ifxPrepareModifyQuery(IfxStatementInfo  *info,
+								  IfxConnectionInfo *coninfo,
+								  CmdType            operation);
+
+static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
+									  IfxConnectionInfo    *coninfo,
+									  ModifyTable          *plan,
+									  Oid                   foreignTableOid);
+
+static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
+								   TupleTableSlot *slot,
+								   int attnum);
+
+#endif
+
 /*******************************************************************************
  * FDW callback routines.
  */
+
+/*
+ * Modifyable FDW API (Starting with PostgreSQL 9.3).
+ */
+#if PG_VERSION_NUM >= 90300
+
+static void
+ifxAddForeignUpdateTargets(Query *parsetree,
+						   RangeTblEntry *target_rte,
+						   Relation target_relation);
+static List *
+ifxPlanForeignModify(PlannerInfo *root,
+					 ModifyTable *plan,
+					 Index resultRelation,
+					 int subplan_index);
+static void
+ifxBeginForeignModify(ModifyTableState *mstate,
+					  ResultRelInfo *rinfo,
+					  List *fdw_private,
+					  int subplan_index,
+					  int eflags);
+static TupleTableSlot *
+ifxExecForeignInsert(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot);
+static TupleTableSlot *
+ifxExecForeignDelete(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot);
+static TupleTableSlot *
+ifxExecForeignUpdate(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot);
+
+#endif
 
 #if PG_VERSION_NUM >= 90200
 
@@ -223,6 +280,536 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
 /*******************************************************************************
  * Implementation starts here
  */
+
+#if PG_VERSION_NUM >= 90300
+
+/*
+ * ifxColumnValueToSqlda()
+ *
+ * Does all the legwork to store the specified attribute
+ * within the current Informix SQLDA structure.
+ *
+ * NOTE: attnum is the index into the internal state for
+ *       the requested attribute. Thus, attnum == pg_attribute.attnum - 1!
+ */
+static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
+								   TupleTableSlot *slot,
+								   int attnum)
+{
+	Assert(state != NULL && attnum >= 0);
+	Assert(state->stmt_info.data != NULL);
+
+	/*
+	 * Call data conversion routine depending on the PostgreSQL
+	 * builtin source type.
+	 */
+	switch(PG_ATTRTYPE_P(state, attnum))
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		{
+			setIfxInteger(state, slot, attnum);
+			break;
+		}
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+			break;
+		default:
+		{
+			ifxRewindCallstack(&state->stmt_info);
+			elog(ERROR, "informix_fdw: type \"%d\" is not supported for conversion",
+				 state->stmt_info.ifxAttrDefs[attnum].type);
+			break;
+		}
+	}
+}
+
+/*
+ * Lookup the specified attribute number, obtain a column
+ * identifier.
+ *
+ * Code borrowed from contrib/postgres_fdw.c
+ */
+char *dispatchColumnIdentifier(int varno, int varattno, PlannerInfo *root)
+{
+	char          *ident = NULL;
+	RangeTblEntry *rte;
+	List          *col_options;
+	ListCell      *cell;
+
+	/*
+	 * Take take for special varnos!
+	 */
+	Assert(!IS_SPECIAL_VARNO(varno));
+
+	rte = planner_rt_fetch(varno, root);
+
+	/*
+	 * Check out if this varattno has a special
+	 * column_name value attached.
+	 *
+	 * TODO: SELECT statements currently don't honor ifx_column_name settings,
+	 *       this issue will be adressed in the very near future!
+	 */
+	col_options = GetForeignColumnOptions(rte->relid, varattno);
+	foreach(cell, col_options)
+	{
+		DefElem *def = (DefElem *) lfirst(cell);
+
+		if (strcmp(def->defname, "ifx_column_name") == 0)
+		{
+			ident = defGetString(def);
+			break; /* we're done */
+		}
+	}
+
+	/*
+	 * Rely on the local column identifier if no ifx_column_name
+	 * was found.
+	 */
+	if (ident == NULL)
+		ident = get_relid_attribute_name(rte->relid, varattno);
+
+	return ident;
+}
+
+/*
+ * ifxAddForeignUpdateTargets
+ *
+ * Injects a "rowid" column into the target list for
+ * the remote table.
+ *
+ * NOTE:
+ *
+ * Informix doesn't always provide a "rowid" column for all
+ * table types. Fragmented tables doesn't have a "rowid" per
+ * default, so any attempts to update them will fail. If
+ * fragmented tables are used in DML statements in foreign tables,
+ * a explicit "rowid" column must be added.
+ */
+static void
+ifxAddForeignUpdateTargets(Query *parsetree,
+						   RangeTblEntry *target_rte,
+						   Relation target_relation)
+{
+	Var         *var;
+	TargetEntry *tle;
+
+	var = makeVar(parsetree->resultRelation,
+				  SelfItemPointerAttributeNumber,
+				  TIDOID,
+				  -1,
+				  InvalidOid,
+				  0);
+
+	tle = makeTargetEntry((Expr *) var,
+						  list_length(parsetree->targetList) + 1,
+						  pstrdup("rowid"),
+						  true);
+
+	/* Finally add it to the target list */
+	parsetree->targetList = lappend(parsetree->targetList, tle);
+}
+
+/*
+ * ifxPlanForeignModify
+ *
+ * Plans a DML statement on a Informix foreign table.
+ */
+static List *
+ifxPlanForeignModify(PlannerInfo *root,
+					 ModifyTable *plan,
+					 Index resultRelation,
+					 int subplan_index)
+{
+	List          *result = NIL;
+	CmdType        operation;
+	RangeTblEntry *rte;
+	Relation       rel;
+	IfxFdwExecutionState *state;
+	IfxConnectionInfo    *coninfo;
+	IfxCachedConnection  *cached_handle;
+	ForeignTable         *foreignTable;
+	bool                  is_table;
+	IfxSqlStateClass      errclass;
+	ListCell             *elem;
+	List                 *plan_values;
+
+	elog(DEBUG3, "informix_fdw: plan foreign modify");
+
+	/*
+	 * Preliminary checks...we don't support updating foreign tables
+	 * based on a SELECT.
+	 */
+	rte = planner_rt_fetch(resultRelation, root);
+	foreignTable = GetForeignTable(rte->relid);
+	operation = plan->operation;
+	is_table = false;
+
+	foreach(elem, foreignTable->options)
+	{
+		DefElem *option = (DefElem *) lfirst(elem);
+		if (strcmp(option->defname, "table") == 0)
+			is_table = true;
+	}
+
+	if (!is_table)
+	{
+		ereport(ERROR, (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+						errmsg("cannot modify foreign table \"%s\" which is based on a query",
+							   get_rel_name(rte->relid))));
+	}
+
+	/*
+	 * Setup the foreign datasource. We call ifxSetupFdwScan(),
+	 * even if this is preparing a modify action on the informix table.
+	 * This does all the legwork to initialize the database connection
+	 * and associated handles.
+	 */
+	ifxSetupFdwScan(&coninfo, &state, &plan_values, rte->relid);
+
+	/*
+	 * Prepare params (retrieve affacted columns et al).
+	 */
+	ifxPrepareParamsForModify(state, coninfo, plan, rte->relid);
+
+	/*
+	 * Generate the query.
+	 */
+	switch (operation)
+	{
+		case CMD_INSERT:
+			ifxGenerateInsertSql(state, coninfo, root, resultRelation);
+			break;
+		case CMD_DELETE:
+		case CMD_UPDATE:
+			/* not yet supported */
+			return NIL;
+		default:
+			break;
+	}
+
+	/*
+	 * Prepare and describe the statement.
+	 */
+	ifxPrepareModifyQuery(&state->stmt_info, coninfo, operation);
+
+	/*
+	 * Serialize all required plan data for use in executor later.
+	 */
+	result = ifxSerializePlanData(coninfo, state, root);
+
+	return result;
+}
+
+/*
+ * ifxPrepareModifyQuery()
+ *
+ * Prepares and describes the generated modify statement. Will
+ * initialize the passed IfxStatementInfo structure with a valid
+ * SQLDA structure.
+ */
+static void ifxPrepareModifyQuery(IfxStatementInfo *info,
+								  IfxConnectionInfo *coninfo,
+								  CmdType operation)
+{
+	/*
+	 * Unique statement identifier.
+	 */
+	info->stmt_name = ifxGenStatementName(coninfo, info->refid);
+
+	/*
+	 * Prepare the query.
+	 */
+	elog(DEBUG1, "prepare query \"%s\"", info->query);
+	ifxPrepareQuery(info->query,
+					info->stmt_name);
+	ifxCatchExceptions(info, IFX_STACK_PREPARE);
+
+	/*
+	 * In case of an INSERT command, we use an INSERT cursor.
+	 */
+	if (operation == CMD_INSERT)
+	{
+		/*
+		 * ...don't forget the cursor name.
+		 */
+		info->cursor_name = ifxGenCursorName(coninfo, info->refid);
+
+		elog(DEBUG1, "declare cursor \"%s\" for statement \"%s\"",
+			 info->cursor_name,
+			 info->stmt_name);
+		ifxDeclareCursorForPrepared(info->stmt_name, info->cursor_name,
+									IFX_DEFAULT_CURSOR);
+		ifxCatchExceptions(info, IFX_STACK_DECLARE);
+	}
+}
+
+static void
+ifxBeginForeignModify(ModifyTableState *mstate,
+					  ResultRelInfo *rinfo,
+					  List *fdw_private,
+					  int subplan_index,
+					  int eflags)
+{
+	IfxConnectionInfo    *coninfo;
+	IfxFdwExecutionState *state;
+	IfxCachedConnection  *cached_handle;
+	Oid                   foreignTableOid;
+
+	elog(DEBUG3, "informix_fdw: begin modify");
+	foreignTableOid = RelationGetRelid(rinfo->ri_RelationDesc);
+
+	/*
+	 * Activate cached connection.
+	 */
+	cached_handle = ifxSetupConnection(&coninfo,
+									   foreignTableOid,
+									   true);
+
+	/*
+	 * Initialize an unassociated execution state handle (with refid -1).
+	 */
+	state = makeIfxFdwExecutionState(-1);
+
+	/* Record current state structure */
+	rinfo->ri_FdwState = state;
+
+	/*
+	 * XXX: No specific actions yet, so we're done...
+	 */
+	if ((mstate->operation == CMD_UPDATE)
+		|| (mstate->operation == CMD_DELETE))
+	{
+		state->stmt_info.cursorUsage = IFX_NO_CURSOR;
+		return;
+	}
+
+	/*
+	 * Deserialize plan data.
+	 */
+	ifxDeserializeFdwData(state, fdw_private);
+
+	/* EXPLAIN without ANALYZE... */
+	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
+	{
+		elog(DEBUG1, "informix_fdw: explain only");
+		return;
+	}
+
+	/*
+	 * Get column list for local table definition.
+	 *
+	 * XXX: Modify on a foreign Informix table relies on equally
+	 *      named column identifiers.
+	 */
+	ifxPgColumnData(foreignTableOid, state);
+
+	/*
+	 * Describe the prepared statement into a SQLDA structure.
+	 *
+	 * This will return a valid SQLDA handle within our current
+	 * IfxStatementInfo handle.
+	 */
+	elog(DEBUG1, "describe statement \"%s\"", state->stmt_info.stmt_name);
+	ifxDescribeAllocatorByName(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, IFX_STACK_ALLOCATE | IFX_STACK_DESCRIBE);
+
+	/*
+	 * Save number of prepared column attributes.
+	 */
+	state->stmt_info.ifxAttrCount = ifxDescriptorColumnCount(&state->stmt_info);
+	elog(DEBUG1, "get descriptor column count %d",
+		 state->stmt_info.ifxAttrCount);
+
+	/*
+	 * In case of an INSERT statement, open the associated
+	 * cursor...
+	 */
+	elog(DEBUG1, "open cursor \"%s\"",
+		 state->stmt_info.cursor_name);
+	ifxOpenCursorForPrepared(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, IFX_STACK_OPEN);
+
+	state->stmt_info.ifxAttrDefs = palloc(state->stmt_info.ifxAttrCount
+										  * sizeof(IfxAttrDef));
+
+	/*
+	 * Populate target column info array.
+	 */
+	if ((state->stmt_info.row_size = ifxGetColumnAttributes(&state->stmt_info)) == 0)
+	{
+		/* oops, no memory to allocate? Something surely went wrong,
+		 * so abort */
+		ifxRewindCallstack(&state->stmt_info);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("could not initialize informix column properties")));
+	}
+
+	/*
+	 * NOTE:
+	 *
+	 * ifxGetColumnAttributes() obtained all information about the
+	 * returned column and stored them within the informix SQLDA and
+	 * sqlvar structs. However, we don't want to allocate memory underneath
+	 * our current memory context, thus we allocate the required memory structure
+	 * on top here. ifxSetupDataBufferAligned() will assign the allocated
+	 * memory area to the SQLDA structure and will maintain the data offsets
+	 * properly aligned.
+	 */
+	state->stmt_info.data = (char *) palloc0(state->stmt_info.row_size);
+	state->stmt_info.indicator = (short *) palloc0(sizeof(short)
+												   * state->stmt_info.ifxAttrCount);
+
+	/*
+	 * Assign sqlvar pointers to the allocated memory area.
+	 */
+	ifxSetupDataBufferAligned(&state->stmt_info);
+}
+
+static TupleTableSlot *
+ifxExecForeignInsert(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot)
+{
+	IfxFdwExecutionState *state;
+	ListCell             *cell;
+	int                   attnum;
+
+	/*
+	 * Setup action...
+	 */
+	state = rinfo->ri_FdwState;
+	elog(DEBUG3, "informix_fdw: exec insert with cursor \"%s\"",
+		 state->stmt_info.cursor_name);
+
+	/*
+	 * Copy column values into Informix SQLDA structure.
+	 *
+	 * NOTE:
+	 * We preserve all columns in an INSERT statement.
+	 */
+	for (attnum = 0; attnum < state->pgAttrCount; attnum++)
+	{
+		/*
+		 * Push all column value into the current Informix
+		 * SQLDA structure, suitable to be executed later by
+		 * PUT...
+		 */
+		if (state->pgAttrDefs[attnum].attnum > 0)
+			ifxColumnValuesToSqlda(state, slot, state->pgAttrDefs[attnum].attnum - 1);
+	}
+
+	/*
+	 * Execute the INSERT. Note that we have prepared
+	 * an INSERT cursor the the planning phase before, re-using it
+	 * here via PUT...
+	 */
+	ifxPutValuesInPrepared(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, 0);
+
+	return slot;
+}
+
+static TupleTableSlot *
+ifxExecForeignDelete(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot)
+{
+	IfxFdwExecutionState *state = rinfo->ri_FdwState;
+
+	elog(DEBUG3, "informix_fdw: exec delete");
+
+	return slot;
+}
+
+static TupleTableSlot *
+ifxExecForeignUpdate(EState *estate,
+					 ResultRelInfo *rinfo,
+					 TupleTableSlot *slot,
+					 TupleTableSlot *planSlot)
+{
+	IfxFdwExecutionState *state = rinfo->ri_FdwState;
+
+	elog(DEBUG3, "informix_fdw: exec update");
+
+	return slot;
+}
+
+static void ifxEndForeignModify(EState *estate,
+								ResultRelInfo *rinfo)
+{
+	IfxFdwExecutionState *state = rinfo->ri_FdwState;
+
+	/*
+	 * If a cursor is in use, we must flush it. Only the
+	 * case if we had an INSERT action, though...
+	 */
+	if (state->stmt_info.cursorUsage != IFX_NO_CURSOR)
+	{
+		ifxFlushCursor(&state->stmt_info);
+	}
+
+	/*
+	 * Dispose any allocated resources.
+	 */
+	ifxRewindCallstack(&state->stmt_info);
+}
+
+/*
+ * Prepare parameters for modify action.
+ */
+static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
+									  IfxConnectionInfo    *coninfo,
+									  ModifyTable          *plan,
+									  Oid                   foreignTableOid)
+{
+	CmdType   operation = plan->operation;
+	Relation  rel;
+
+	/*
+	 * Determine affected attributes of the modify action.
+	 * No lock required, since the planner should already acquired
+	 * one...
+	 */
+	rel = heap_open(foreignTableOid, NoLock);
+
+	switch(operation)
+	{
+		case CMD_INSERT:
+		{
+			/*
+			 * Retrieve attribute numbers for all columns. We apply all
+			 * columns in an INSERT action.
+			 */
+			TupleDesc tupdesc = RelationGetDescr(rel);
+			int       attnum;
+
+			for (attnum = 1; attnum <= tupdesc->natts; attnum++)
+			{
+				Form_pg_attribute pgattr = tupdesc->attrs[attnum - 1];
+
+				state->affectedAttrNums = lappend_int(state->affectedAttrNums,
+													  pgattr->attnum);
+			}
+
+			/* ...and we're done */
+			break;
+		}
+		case CMD_UPDATE:
+		case CMD_DELETE:
+		default:
+			break;
+	}
+
+	heap_close(rel, NoLock);
+}
+
+#endif
 
 /*
  * Allocates memory for the specified structures to
@@ -581,6 +1168,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 	state->stmt_info.call_stack   = IFX_STACK_EMPTY;
 	state->stmt_info.row_size     = 0;
 	state->stmt_info.special_cols = IFX_NO_SPECIAL_COLS;
+	state->stmt_info.predicate    = NULL;
 
 	bzero(state->stmt_info.sqlstate, 6);
 	state->stmt_info.exception_count = 0;
@@ -589,6 +1177,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 	state->pgAttrDefs  = NULL;
 	state->values = NULL;
 	state->rescan = false;
+	state->affectedAttrNums = NIL;
 
 	return state;
 }
@@ -1753,6 +2342,20 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 
 	#endif
 
+	/*
+	 * Since PostgreSQL 9.3 we support updatable foreign tables.
+	 */
+	#if PG_VERSION_NUM >= 90300
+
+	fdwRoutine->AddForeignUpdateTargets = ifxAddForeignUpdateTargets;
+	fdwRoutine->PlanForeignModify       = ifxPlanForeignModify;
+	fdwRoutine->BeginForeignModify      = ifxBeginForeignModify;
+	fdwRoutine->ExecForeignInsert       = ifxExecForeignInsert;
+	fdwRoutine->ExecForeignDelete       = ifxExecForeignDelete;
+	fdwRoutine->ExecForeignUpdate       = ifxExecForeignUpdate;
+	fdwRoutine->EndForeignModify        = ifxEndForeignModify;
+
+	#endif
 
 	PG_RETURN_POINTER(fdwRoutine);
 }
@@ -2058,17 +2661,29 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 	}
 	else
 	{
+		/*
+		 * NOTE:
+		 *
+		 * Don't declare the query as READ ONLY. We can't really
+		 * distinguish wether the scan is related to a DELETE or UPDATE.
+		 *
+		 * XXX:
+		 *
+		 * We declare the Informix transaction with REPEATABLE READ
+		 * isolation level. Consider different modes here, e.g. FOR UPDATE
+		 * with READ COMMITTED...
+		 */
 		if ((state->stmt_info.predicate != NULL)
 			&& (strlen(state->stmt_info.predicate) > 0)
 			&& coninfo->predicate_pushdown)
 		{
-			appendStringInfo(buf, "SELECT * FROM %s WHERE %s FOR READ ONLY",
+			appendStringInfo(buf, "SELECT * FROM %s WHERE %s",
 							 coninfo->tablename,
 							 state->stmt_info.predicate);
 		}
 		else
 		{
-			appendStringInfo(buf, "SELECT * FROM %s FOR READ ONLY",
+			appendStringInfo(buf, "SELECT * FROM %s",
 							 coninfo->tablename);
 		}
 	}
@@ -2372,9 +2987,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 		case IFX_BYTES:
 		case IFX_TEXT:
 		{
-			/* TO DO */
 			Datum dat;
-
 
 			dat = convertIfxSimpleLO(state, attnum);
 

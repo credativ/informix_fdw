@@ -96,6 +96,7 @@
 typedef enum IfxCursorUsage
 {
 	IFX_DEFAULT_CURSOR,
+        IFX_UPDATE_CURSOR,
 	IFX_SCROLL_CURSOR,
 	IFX_NO_CURSOR
 } IfxCursorUsage;
@@ -440,6 +441,10 @@ void ifxSetDescriptorCount(char *descr_name, int count);
 void ifxCommitTransaction(void);
 void ifxRollbackTransaction(void);
 void ifxGetSystableStats(char *tablename, IfxPlanData *planData);
+void ifxPutValuesInPrepared(IfxStatementInfo *state);
+void ifxFlushCursor(IfxStatementInfo *info);
+IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum,
+										IfxIndicatorValue value);
 
 /*
  * Error handling
@@ -468,6 +473,14 @@ char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
 							long *loc_buf_len);
 char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum,
 					char *buf);
+
+/*
+ * Functions to copy values into an Informix SQLDA structure.
+ */
+void ifxSetInteger(IfxStatementInfo *info, int ifx_attnum, int value);
+void ifxSetInt8(IfxStatementInfo *info, int ifx_attnum, char *value);
+void ifxSetBigint(IfxStatementInfo *info, int ifx_attnum, char *value);
+void ifxSetInt2(IfxStatementInfo *info, int ifx_attnum, short value);
 
 /*
  * Helper macros.

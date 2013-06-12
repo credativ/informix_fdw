@@ -142,6 +142,12 @@ typedef struct IfxFdwExecutionState
 	 */
 	IfxValue *values;
 
+	/*
+	 * List of attribute numbers affected by a modify statement
+	 * against the foreign table. Not used during normal scans.
+	 */
+	List *affectedAttrNums;
+
 } IfxFdwExecutionState;
 
 #if PG_VERSION_NUM >= 90200
@@ -265,6 +271,7 @@ typedef struct IfxPushdownOprContext
 #define IFX_ATTR_SETNOTVALID_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator = INDICATOR_NOT_VALID
 #define IFX_ATTR_IS_VALID_P(x, y) ((x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator != INDICATOR_NOT_VALID)
 #define IFX_ATTR_ALLOC_SIZE_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].mem_allocated
+#define IFX_SET_INDICATOR_P(x, y, z) ((x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].indicator = (z))
 
 /*
  * Datatype conversion routines.
@@ -279,6 +286,20 @@ void ifxRewindCallstack(IfxStatementInfo *info);
 IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo);
 Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum);
+void setIfxInteger(IfxFdwExecutionState *state,
+				   TupleTableSlot *slot,
+				   int attnum);
+void setIfxText(IfxFdwExecutionState *state,
+				TupleTableSlot *slot,
+				int attnum);
+
+/*
+ * Internal API for PostgreSQL 9.3 and above.
+ */
+
+#if PG_VERSION_NUM >= 90300
+char *dispatchColumnIdentifier(int varno, int varattno, PlannerInfo *root);
+#endif
 
 /*
  * Node support helper functions
