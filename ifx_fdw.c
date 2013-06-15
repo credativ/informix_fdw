@@ -283,6 +283,12 @@ ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 		}
 
 		/*
+		 * Sanity check for assert-enabled builds
+		 */
+		Assert((PG_MAPPED_IFX_ATTNUM(state, i) >= 0)
+			   && (PG_MAPPED_IFX_ATTNUM(state, i) < state->stmt_info.ifxAttrCount));
+
+		/*
 		 * Retrieve a converted datum from the current
 		 * column and store it within state context. This also
 		 * sets and checks the indicator variable to record any
