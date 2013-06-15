@@ -99,9 +99,9 @@ static void ifxFTCache_init()
 	MemoryContext old_ctxt;
 
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
-    hash_ctl.keysize = sizeof(Oid);
-    hash_ctl.entrysize = sizeof(IfxFTCacheItem);
-    hash_ctl.hash = oid_hash;
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(IfxFTCacheItem);
+	hash_ctl.hash = oid_hash;
 
 	/*
 	 * Seems HTAB always allocates in TopMemoryContext if no
@@ -163,10 +163,10 @@ ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 		old_cxt = MemoryContextSwitchTo(TopMemoryContext);
 
 		item->establishedByOid = foreignTableOid;
-		item->servername       = pstrdup(coninfo->servername);
-		item->informixdir      = pstrdup(coninfo->informixdir);
-		item->username         = pstrdup(coninfo->username);
-		item->database         = pstrdup(coninfo->database);
+		item->con.servername       = pstrdup(coninfo->servername);
+		item->con.informixdir      = pstrdup(coninfo->informixdir);
+		item->con.username         = pstrdup(coninfo->username);
+		item->con.database         = pstrdup(coninfo->database);
 
 		/* This is a no-op. When looking up the connection handle, those
 		 * settings might not yet be initialized properly. Copy it anyways to
@@ -174,28 +174,43 @@ ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 		 * should set those settings which can vary across cache retrieval
 		 * itself.
 		 */
-		item->tx_enabled       = coninfo->tx_enabled;
-		item->db_ansi          = coninfo->db_ansi;
+		item->con.tx_enabled       = coninfo->tx_enabled;
+		item->con.db_ansi          = coninfo->db_ansi;
+		item->con.tx_in_progress   = 0;
+
+		/*
+		 * Init statistics.
+		 */
+		item->con.tx_num_commit = 0;
+		item->con.tx_num_rollback = 0;
 
 		/* can be NULL */
 		if (coninfo->db_locale != NULL)
-			item->db_locale        = pstrdup(coninfo->db_locale);
+			item->con.db_locale        = pstrdup(coninfo->db_locale);
 		else
-			item->db_locale = NULL;
+			item->con.db_locale = NULL;
 
 		if (coninfo->client_locale != NULL)
-			item->client_locale    = pstrdup(coninfo->client_locale);
+			item->con.client_locale    = pstrdup(coninfo->client_locale);
 		else
-			item->client_locale = NULL;
+			item->con.client_locale = NULL;
 
 		/* also initialize usage counter */
-		item->usage = 1;
+		item->con.usage = 1;
 
 		MemoryContextSwitchTo(old_cxt);
 	}
 	else
 	{
-		item->usage++;
+		/*
+		 * NOTE:
+		 *
+		 * If coninfo was specified with IFX_PLAN_SCAN (meaning a new scan on a
+		 * foreign table was initiated), we need to increase the usage counter to ensure
+		 * a new refid for all identifier used by this scan is generated.
+		 */
+		if (coninfo->scan_mode == IFX_PLAN_SCAN)
+			item->con.usage++;
 	}
 
 	return item;

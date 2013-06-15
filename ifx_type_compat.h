@@ -242,6 +242,20 @@ typedef struct IfxPlanData
 } IfxPlanData;
 
 /*
+ * Foreign scan modes.
+ *
+ * Describes the specific steps performed through
+ * a foreign scan.
+ */
+typedef enum
+{
+	IFX_PLAN_SCAN,    /* plan a new foreign scan, generate new refid for scan */
+	IFX_BEGIN_SCAN,   /* start/preparing foreign scan */
+	IFX_ITERATE_SCAN, /* foreign scan iteration step */
+	IFX_END_SCAN      /* end foreign scan */
+} IfxForeignScanMode;
+
+/*
  * Informix connection
  */
 typedef struct IfxConnectionInfo
@@ -266,6 +280,18 @@ typedef struct IfxConnectionInfo
 	char *query;
 
 	/*
+	 * Set to IFX_PLAN_SCAN if a new foreign scan on a foreign table
+	 * is requested.
+	 *
+	 * This is currently used in ifxPlanForeignScan() and
+	 * ifxGetForeignRelSize() to teach the connection cache
+	 * to generate a new scan id only. In detail, ifxConCache_add()
+	 * will increase the usage counter of the cached connection
+	 * handle only, if a new scan is requested.
+	 */
+	IfxForeignScanMode scan_mode;
+
+	/*
 	 * Environment options, e.g. GL_DATE, ...
 	 */
 	char *gl_date;
@@ -282,6 +308,34 @@ typedef struct IfxConnectionInfo
 	IfxPlanData planData;
 
 } IfxConnectionInfo;
+
+/*
+ * This is a ancestor of IfxCachedConnection structure
+ * suitable to be passed down to the Informix API. Since we can't
+ * include Informix headers because of symbol collisions in pre 9.2
+ * versions, we just use a cast to this generic struct for passing
+ * cached connection handles down to the Informix layer.
+ */
+typedef struct IfxPGCachedConnection
+{
+	char ifx_connection_name[IFX_CONNAME_LEN];
+	char *servername;
+	char *informixdir;
+	char *username;
+	char *database;
+	char *db_locale;
+	char *client_locale;
+	int usage;
+	int tx_enabled;
+	int tx_in_progress;
+	int db_ansi;
+
+	/*
+	 * Stats counters
+	 */
+	int tx_num_commit;
+	int tx_num_rollback;
+} IfxPGCachedConnection;
 
 /*
  * IfxStatementInfo
@@ -416,6 +470,7 @@ typedef struct IfxStatementInfo
 
 extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
+int ifxSetConnectionIdent(char *conname);
 void ifxDisconnectConnection(char *conname);
 void ifxDestroyConnection(char *conname);
 void ifxPrepareQuery(char *query, char *stmt_name);
@@ -437,8 +492,10 @@ void ifxDeallocateDescriptor(char *descr_name);
 char ifxGetSQLCAWarn(signed short warn);
 int ifxGetSQLCAErrd(signed short ca);
 void ifxSetDescriptorCount(char *descr_name, int count);
-void ifxCommitTransaction(void);
-void ifxRollbackTransaction(void);
+int ifxCommitTransaction(IfxPGCachedConnection *cached);
+int ifxRollbackTransaction(IfxPGCachedConnection *cached);
+int ifxStartTransaction(IfxPGCachedConnection *cached,
+						IfxConnectionInfo *coninfo);
 void ifxGetSystableStats(char *tablename, IfxPlanData *planData);
 
 /*
@@ -446,6 +503,7 @@ void ifxGetSystableStats(char *tablename, IfxPlanData *planData);
  */
 IfxSqlStateClass ifxSetException(IfxStatementInfo *state);
 IfxSqlStateClass ifxConnectionStatus(void);
+IfxSqlStateClass ifxGetSqlStateClass(void);
 int ifxExceptionCount(void);
 void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message);
 inline int ifxGetSqlCode(void);

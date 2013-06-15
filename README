@@ -354,6 +354,19 @@ usage                | 2
 db_locale            | en_us.819
 client_locale        | en_US.utf8
 
+It is possible to close a remote connection manually, if required. This
+can be done by ifx_fdw_close_connection():
+
+#= SELECT * FROM ifx_fdw_close_connection('informixtxtestol_informix1210');
+ ifx_fdw_close_connection
+--------------------------
+
+(1 row)
+
+The function throws an error if the existing connection does not exist or
+couldn't be disconnected. If no Informix connections were already used in a session,
+the connection cache isn't initialized yet, which is treated as an error, too.
+
 = Caveats =
 
 - Even if not currently enforced, the Informix FDW heavily relies
@@ -390,8 +403,6 @@ client_locale        | en_US.utf8
 = ToDo =
 
 - Better error handling in case of NULL datum in the various convert*
-  routines in ifx_conv.c
+  routines in ifx_conv.c.
 
-9.2 will introduce a number of interesting changes:
-
-- ANALYZE support for foreign tables
+- Improve usage of planner/local foreign table statistics.

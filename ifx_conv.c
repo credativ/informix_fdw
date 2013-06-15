@@ -395,24 +395,35 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 					}
 
 					/*
-					 * Check for null pointer in buf. This is not expected
-					 * and means an error occured.
+					 * Check wether we have a valid buffer returned from the
+					 * conversion routine. We might get a NULL pointer in case Informix
+					 * failed to convert the INT8 into a proper int8 value. We might then
+					 * get a NOT NULL indicator, but still stumple across the conversion error.
 					 */
-					if (buf == NULL)
+					if (state->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM(state, attnum)].indicator
+						== INDICATOR_NOT_NULL)
 					{
-						ifxRewindCallstack(&(state->stmt_info));
-						elog(ERROR,
-							 "could not convert informix int8 value");
-					}
 
-					/*
-					 * Finally call the type input function and we're
-					 * done.
-					 */
-					typinputfunc = getTypeInputFunction(state, PG_ATTRTYPE_P(state, attnum));
-					result = OidFunctionCall2(typinputfunc,
-											  CStringGetDatum(pstrdup(buf)),
-											  ObjectIdGetDatum(InvalidOid));
+						/*
+						 * Check for null pointer in buf. This is not expected
+						 * and means an error occured.
+						 */
+						if (buf == NULL)
+						{
+							ifxRewindCallstack(&(state->stmt_info));
+							elog(ERROR,
+								 "could not convert informix int8 value");
+						}
+
+						/*
+						 * Finally call the type input function and we're
+						 * done.
+						 */
+						typinputfunc = getTypeInputFunction(state, PG_ATTRTYPE_P(state, attnum));
+						result = OidFunctionCall2(typinputfunc,
+												  CStringGetDatum(pstrdup(buf)),
+												  ObjectIdGetDatum(InvalidOid));
+					}
 				}
 				else
 				{

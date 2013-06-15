@@ -20,6 +20,7 @@
 #include "access/htup_details.h"
 #endif
 
+#include "access/xact.h"
 #include "utils/lsyscache.h"
 
 PG_MODULE_MAGIC;
@@ -32,6 +33,11 @@ struct IfxFdwOption
 	const char *optname;
 	Oid         optcontext;
 };
+
+/*
+ * Global per-backend transaction counter.
+ */
+extern unsigned int ifxXactInProgress;
 
 /*
  * Valid options for informix_fdw.
@@ -93,10 +99,12 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 static void ifxSetupFdwScan(IfxConnectionInfo    **coninfo,
 							IfxFdwExecutionState **state,
 							List    **plan_values,
-							Oid       foreignTableOid);
+							Oid       foreignTableOid,
+							IfxForeignScanMode mode);
 
 static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 												Oid foreignTableOid,
+												IfxForeignScanMode mode,
 												bool error_ok);
 
 static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid);
@@ -160,6 +168,13 @@ ifxFetchTuple(IfxFdwExecutionState *state);
 static void
 ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 					  TupleTableSlot *tupleSlot);
+
+static void ifx_fdw_xact_callback(XactEvent event, void *arg);
+static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
+										   XactEvent event);
+static int ifxXactFinalize(IfxCachedConnection *cached,
+						   IfxXactAction action,
+						   bool connection_error_ok);
 
 /*******************************************************************************
  * FDW callback routines.
@@ -409,6 +424,7 @@ static void ifxPrepareScan(IfxConnectionInfo *coninfo,
  */
 static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 												Oid foreignTableOid,
+												IfxForeignScanMode mode,
 												bool error_ok)
 {
 	IfxCachedConnection *cached_handle;
@@ -426,6 +442,11 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 
 	*coninfo = ifxMakeConnectionInfo(foreignTableOid);
 	elog(DEBUG1, "informix connection dsn \"%s\"", (*coninfo)->dsn);
+
+	/*
+	 * Set requested scan mode.
+	 */
+	(*coninfo)->scan_mode = mode;
 
 	/*
 	 * Lookup the connection name in the connection cache.
@@ -452,39 +473,6 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 		elog(DEBUG2, "reusing cached informix connection \"%s\"",
 			 (*coninfo)->conname);
 	}
-
-	/*
-	 * Give a notice if the connection supports transactions.
-	 * Don't forget to register this information into the cached connection
-	 * handle as well, since we didn't have this information available
-	 * during connection startup and cached connection initialization
-	 */
-	if ((*coninfo)->tx_enabled == 1)
-	{
-		elog(DEBUG1, "informix database connection using transactions");
-		cached_handle->tx_enabled = (*coninfo)->tx_enabled;
-	}
-
-	/* ...the same for ANSI mode */
-	if ((*coninfo)->db_ansi == 1)
-	{
-		elog(DEBUG1, "informix database runs in ANSI-mode");
-		cached_handle->db_ansi = (*coninfo)->db_ansi;
-	}
-
-	/*
-	 * Give a warning if we have mismatching DBLOCALE settings.
-	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_DB_LOCALE_MISMATCH) == 'W')
-		elog(WARNING, "mismatching DBLOCALE \"%s\"",
-			 (*coninfo)->db_locale);
-
-	/*
-	 * Give a NOTICE in case this is an INFORMIX SE
-	 * database instance.
-	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W')
-		elog(NOTICE, "connected to an non-Informix SE instance");
 
 	/*
 	 * Check connection status. This should happen directly
@@ -518,9 +506,63 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 				 ifxGetSqlCode());
 
 			/* in case of !error_ok */
-			cached_handle = NULL;
+			return NULL;
 		}
 	}
+
+	/*
+	 * Give a notice if the connection supports transactions.
+	 * Don't forget to register this information into the cached connection
+	 * handle as well, since we didn't have this information available
+	 * during connection startup and cached connection initialization.
+	 *
+	 * Also start a transaction. We do not care about the current state
+	 * of the connection, ifxStartTransaction() does all necessary.
+	 */
+	if ((*coninfo)->tx_enabled == 1)
+	{
+		elog(DEBUG1, "informix database connection using transactions");
+		cached_handle->con.tx_enabled = (*coninfo)->tx_enabled;
+
+        /* ... and start the transaction */
+        if (ifxStartTransaction(&cached_handle->con, *coninfo) < 0)
+		{
+			IfxSqlStateMessage message;
+			ifxGetSqlStateMessage(1, &message);
+
+			/*
+			 * In case we can't emit a transaction, print a WARNING,
+			 * but don't throw an error for now. We might do it
+			 * the other way around, if that proves to be more correct,
+			 * but leave it for now...
+			 */
+			elog(WARNING, "informix_fdw: could not start transaction: \"%s\", SQLSTATE %s",
+				 message.text, message.sqlstate);
+		}
+		else
+			RegisterXactCallback(ifx_fdw_xact_callback, NULL);
+	}
+
+	/* ...the same for ANSI mode */
+	if ((*coninfo)->db_ansi == 1)
+	{
+		elog(DEBUG1, "informix database runs in ANSI-mode");
+		cached_handle->con.db_ansi = (*coninfo)->db_ansi;
+	}
+
+	/*
+	 * Give a warning if we have mismatching DBLOCALE settings.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_DB_LOCALE_MISMATCH) == 'W')
+		elog(WARNING, "mismatching DBLOCALE \"%s\"",
+			 (*coninfo)->db_locale);
+
+	/*
+	 * Give a NOTICE in case this is an INFORMIX SE
+	 * database instance.
+	 */
+	if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W')
+		elog(NOTICE, "connected to an non-Informix SE instance");
 
 	return cached_handle;
 }
@@ -536,14 +578,15 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 							IfxFdwExecutionState **state,
 							List    **plan_values,
-							Oid       foreignTableOid)
+							Oid       foreignTableOid,
+							IfxForeignScanMode mode)
 {
 	IfxCachedConnection  *cached_handle;
 
 	/*
 	 * Activate the required Informix database connection.
 	 */
-	cached_handle = ifxSetupConnection(coninfo, foreignTableOid, true);
+	cached_handle = ifxSetupConnection(coninfo, foreignTableOid, mode, true);
 
 	/*
 	 * Save parameters for later use
@@ -555,7 +598,7 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 	 * Make a generic informix execution state
 	 * structure.
 	 */
-	*state = makeIfxFdwExecutionState(cached_handle->usage);
+	*state = makeIfxFdwExecutionState(cached_handle->con.usage);
 }
 
 /*
@@ -650,7 +693,9 @@ ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
 	}
 
 	/*
-	 * Retrieve a connection from cache or open a new one.
+	 * Retrieve a connection from cache or open a new one. Instruct
+	 * an IFX_PLAN_SCAN, since we treat ifxAnalyzeForeignTable() which
+	 * does all the setup required to do ifxAcquireSampleRows() separately.
 	 *
 	 * XXX: should we error out in case we get an connection error?
 	 *      This will abandon the whole ANALYZE run when
@@ -658,6 +703,7 @@ ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
 	 */
 	if ((cached_handle = ifxSetupConnection(&coninfo,
 											RelationGetRelid(relation),
+											IFX_PLAN_SCAN,
 											false)) == NULL)
 	{
 		/*
@@ -677,7 +723,7 @@ ifxAnalyzeForeignTable(Relation relation, AcquireSampleRowsFunc *func,
 	 * Catch any possible errors. Create a generic execution state which
 	 * will carry any possible exceptions.
 	 */
-	state = makeIfxFdwExecutionState(cached_handle->usage);
+	state = makeIfxFdwExecutionState(cached_handle->con.usage);
 
 	/*
 	 * Retrieve basic statistics from Informix for this table,
@@ -807,12 +853,21 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 	 * or get a previously cached one...there should
 	 * already be a cached connection for this table, if
 	 * ifxAnalyzeForeignTable() found some remote
-	 * statistics to be reused...
+	 * statistics to be reused.
+	 *
+	 * NOTE:
+	 *
+	 * ifxAnalyzeForeignTable should have prepare all required
+	 * steps to prepare the scan finally, so we don't need to
+	 * get a new scan refid...thus we pass IFX_BEGIN_SCAN to
+	 * tell the connection cache that everything is already
+	 * in place.
 	 *
 	 * This also initializes all required infrastructure
 	 * to scan the remote table.
 	 */
-	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableId);
+	ifxSetupFdwScan(&coninfo, &state, &plan_values,
+					foreignTableId, IFX_BEGIN_SCAN);
 
 	/*
 	 * XXX: Move this into a separate function, shared
@@ -1073,7 +1128,8 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 * a already cached connection from the informix connection
 	 * cache.
 	 */
-	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableId);
+	ifxSetupFdwScan(&coninfo, &state, &plan_values,
+					foreignTableId, IFX_PLAN_SCAN);
 
 	/*
 	 * Check for predicates that can be pushed down
@@ -1223,7 +1279,8 @@ ifxPlanForeignScan(Oid foreignTableOid, PlannerInfo *planInfo, RelOptInfo *baser
 	 * a already cached connection from the informix connection
 	 * cache.
 	 */
-	ifxSetupFdwScan(&coninfo, &state, &plan_values, foreignTableOid);
+	ifxSetupFdwScan(&coninfo, &state, &plan_values,
+					foreignTableOid, IFX_PLAN_SCAN);
 
 	/*
 	 * Check for predicates that can be pushed down
@@ -1860,7 +1917,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	{
 		DefElem *def = (DefElem *) lfirst(elem);
 
-		elog(DEBUG3, "ifx_fdw set param %s=%s",
+		elog(DEBUG5, "ifx_fdw set param %s=%s",
 			 def->defname, defGetString(def));
 
 		/*
@@ -2107,11 +2164,16 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	plan_values = PG_SCANSTATE_PRIVATE_P(node);
 	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	Assert((foreignTableOid != InvalidOid));
-	coninfo= ifxMakeConnectionInfo(foreignTableOid);
+	coninfo = ifxMakeConnectionInfo(foreignTableOid);
 
 	/*
-	 * ifxPlanForeignScan() already should have added a cached
-	 * connection entry for the requested table.
+	 * Tell the connection cache that we are about to start to scan
+	 * the remote table.
+	 */
+	coninfo->scan_mode = IFX_BEGIN_SCAN;
+
+	/*
+	 * We should have a cached connection entry for the requested table.
 	 */
 	cached = ifxConnCache_add(foreignTableOid, coninfo,
 							  &conn_cached);
@@ -2119,6 +2181,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	/* should not happen here */
 	Assert(conn_cached && cached != NULL);
 
+	/* Initialize generic executation state structure */
 	festate = makeIfxFdwExecutionState(-1);
 
 	/*
@@ -2547,6 +2610,14 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	foreignTableOid = RelationGetRelid(node->ss.ss_currentRelation);
 	coninfo= ifxMakeConnectionInfo(foreignTableOid);
 
+	/*
+	 * Set appropiate scan mode.
+	 */
+	coninfo->scan_mode = IFX_ITERATE_SCAN;
+
+	/*
+	 * ...and get the handle.
+	 */
 	ifxConnCache_add(foreignTableOid, coninfo, &conn_cached);
 
 	/*
@@ -2898,6 +2969,10 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->client_locale = NULL;
 	coninfo->query         = NULL;
 	coninfo->tablename     = NULL;
+	coninfo->username      = "\0";
+
+	/* default scan mode */
+	coninfo->scan_mode     = IFX_PLAN_SCAN;
 }
 
 static StringInfoData *
@@ -2954,10 +3029,10 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/*
 	 * Check if connection cache is already
 	 * initialized. If not, we don't have anything
-	 * to do an can exit immediately.
+	 * to do and can exit immediately.
 	 */
 	if (!IfxCacheIsInitialized)
-		PG_RETURN_VOID();
+		elog(ERROR, "informix connection cache not yet initialized");
 
 	/* Get connection name from argument */
 	conname = text_to_cstring(PG_GETARG_TEXT_P(0));
@@ -2981,7 +3056,7 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/* Check wether the handle was valid */
 	if (!found || !conn_cached)
 	{
-		elog(DEBUG1, "unknown informix connection name: \"%s\"",
+		elog(ERROR, "unknown informix connection name: \"%s\"",
 			 conname);
 		PG_RETURN_VOID();
 	}
@@ -2989,7 +3064,20 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/* okay, we have a valid connection handle...close it */
 	ifxDisconnectConnection(conname);
 
-	/* Check for any Informix exceptions */
+    /* Check for any Informix exceptions */
+	if (ifxGetSqlStateClass() == IFX_ERROR)
+	{
+		IfxSqlStateMessage message;
+
+		ifxGetSqlStateMessage(1, &message);
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_ERROR),
+				 errmsg("could not close specified connection \"%s\"",
+						conname),
+				 errdetail("informix error: %s, SQLSTATE %s",
+						   message.text, message.sqlstate)));
+	}
+
 	PG_RETURN_VOID();
 }
 
@@ -3068,8 +3156,8 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 	if (conn_processed < conn_expected)
 	{
 		IfxCachedConnection *conn_cached;
-		Datum                values[11];
-		bool                 nulls[11];
+		Datum                values[14];
+		bool                 nulls[14];
 		HeapTuple            tuple;
 		Datum                result;
 
@@ -3080,14 +3168,14 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		/*
 		 * Values array. This will hold the values to be returned.
 		 */
-		elog(DEBUG2, "connection name %s", conn_cached->ifx_connection_name);
-		values[0] = PointerGetDatum(cstring_to_text(conn_cached->ifx_connection_name));
+		elog(DEBUG2, "connection name %s", conn_cached->con.ifx_connection_name);
+		values[0] = PointerGetDatum(cstring_to_text(conn_cached->con.ifx_connection_name));
 		values[1] = Int32GetDatum(conn_cached->establishedByOid);
-		values[2] = PointerGetDatum(cstring_to_text(conn_cached->servername));
-		values[3] = PointerGetDatum(cstring_to_text(conn_cached->informixdir));
-		values[4] = PointerGetDatum(cstring_to_text(conn_cached->database));
-		values[5] = PointerGetDatum(cstring_to_text(conn_cached->username));
-		values[6] = Int32GetDatum(conn_cached->usage);
+		values[2] = PointerGetDatum(cstring_to_text(conn_cached->con.servername));
+		values[3] = PointerGetDatum(cstring_to_text(conn_cached->con.informixdir));
+		values[4] = PointerGetDatum(cstring_to_text(conn_cached->con.database));
+		values[5] = PointerGetDatum(cstring_to_text(conn_cached->con.username));
+		values[6] = Int32GetDatum(conn_cached->con.usage);
 
 		nulls[0] = false;
 		nulls[1] = false;
@@ -3099,9 +3187,9 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 
 		/* db_locale and client_locale might be undefined */
 
-		if (conn_cached->db_locale != NULL)
+		if (conn_cached->con.db_locale != NULL)
 		{
-			values[7] = PointerGetDatum(cstring_to_text(conn_cached->db_locale));
+			values[7] = PointerGetDatum(cstring_to_text(conn_cached->con.db_locale));
 			nulls[7] = false;
 		}
 		else
@@ -3110,9 +3198,9 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 			values[7] = PointerGetDatum(NULL);
 		}
 
-		if (conn_cached->client_locale != NULL)
+		if (conn_cached->con.client_locale != NULL)
 		{
-			values[8] = PointerGetDatum(cstring_to_text(conn_cached->client_locale));
+			values[8] = PointerGetDatum(cstring_to_text(conn_cached->con.client_locale));
 			nulls[8] = false;
 		}
 		else
@@ -3124,14 +3212,29 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		/*
 		 * Show transaction usage.
 		 */
-		values[9] = Int32GetDatum(conn_cached->tx_enabled);
+		values[9] = Int32GetDatum(conn_cached->con.tx_enabled);
 		nulls[9]  = false;
+
+		/*
+		 * Transaction in progress...
+		 */
+		values[10] = Int32GetDatum(conn_cached->con.tx_in_progress);
+		nulls[10]  = false;
 
 		/*
 		 * Show wether database is ANSI enabled or not.
 		 */
-		values[10] = Int32GetDatum(conn_cached->db_ansi);
-		nulls[10]  = false;
+		values[11] = Int32GetDatum(conn_cached->con.db_ansi);
+		nulls[11]  = false;
+
+		/*
+		 * Additional stats columns...
+		 */
+		values[12] = Int32GetDatum(conn_cached->con.tx_num_commit);
+		nulls[12]  = false;
+
+		values[13] = Int32GetDatum(conn_cached->con.tx_num_rollback);
+		nulls[13]  = false;
 
 		/*
 		 * Build the result tuple.
@@ -3161,5 +3264,175 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 			hash_seq_term(call_data->hash_status);
 
 		SRF_RETURN_DONE(fcontext);
+	}
+}
+
+/*
+ * ifxXactFinalize()
+ *
+ * Commits or rollbacks a transaction on the remote
+ * server, depending on the specified IfxXactAction.
+ *
+ * Internally, this function makes the specified informix
+ * connection current and depending on the specified action
+ * commits or rolls back the current transaction. The caller
+ * should make sure, that there's really a transaction in
+ * progress.
+ *
+ * If connection_error_ok is true, an error is thrown
+ * if the specified cached informix connection can't be made
+ * current. Otherwise the loglevel is decreased to a WARNING,
+ * indicating the exact SQLSTATE and error message what happened.
+ */
+static int ifxXactFinalize(IfxCachedConnection *cached,
+						   IfxXactAction action,
+						   bool connection_error_ok)
+{
+	int result = -1;
+	IfxSqlStateMessage message;
+
+	/*
+	 * Make this connection current (otherwise we aren't able to commit
+	 * anything.
+	 */
+	if ((result = ifxSetConnectionIdent(cached->con.ifx_connection_name)) < 0)
+	{
+		/*
+		 * Can't make this connection current, so throw an
+		 * ERROR. This will return to this callback by
+		 * XACT_EVENT_ABORT and do all necessary cleanup.
+		 */
+		ifxGetSqlStateMessage(1, &message);
+
+		elog(((connection_error_ok) ? ERROR : WARNING),
+			  "informix_fdw: error committing transaction: \"%s\", SQLSTATE %s",
+			  message.text, message.sqlstate);
+	}
+
+	if (action == IFX_TX_COMMIT)
+	{
+		/*
+		 * Commit the transaction
+		 */
+		if ((result = ifxCommitTransaction(&cached->con)) < 0)
+		{
+			/* oops, something went wrong ... */
+			ifxGetSqlStateMessage(1, &message);
+
+			/*
+			 * Error out in case we can't commit this transaction.
+			 */
+			elog(ERROR, "informix_fdw: error committing transaction: \"%s\", SQLSTATE %s",
+				 message.text, message.sqlstate);
+		}
+	}
+	else if (action == IFX_TX_ROLLBACK)
+	{
+		/* Rollback current transaction */
+		if (ifxRollbackTransaction(&cached->con) < 0)
+		{
+			/* oops, something went wrong ... */
+			ifxGetSqlStateMessage(1, &message);
+
+			/*
+			 * Don't throw an error, but emit a warning something went
+			 * wrong on the remote server with the SQLSTATE error message.
+			 * Otherwise we end up in an endless loop.
+			 */
+			elog(WARNING, "informix_fdw: error committing transaction: \"%s\"",
+				 message.text);
+		}
+	}
+
+	return result;
+}
+
+/*
+ * Internal function for ifx_fdw_xact_callback().
+ *
+ * Depending on the specified XactEvent, rolls a transaction back
+ * or commits it on the remote server.
+ */
+static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
+										  XactEvent event)
+{
+	switch(event)
+	{
+#if PG_VERSION_NUM >= 90300
+		case XACT_EVENT_PRE_COMMIT:
+		{
+            ifxXactFinalize(cached, IFX_TX_COMMIT, true);
+			break;
+		}
+		case XACT_EVENT_PRE_PREPARE:
+		{
+			/*
+			 * Not supported.
+			 *
+			 * NOTE: I had a hard time to figure out how this works correctly,
+			 *       but fortunately the postgres_fdw shows an example on how to
+			 *       do this right: when an ERROR is thrown here, we come back
+			 *       later with XACT_EVENT_ABORT, which will then do the whole
+			 *       cleanup stuff.
+			 */
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("informix_fdw: cannot prepare a transaction")));
+			break;
+		}
+		case XACT_EVENT_COMMIT:
+#else
+        case XACT_EVENT_COMMIT:
+		{
+            ifxXactFinalize(cached, IFX_TX_COMMIT, true);
+			break;
+		}
+#endif
+		case XACT_EVENT_PREPARE:
+			/* Not reach, since pre-commit does everything required. */
+			elog(ERROR, "missed cleaning up connection during pre-commit");
+			break;
+		case XACT_EVENT_ABORT:
+		{
+			/*
+			 * Beware that we can't throw an error here, since this would bring
+			 * us into an endless loop by subsequent triggering XACT_EVENT_ABORT.
+			 */
+            ifxXactFinalize(cached, IFX_TX_ROLLBACK, false);
+		}
+	}
+}
+
+static void ifx_fdw_xact_callback(XactEvent event, void *arg)
+{
+	HASH_SEQ_STATUS      hsearch_status;
+	IfxCachedConnection *cached;
+
+	/*
+	 * No-op if this backend has no in-progress transactions in Informix.
+	 */
+	if (ifxXactInProgress < 1)
+		return;
+
+	/*
+	 * We need to scan through all cached connections to check
+	 * wether they have in-progress transactions.
+	 */
+	hash_seq_init(&hsearch_status, ifxCache.connections);
+	while ((cached = (IfxCachedConnection *) hash_seq_search(&hsearch_status)))
+	{
+		/*
+		 * No transaction in progress? If true, get to next...
+		 */
+		if (cached->con.tx_in_progress < 1)
+			continue;
+
+		elog(DEBUG3, "informix_fdw: xact_callback on connection \"%s\"",
+			 cached->con.ifx_connection_name);
+
+		/*
+		 * Execute required actions...
+		 */
+		ifx_fdw_xact_callback_internal(cached, event);
 	}
 }
