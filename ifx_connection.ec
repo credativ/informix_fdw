@@ -394,6 +394,40 @@ void ifxOpenCursorForPrepared(IfxStatementInfo *state)
 	EXEC SQL OPEN :ifx_cursor_name;
 }
 
+void ifxExecuteStmt(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_stmt_name;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_stmt_name = state->stmt_name;
+	EXEC SQL EXECUTE :ifx_stmt_name;
+}
+
+void ifxPutValuesInPrepared(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_cursor_name;
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda *sqptr = (struct sqlda *)state->sqlda;
+
+	ifx_cursor_name = state->cursor_name;
+
+	EXEC SQL PUT :ifx_cursor_name USING DESCRIPTOR sqptr;
+}
+
+void ifxFlushCursor(IfxStatementInfo *info)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_cursor_name;
+	EXEC SQL END DECLARE SECTION;
+
+	ifx_cursor_name = info->cursor_name;
+
+	EXEC SQL FLUSH :ifx_cursor_name;
+}
+
 void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
 								 IfxCursorUsage cursorType)
 {
@@ -414,6 +448,9 @@ void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
 	if (cursorType == IFX_SCROLL_CURSOR)
 		EXEC SQL DECLARE :ifx_cursor_name
 			SCROLL CURSOR FOR :ifx_stmt_name;
+	else if (cursorType == IFX_UPDATE_CURSOR)
+		EXEC SQL DECLARE :ifx_cursor_name
+			CURSOR FOR :ifx_stmt_name;
 	else
 		EXEC SQL DECLARE :ifx_cursor_name
 			CURSOR FOR :ifx_stmt_name;
@@ -723,6 +760,176 @@ static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
 		def->indicator = INDICATOR_NOT_NULL;
 
 	return def->indicator;
+}
+
+IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum, IfxIndicatorValue value)
+{
+	struct sqlvar_struct *ifx_value;
+
+	ifx_value = ((struct sqlda *)info->sqlda)->sqlvar + ifx_attnum;
+
+	/* no-op if INDICATOR_NOT_VALID */
+	switch (value)
+	{
+		case INDICATOR_NOT_NULL:
+			*(ifx_value->sqlind) = 0;
+			break;
+		case INDICATOR_NULL:
+			*(ifx_value->sqlind) = -1;
+			break;
+		default:
+			break;
+	}
+
+	return value;
+}
+
+/*
+ * Copy the specified 4 byte integer into the specified
+ * attribute number of the current SQLDA structure.
+ */
+void ifxSetInteger(IfxStatementInfo *info, int ifx_attnum, int value)
+{
+	struct sqlda *sqlda = (struct sqlda *)info->sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	/*
+	 * Copy the value.
+	 */
+	ifx_value = sqlda->sqlvar + ifx_attnum;
+	memcpy(ifx_value->sqldata, &value, info->ifxAttrDefs[ifx_attnum].mem_allocated);
+}
+
+/*
+ * Copy the specified ifx_int8 value into the specified
+ * attribute number of the current SQLDA structure.
+ *
+ * NOTE:
+ *
+ * We transport the INT8 value in its *character* representation, since
+ * we don't have any binary compatible representation available. value
+ * must be a null terminated character array holding the corresponding
+ * string representation of the to-be converted value.
+ *
+ * If the character string cannot be converted into a valid INT8 binary
+ * value, ifxSetInt8() will set the indicator variable of the attribute
+ * within the specified IfxStatementInfo structure to INDICATOR_NOT_VALID.
+ * The caller is responsible to abort the action then.
+ */
+void ifxSetInt8(IfxStatementInfo *info, int ifx_attnum, char *value)
+{
+	ifx_int8_t binval;
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	/*
+	 * Convert string into a valid Informix ifx_int8_t value.
+	 */
+	if (ifx_int8cvasc(value, strlen(value), &binval) < 0)
+	{
+		info->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return;
+	}
+
+	/*
+	 * Copy into sqlvar struct.
+	 */
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	memcpy(ifx_value->sqldata, &binval, info->ifxAttrDefs[ifx_attnum].mem_allocated);
+}
+
+/*
+ * Copy the specified Informix BIGINT value into the specified
+ * attribute number of the current SQLDA structure.
+ *
+ * NOTE:
+ *
+ * We transport the BIGINT value in its *character* representation, since
+ * we don't have any binary compatible representation available. value
+ * must be a null terminated character array holding the corresponding
+ * string representation of the to-be converted value.
+ *
+ * If the character string cannot be converted into a valid BIGINT binary
+ * value, ifxSetBigint() will set the indicator variable of the attribute
+ * within the specified IfxStatementInfo structure to INDICATOR_NOT_VALID.
+ * The caller is responsible to abort the action then.
+ */
+void ifxSetBigint(IfxStatementInfo *info,
+				  int ifx_attnum,
+				  char *value)
+{
+	bigint binval;
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	/*
+	 * Convert string to a valid Informix BIGINT value.
+	 */
+	if (bigintcvasc(value, strlen(value), &binval) < 0)
+	{
+		info->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return;
+	}
+
+	/*
+	 * Copy into sqlvar struct.
+	 */
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	memcpy(ifx_value->sqldata, &binval, info->ifxAttrDefs[ifx_attnum].mem_allocated);
+}
+
+/*
+ * Copy the specified smallint value into the specified
+ * attribute number of the current SQLDA structure.
+ */
+void ifxSetInt2(IfxStatementInfo *info, int ifx_attnum, short value)
+{
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	/*
+	 * Copy the value into the sqlvar structure.
+	 */
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	memcpy(ifx_value->sqldata, &value, info->ifxAttrDefs[ifx_attnum].mem_allocated);
 }
 
 /*

@@ -53,6 +53,7 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 															   SERIALIZED_SPECIAL_COLS);
 	state->stmt_info.refid        = ifxGetSerializedInt32Field(params,
 															   SERIALIZED_REFID);
+	state->affectedAttrNums       = list_nth(params, AFFECTED_ATTR_NUMS_IDX);
 }
 
 /*
@@ -126,8 +127,12 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 	const_vals[SERIALIZED_CALLSTACK]
 		= makeFdwInt16Const(state->stmt_info.call_stack);
 
-	const_vals[SERIALIZED_QUALS]
-		= makeFdwStringConst(state->stmt_info.predicate);
+	if (state->stmt_info.predicate != NULL)
+		const_vals[SERIALIZED_QUALS]
+			= makeFdwStringConst(state->stmt_info.predicate);
+	else
+		const_vals[SERIALIZED_QUALS]
+			= makeFdwStringConst("");
 
 	const_vals[SERIALIZED_CURSOR_TYPE]
 		= makeFdwInt32Const(state->stmt_info.cursorUsage);
@@ -177,12 +182,32 @@ List * ifxSerializePlanData(IfxConnectionInfo *coninfo,
 	vals[SERIALIZED_PLAN_DATA] = makeConst(BYTEAOID, -1, InvalidOid, -1,
 										   ifxFdwPlanDataAsBytea(coninfo),
 										   false, false);
+
+	/*
+	 * Save data from execution state into array.
+	 */
 	ifxFdwExecutionStateToList(vals, state);
 
+	/*
+	 * Serialize values from Const array.
+	 */
 	for (i = 0; i < N_SERIALIZED_FIELDS; i++)
 	{
 		result = lappend(result, vals[i]);
 	}
+
+	/*
+	 * ifxFdwExecutionStateToList() doesn't fold
+	 * the affectedAttrNums list into the Const array, we
+	 * need to address it separately here.
+	 *
+	 * NOTE:
+	 *
+	 * This should always be the last list member, since
+	 * this makes it possible to address it via
+	 * AFFECTED_ATTR_NUMS_IDX macro directly.
+	 */
+	result = lappend(result, state->affectedAttrNums);
 
 	MemoryContextSwitchTo(old_cxt);
 
@@ -250,3 +275,110 @@ Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value)
 	const_expr->constvalue = Int16GetDatum(value);
 	return const_expr->constvalue;
 }
+
+#if PG_VERSION_NUM >= 90300
+
+/*
+ * Generates a SQL statement for DELETE operation on a
+ * remote Informix table. Assumes the caller already
+ * had initialized the specified IfxFdwExecutionState
+ * and IfxConnectionInfo handles correctly.
+ *
+ * The generated query string will be stored into the
+ * specified execution state structure.
+ */
+void ifxGenerateDeleteSql(IfxFdwExecutionState *state,
+						  IfxConnectionInfo    *coninfo)
+{
+	StringInfoData sql;
+
+	/* Sanity check */
+	Assert((state != NULL) && (coninfo != NULL)
+		   && (state->stmt_info.cursor_name != NULL)
+		   && (coninfo->tablename != NULL));
+
+	/*
+	 * Generate the DELETE statement. Again, we use the underlying
+	 * cursor from the remote scan to delete it's current tuple
+	 * by using the CURRENT OF <cursor> syntax.
+	 */
+	initStringInfo(&sql);
+	appendStringInfo(&sql, "DELETE FROM %s WHERE CURRENT OF %s",
+					 coninfo->tablename,
+					 state->stmt_info.cursor_name);
+	state->stmt_info.query = sql.data;
+}
+
+/*
+ * Generates a SQL statement for INSERT action on a
+ * remote Informix table. Assumes the caller already
+ * had initialized the specified IfxFdwExecutionState and
+ * IfxConnectionInfo handles correctly.
+ *
+ * The generated query string will be stored into the
+ * specified execution state structure.
+ */
+void ifxGenerateInsertSql(IfxFdwExecutionState *state,
+						  IfxConnectionInfo    *coninfo,
+						  PlannerInfo *root,
+						  Index        rtindex)
+{
+	StringInfoData  sql;
+	ListCell       *cell;
+	bool            first;
+	int             i;
+
+	Assert(state != NULL);
+	Assert((coninfo != NULL) && (coninfo->tablename));
+
+	if (state->affectedAttrNums == NIL)
+		elog(ERROR, "empty column list for foreign table");
+
+	initStringInfo(&sql);
+	appendStringInfoString(&sql, "INSERT INTO ");
+
+	/*
+	 * Execution state already carries the table name...
+	 *
+	 */
+	appendStringInfoString(&sql, coninfo->tablename);
+	appendStringInfoString(&sql, "(");
+
+	/*
+	 * Dispatch list of attributes numbers to their
+	 * corresponding identifiers.
+	 */
+	first = true;
+	foreach(cell, state->affectedAttrNums)
+	{
+		int attnum = lfirst_int(cell);
+
+		if (!first)
+			appendStringInfoString(&sql, ", ");
+		first = false;
+
+		appendStringInfoString(&sql,
+							   dispatchColumnIdentifier(rtindex, attnum, root));
+	}
+
+	appendStringInfoString(&sql, ") VALUES(");
+
+	/*
+	 * Create a list of question marks suitable to be passed
+	 * for PREPARE...
+	 */
+	first = true;
+	for(i = 0; i < list_length(state->affectedAttrNums); i++)
+	{
+		if (!first)
+			appendStringInfoString(&sql, ", ");
+		first = false;
+
+		appendStringInfoString(&sql, "?");
+	}
+
+	appendStringInfoString(&sql, ")");
+	state->stmt_info.query = sql.data;
+}
+
+#endif
