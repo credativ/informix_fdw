@@ -446,14 +446,15 @@ void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
 	ifx_cursor_name = cursor_name;
 
 	if (cursorType == IFX_SCROLL_CURSOR)
+	{
 		EXEC SQL DECLARE :ifx_cursor_name
 			SCROLL CURSOR FOR :ifx_stmt_name;
-	else if (cursorType == IFX_UPDATE_CURSOR)
-		EXEC SQL DECLARE :ifx_cursor_name
-			CURSOR FOR :ifx_stmt_name;
+	}
 	else
+	{
 		EXEC SQL DECLARE :ifx_cursor_name
 			CURSOR FOR :ifx_stmt_name;
+	}
 }
 
 void ifxDestroyConnection(char *conname)

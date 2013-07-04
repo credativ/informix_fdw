@@ -475,17 +475,12 @@ ifxPlanForeignModify(PlannerInfo *root,
 	List          *result = NIL;
 	CmdType        operation;
 	RangeTblEntry *rte;
-	Relation       rel;
 	IfxFdwExecutionState *state;
 	IfxConnectionInfo    *coninfo;
-	IfxCachedConnection  *cached_handle;
 	ForeignTable         *foreignTable;
 	bool                  is_table;
-	IfxSqlStateClass      errclass;
 	ListCell             *elem;
 	List                 *plan_values;
-	ForeignScan          *foreignScan = NULL;
-	char                 *cursor_name;
 
 	elog(DEBUG3, "informix_fdw: plan foreign modify");
 
@@ -680,19 +675,20 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 {
 	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *state;
-	IfxCachedConnection  *cached_handle;
 	Oid                   foreignTableOid;
 
 	elog(DEBUG3, "informix_fdw: begin modify");
 	foreignTableOid = RelationGetRelid(rinfo->ri_RelationDesc);
 
 	/*
-	 * Activate cached connection.
+	 * Activate cached connection. We don't bother
+	 * for the returned cached connection handle, we don't
+	 * need it.
 	 */
-	cached_handle = ifxSetupConnection(&coninfo,
-									   foreignTableOid,
-									   IFX_BEGIN_SCAN,
-									   true);
+	ifxSetupConnection(&coninfo,
+					   foreignTableOid,
+					   IFX_BEGIN_SCAN,
+					   true);
 
 	/*
 	 * Initialize an unassociated execution state handle (with refid -1).
@@ -809,7 +805,6 @@ ifxExecForeignInsert(EState *estate,
 					 TupleTableSlot *planSlot)
 {
 	IfxFdwExecutionState *state;
-	ListCell             *cell;
 	int                   attnum;
 
 	/*
@@ -905,8 +900,8 @@ static void ifxEndForeignModify(EState *estate,
 	elog(DEBUG3, "end foreign modify");
 
 	/*
-	 * If a cursor is in use, we must flush it. Only the
-	 * case if we had an INSERT action, though...
+	 * If a cursor is in use, we must flush it. Only required
+	 * for INSERT, but we don't bother...
 	 */
 	if (state->stmt_info.cursorUsage != IFX_NO_CURSOR)
 	{
@@ -914,7 +909,13 @@ static void ifxEndForeignModify(EState *estate,
 	}
 
 	/*
-	 * Dispose any allocated resources.
+	 * Catch any exceptions.
+	 */
+	ifxCatchExceptions(&state->stmt_info, 0);
+
+	/*
+	 * Dispose any allocated resources in case no error
+	 * occurred.
 	 */
 	ifxRewindCallstack(&state->stmt_info);
 }
@@ -1898,16 +1899,8 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 * employ an FOR UPDATE cursor, since we are going to reuse it
 	 * during modify.
 	 *
-	 * There's also another difficulty here: We might have a non-logged
-	 * remote Informix database here and BLOBs might be used (indicated by
-	 * the FDW table option enable_blobs). This means we must force
-	 * a non-SCROLL cursor with FOR UPDATE here. Also note that
-	 * ifxBeginForeignScan() *will* error out in case we scan a remote
-	 * table with BLOBs but without having enable_blobs. We can't do this
-	 * sanity check here, since we currently don't have any idea how the
-	 * result set from the remote table looks like yet. So just make sure
-	 * we select the right cursor type for now, delaying the error check
-	 * to the execution phase later.
+	 * There's also another difficulty here: an updatable cursor cannot
+	 * be scrollable.
 	 *
 	 * This must happen before calling ifxPrepareScan(), this this will
 	 * generate the SELECT query passed to the cursor later on!
@@ -1915,10 +1908,7 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	if ((planInfo->parse->commandType == CMD_UPDATE)
 		|| (planInfo->parse->commandType == CMD_DELETE))
 	{
-		if (coninfo->enable_blobs)
-			state->stmt_info.cursorUsage = IFX_UPDATE_CURSOR;
-		else
-			state->stmt_info.cursorUsage = IFX_SCROLL_UPDATE_CURSOR;
+		state->stmt_info.cursorUsage = IFX_UPDATE_CURSOR;
 	}
 
 	ifxPrepareScan(coninfo, state);
@@ -2929,8 +2919,7 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 	 * FOR UPDATE, otherwise the cursor won't be updatable
 	 * later in the modify actions.
 	 */
-	if ((state->stmt_info.cursorUsage == IFX_UPDATE_CURSOR)
-		|| (state->stmt_info.cursorUsage == IFX_SCROLL_UPDATE_CURSOR))
+	if (state->stmt_info.cursorUsage == IFX_UPDATE_CURSOR)
 	{
 		appendStringInfoString(buf, " FOR UPDATE");
 	}
