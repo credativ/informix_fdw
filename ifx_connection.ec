@@ -3,6 +3,16 @@
  * ifx_fdw.c
  *		  foreign-data wrapper for IBM INFORMIX databases
  *
+ * NOTES:
+ *
+ *   One word about datum conversion routines: The various getter
+ *   and setter functions vary in their usage of the specified
+ *   Informix attribute number: getter functions expect the attribute
+ *   number to match it's offset into the table, whereas setter functions
+ *   need to know the attribute number into the sqlvar struct to bind
+ *   any new values (thus, the order of the parametrized columns in the
+ *   DML query).
+ *
  * Copyright (c) 2012, credativ GmbH
  *
  * IDENTIFICATION
@@ -365,6 +375,21 @@ void ifxDescribeAllocatorByName(IfxStatementInfo *state)
 	state->sqlda = (void *)ifx_sqlda;
 }
 
+void ifxDescribeStmtInput(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_stmt_name;
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda *ifx_sqlda;
+
+	ifx_stmt_name = state->stmt_name;
+
+	EXEC SQL DESCRIBE INPUT :ifx_stmt_name INTO ifx_sqlda;
+
+	state->sqlda = (void *) ifx_sqlda;
+}
+
 void ifxSetDescriptorCount(char *descr_name, int count)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
@@ -394,6 +419,11 @@ void ifxOpenCursorForPrepared(IfxStatementInfo *state)
 	EXEC SQL OPEN :ifx_cursor_name;
 }
 
+/*
+ * Execute a prepared statement assigned to the
+ * specified execution state without a given
+ * SQLDA structure.
+ */
 void ifxExecuteStmt(IfxStatementInfo *state)
 {
 	EXEC SQL BEGIN DECLARE SECTION;
@@ -402,6 +432,26 @@ void ifxExecuteStmt(IfxStatementInfo *state)
 
 	ifx_stmt_name = state->stmt_name;
 	EXEC SQL EXECUTE :ifx_stmt_name;
+}
+
+/*
+ * Execute a prepared statement assigned to the
+ * specified execution state with the attached SQLDA
+ * structure. The caller is responsible to make sure
+ * the state is a valid execution state with a fully
+ * initialized SQLDA structure attached to it.
+ */
+void ifxExecuteStmtSqlda(IfxStatementInfo *state)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char *ifx_stmt_name;
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda *sqptr = (struct sqlda *)state->sqlda;
+
+	ifx_stmt_name =  state->stmt_name;
+
+	EXEC SQL EXECUTE :ifx_stmt_name USING DESCRIPTOR sqptr;
 }
 
 void ifxPutValuesInPrepared(IfxStatementInfo *state)
@@ -452,6 +502,11 @@ void ifxDeclareCursorForPrepared(char *stmt_name, char *cursor_name,
 	}
 	else
 	{
+		/*
+		 * IFX_UPDATE_CURSOR,
+		 * IFX_DEFAULT_CURSOR,
+		 * IFX_INSERT_CURSOR
+		 */
 		EXEC SQL DECLARE :ifx_cursor_name
 			CURSOR FOR :ifx_stmt_name;
 	}

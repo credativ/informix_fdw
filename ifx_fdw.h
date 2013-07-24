@@ -78,6 +78,8 @@ typedef struct PgAttrDef
 {
 	int16 attnum;
 	int16 ifx_attnum;
+	int16 param_id; /* id of param in SQLDA structure (UPDATE only)
+					   otherwise -1 */
 	Oid   atttypid;
 	int   atttypmod;
 	char* attname;
@@ -272,6 +274,12 @@ typedef struct IfxPushdownOprContext
  * Excludes dropped columns for example.
  */
 #define PG_VALID_COLS_COUNT(x) ((x)->pgAttrCount - (x)->pgDroppedAttrCount)
+
+/*
+ * Returns the param id for a prepared informix statement and its
+ * offset into the sqlvar array.
+ */
+#define IFX_ATTR_PARAM_ID(x, y) (x)->pgAttrDefs[(y)].param_id
 
 #define IFX_ATTRTYPE_P(x, y) (x)->stmt_info.ifxAttrDefs[PG_MAPPED_IFX_ATTNUM((x), (y))].type
 #define IFX_SETVAL_P(x, y, z) (x)->values[PG_MAPPED_IFX_ATTNUM((x), (y))].val = (z)

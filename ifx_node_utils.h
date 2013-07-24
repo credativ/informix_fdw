@@ -80,6 +80,10 @@ int ifxGetSerializedInt32Field(List *list, int ident);
 char * ifxGetSerializedStringField(List *list, int ident);
 Datum ifxSetSerializedInt32Field(List *list, int ident, int value);
 Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value);
+void ifxGenerateUpdateSql(IfxFdwExecutionState *state,
+						  IfxConnectionInfo    *coninfo,
+						  PlannerInfo          *root,
+						  Index                 rtindex);
 void ifxGenerateInsertSql(IfxFdwExecutionState *state,
 						  IfxConnectionInfo    *coninfo,
 						  PlannerInfo *root,

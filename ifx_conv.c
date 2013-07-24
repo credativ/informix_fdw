@@ -531,11 +531,18 @@ void setIfxInteger(IfxFdwExecutionState *state,
 
 	/*
 	 * In case we have a null value, set the indiciator value accordingly.
+	 *
+	 * IMPORTANT:
+	 *
+	 * We don't exit at this point, since we must set all required
+	 * information to the SQLDA sqlvar structure. This is done by the
+	 * conversion routines itself, so make sure to call them to get
+	 * the proper values assigned.
 	 */
-	IFX_SET_INDICATOR_P(state, attnum,
+	IFX_SET_INDICATOR_P(state, IFX_ATTR_PARAM_ID(state, attnum),
 						((slot->tts_isnull[attnum]) ? INDICATOR_NULL : INDICATOR_NOT_NULL));
 
-	switch(IFX_ATTRTYPE_P(state, attnum))
+	switch(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 	{
 		case IFX_SMALLINT:
 		{
@@ -547,7 +554,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			 * Copy the value into the SQLDA structure.
 			 */
 			ifxSetInt2(&state->stmt_info,
-					   PG_MAPPED_IFX_ATTNUM(state, attnum),
+					   IFX_ATTR_PARAM_ID(state, attnum),
 					   val);
 
 			break;
@@ -567,7 +574,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			 * Copy the value into the SQLDA structure.
 			 */
 			ifxSetInteger(&state->stmt_info,
-						  PG_MAPPED_IFX_ATTNUM(state, attnum),
+						  IFX_ATTR_PARAM_ID(state, attnum),
 						  val);
 			break;
 		}
@@ -588,14 +595,14 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			{
 				/* INT8 (Informix ifx_int8_t) */
 				ifxSetInt8(&state->stmt_info,
-						   PG_MAPPED_IFX_ATTNUM(state, attnum),
+						   IFX_ATTR_PARAM_ID(state, attnum),
 						   strval);
 			}
 			else
 			{
 				/* BIGINT */
 				ifxSetBigint(&state->stmt_info,
-							 PG_MAPPED_IFX_ATTNUM(state, attnum),
+							 IFX_ATTR_PARAM_ID(state, attnum),
 							 strval);
 			}
 

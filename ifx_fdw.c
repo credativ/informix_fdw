@@ -178,7 +178,8 @@ static void ifxPrepareModifyQuery(IfxStatementInfo  *info,
 								  CmdType            operation);
 
 static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
-									  IfxConnectionInfo    *coninfo,
+									  PlannerInfo          *planInfo,
+									  Index                 resultRelation,
 									  ModifyTable          *plan,
 									  Oid                   foreignTableOid);
 
@@ -332,7 +333,7 @@ static IfxFdwExecutionState *ifxCopyExecutionState(IfxFdwExecutionState *state)
 }
 
 /*
- * ifxColumnValueToSqlda()
+ * ifxColumnValuesToSqlda()
  *
  * Does all the legwork to store the specified attribute
  * within the current Informix SQLDA structure.
@@ -566,9 +567,10 @@ ifxPlanForeignModify(PlannerInfo *root,
 			/*
 			 * Since ifxCopyExecutionState() won't preserve stateful
 			 * information, we need to do an extra step to copy
-			 * the cursor name.
+			 * the cursor name and type.
 			 */
 			state->stmt_info.cursor_name = pstrdup(scan_state->stmt_info.cursor_name);
+			state->stmt_info.cursorUsage = scan_state->stmt_info.cursorUsage;
 		}
 	}
 	else
@@ -590,7 +592,7 @@ ifxPlanForeignModify(PlannerInfo *root,
 	/*
 	 * Prepare params (retrieve affacted columns et al).
 	 */
-	ifxPrepareParamsForModify(state, coninfo, plan, rte->relid);
+	ifxPrepareParamsForModify(state, root, resultRelation, plan, rte->relid);
 
 	/*
 	 * Generate the query.
@@ -604,6 +606,7 @@ ifxPlanForeignModify(PlannerInfo *root,
 			ifxGenerateDeleteSql(state, coninfo);
 			break;
 		case CMD_UPDATE:
+			ifxGenerateUpdateSql(state, coninfo, root, resultRelation);
 			break;
 		default:
 			break;
@@ -649,8 +652,7 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 	/*
 	 * In case of an INSERT command, we use an INSERT cursor.
 	 */
-	if ((operation == CMD_INSERT)
-		|| (operation == CMD_UPDATE))
+	if (operation == CMD_INSERT)
 	{
 		/*
 		 * ...don't forget the cursor name.
@@ -661,7 +663,7 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 			 info->cursor_name,
 			 info->stmt_name);
 		ifxDeclareCursorForPrepared(info->stmt_name, info->cursor_name,
-									IFX_DEFAULT_CURSOR);
+									info->cursorUsage);
 		ifxCatchExceptions(info, IFX_STACK_DECLARE);
 	}
 }
@@ -742,7 +744,17 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 		 * IfxStatementInfo handle.
 		 */
 		elog(DEBUG1, "describe statement \"%s\"", state->stmt_info.stmt_name);
-		ifxDescribeAllocatorByName(&state->stmt_info);
+
+		if (mstate->operation == CMD_INSERT)
+		{
+			ifxDescribeAllocatorByName(&state->stmt_info);
+		}
+		else
+		{
+			/* CMD_UPDATE */
+			ifxDescribeStmtInput(&state->stmt_info);
+		}
+
 		ifxCatchExceptions(&state->stmt_info, IFX_STACK_ALLOCATE | IFX_STACK_DESCRIBE);
 
 		/*
@@ -753,13 +765,21 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 			 state->stmt_info.ifxAttrCount);
 
 		/*
-		 * In case of an INSERT statement, open the associated
-		 * cursor...
+		 * Don't forget to open the INSERT cursor we have established
+		 * ealier in the planning phase. UPDATE, the only other command
+		 * type possible here, relies on the cursor from it's scanning
+		 * part, so no need to do the same for it.
 		 */
-		elog(DEBUG1, "open cursor \"%s\"",
-			 state->stmt_info.cursor_name);
-		ifxOpenCursorForPrepared(&state->stmt_info);
-		ifxCatchExceptions(&state->stmt_info, IFX_STACK_OPEN);
+		if (mstate->operation == CMD_INSERT)
+		{
+			/*
+			 * Open the associated cursor...
+			 */
+			elog(DEBUG1, "open cursor with query \"%s\"",
+				 state->stmt_info.query);
+			ifxOpenCursorForPrepared(&state->stmt_info);
+			ifxCatchExceptions(&state->stmt_info, IFX_STACK_OPEN);
+		}
 
 		state->stmt_info.ifxAttrDefs = palloc(state->stmt_info.ifxAttrCount
 											  * sizeof(IfxAttrDef));
@@ -789,7 +809,7 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 		 */
 		state->stmt_info.data = (char *) palloc0(state->stmt_info.row_size);
 		state->stmt_info.indicator = (short *) palloc0(sizeof(short)
-												   * state->stmt_info.ifxAttrCount);
+													   * state->stmt_info.ifxAttrCount);
 
 		/*
 		 * Assign sqlvar pointers to the allocated memory area.
@@ -822,6 +842,16 @@ ifxExecForeignInsert(EState *estate,
 	 */
 	for (attnum = 0; attnum < state->pgAttrCount; attnum++)
 	{
+		/*
+		 * Register the param id, which is also the offset
+		 * into the SQLDA structure and it's array of sqlvar
+		 * structs holding the parameter values to be inserted.
+		 *
+		 * Effectively for INSERT it's the same as the attribute
+		 * number...
+		 */
+		state->pgAttrDefs[attnum].param_id = attnum;
+
 		/*
 		 * Push all column value into the current Informix
 		 * SQLDA structure, suitable to be executed later by
@@ -886,8 +916,37 @@ ifxExecForeignUpdate(EState *estate,
 					 TupleTableSlot *planSlot)
 {
 	IfxFdwExecutionState *state = rinfo->ri_FdwState;
+	ListCell *cell;
+	int       param_id;
 
-	elog(DEBUG3, "informix_fdw: exec update");
+	elog(DEBUG3, "informix_fdw: exec update with cursor \"%s\"",
+		 state->stmt_info.cursor_name);
+
+	/*
+	 * NOTE:
+	 *
+	 * We transmit only the specified rows from the
+	 * local UPDATE statement to the remote table.
+	 *
+	 * We also need to track the parameter id to
+	 * reference the correct sqlvar struct array
+	 * member in our SQLDA structure.
+	 */
+	param_id = 0;
+	foreach(cell, state->affectedAttrNums)
+	{
+		int attnum = lfirst_int(cell);
+
+		state->pgAttrDefs[attnum - 1].param_id = param_id;
+		ifxColumnValuesToSqlda(state, slot, attnum - 1);
+		param_id++;
+	}
+
+	/*
+	 * Execute the UPDATE.
+	 */
+	ifxExecuteStmtSqlda(&state->stmt_info);
+	ifxCatchExceptions(&state->stmt_info, 0);
 
 	return slot;
 }
@@ -900,10 +959,9 @@ static void ifxEndForeignModify(EState *estate,
 	elog(DEBUG3, "end foreign modify");
 
 	/*
-	 * If a cursor is in use, we must flush it. Only required
-	 * for INSERT, but we don't bother...
+	 * If an INSERT cursor is in use, we must flush it.
 	 */
-	if (state->stmt_info.cursorUsage != IFX_NO_CURSOR)
+	if (state->stmt_info.cursorUsage == IFX_INSERT_CURSOR)
 	{
 		ifxFlushCursor(&state->stmt_info);
 	}
@@ -924,7 +982,8 @@ static void ifxEndForeignModify(EState *estate,
  * Prepare parameters for modify action.
  */
 static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
-									  IfxConnectionInfo    *coninfo,
+									  PlannerInfo          *planInfo,
+									  Index                 resultRelation,
 									  ModifyTable          *plan,
 									  Oid                   foreignTableOid)
 {
@@ -949,6 +1008,19 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			TupleDesc tupdesc = RelationGetDescr(rel);
 			int       attnum;
 
+			/*
+			 * We need to set the correct cursor type here, since
+			 * CMD_INSERT needs to establish its own cursor during
+			 * planning. We don't have a corresponding foreign scan
+			 * like in CMD_DELETE here, where we just reuse the existing
+			 * cursor established during the foreign scan phase here. This
+			 * make things complicater, but the only thing we need to bother
+			 * at this point is that the execution state gets its cursorUsage
+			 * adjusted accordingly. Any other modify action will already
+			 * have the correct cursorUsage set during ifxGetForeignRelSize()!
+			 */
+			state->stmt_info.cursorUsage = IFX_INSERT_CURSOR;
+
 			for (attnum = 1; attnum <= tupdesc->natts; attnum++)
 			{
 				Form_pg_attribute pgattr = tupdesc->attrs[attnum - 1];
@@ -961,7 +1033,38 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			break;
 		}
 		case CMD_UPDATE:
+		{
+			/*
+			 * For update, we only try to update the affected
+			 * rows mentioned in the local UPDATE statement.
+			 *
+			 * No need to adjust the cursorUsage type, this already
+			 * happened during ifxGetForeignRelSize().
+			 *
+			 * Shamelessly stolen from src/contrib/postgres_fdw.
+			 */
+			RangeTblEntry *rte = planner_rt_fetch(resultRelation, planInfo);
+			Bitmapset  *tmpset = bms_copy(rte->modifiedCols);
+			AttrNumber	col;
+
+			while ((col = bms_first_member(tmpset)) >= 0)
+			{
+				col += FirstLowInvalidHeapAttributeNumber;
+				if (col <= InvalidAttrNumber)		/* shouldn't happen */
+					elog(ERROR, "system-column update is not supported");
+				state->affectedAttrNums = lappend_int(state->affectedAttrNums,
+													  col);
+			}
+
+		}
 		case CMD_DELETE:
+			/*
+			 * No op...
+			 *
+			 * NOTE: No need to adjust the cursorUsage type, this already
+			 *       happened during ifxGetForeignRelSize().
+			 */
+			break;
 		default:
 			break;
 	}
@@ -1904,6 +2007,10 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 *
 	 * This must happen before calling ifxPrepareScan(), this this will
 	 * generate the SELECT query passed to the cursor later on!
+	 *
+	 * Also note: It doesn't make sense to bother with CMD_INSERT
+	 * here at all, since ifxGetForeignRelSize() won't ever
+	 * be called by this action.
 	 */
 	if ((planInfo->parse->commandType == CMD_UPDATE)
 		|| (planInfo->parse->commandType == CMD_DELETE))
@@ -2615,6 +2722,8 @@ ifx_fdw_validator(PG_FUNCTION_ARGS)
 	Oid       catalogOid = PG_GETARG_OID(1);
 	IfxConnectionInfo coninfo = {0};
 	ListCell *cell;
+
+	elog(DEBUG1, "validator called");
 
 	/*
 	 * Check options passed to this FDW. Validate values and required

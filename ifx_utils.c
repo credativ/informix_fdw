@@ -310,6 +310,70 @@ void ifxGenerateDeleteSql(IfxFdwExecutionState *state,
 }
 
 /*
+ * Generates a SQL statement for UPDATE operation on a
+ * remote Informix table. Assumes the caller already
+ * had initialized the specified IfxFdwExecutionState and
+ * IfxConnectionInfo handles correctly.
+ *
+ * The generated query string will be stored into the
+ * specified execution state structure.
+ */
+void ifxGenerateUpdateSql(IfxFdwExecutionState *state,
+						  IfxConnectionInfo    *coninfo,
+						  PlannerInfo          *root,
+						  Index                 rtindex)
+{
+	StringInfoData sql;
+	bool           first;
+	ListCell      *cell;
+
+	/* Sanity checks */
+	Assert((state != NULL)
+		   && (coninfo != NULL)
+		   && (coninfo->tablename != NULL));
+
+	if (state->affectedAttrNums == NIL)
+		elog(ERROR, "empty column list for foreign table");
+
+	initStringInfo(&sql);
+	appendStringInfo(&sql, "UPDATE %s SET ", coninfo->tablename);
+
+	/*
+	 * Dispatch list of attributes numbers to their
+	 * corresponding identifiers.
+	 *
+	 * It is important to keep this list consistent
+	 * to the same order we receive all affected rows from
+	 * the local modify command. Otherwise we get into trouble.
+	 */
+	first = true;
+	foreach(cell, state->affectedAttrNums)
+	{
+		int attnum = lfirst_int(cell);
+
+		if (!first)
+			appendStringInfoString(&sql, ", ");
+		first = false;
+
+		appendStringInfoString(&sql,
+							   dispatchColumnIdentifier(rtindex, attnum, root));
+		appendStringInfoString(&sql, " = ? ");
+	}
+
+	/*
+	 * Finally the WHERE condition needs to be added. Since
+	 * we rely on an updatable cursor for now, it's enough
+	 * to append WHERE CURRENT OF <cursor>...
+	 */
+	appendStringInfo(&sql, "WHERE CURRENT OF %s", state->stmt_info.cursor_name);
+
+	/*
+	 * And we're done.
+	 */
+	state->stmt_info.query = sql.data;
+}
+
+/*
  * Generates a SQL statement for INSERT action on a
  * remote Informix table. Assumes the caller already
  * had initialized the specified IfxFdwExecutionState and
@@ -320,8 +384,8 @@ void ifxGenerateDeleteSql(IfxFdwExecutionState *state,
  */
 void ifxGenerateInsertSql(IfxFdwExecutionState *state,
 						  IfxConnectionInfo    *coninfo,
-						  PlannerInfo *root,
-						  Index        rtindex)
+						  PlannerInfo          *root,
+						  Index                 rtindex)
 {
 	StringInfoData  sql;
 	ListCell       *cell;

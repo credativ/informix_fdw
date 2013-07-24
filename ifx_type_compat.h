@@ -96,7 +96,8 @@
 typedef enum IfxCursorUsage
 {
 	IFX_DEFAULT_CURSOR,
-	IFX_UPDATE_CURSOR,
+	IFX_UPDATE_CURSOR, /* NO SCROLL cursor with FOR UPDATE */
+	IFX_INSERT_CURSOR,
 	IFX_SCROLL_CURSOR,
 	IFX_NO_CURSOR
 } IfxCursorUsage;
@@ -503,6 +504,8 @@ void ifxFlushCursor(IfxStatementInfo *info);
 IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum,
 										IfxIndicatorValue value);
 void ifxExecuteStmt(IfxStatementInfo *state);
+void ifxDescribeStmtInput(IfxStatementInfo *state);
+void ifxExecuteStmtSqlda(IfxStatementInfo *state);
 
 /*
  * Error handling
