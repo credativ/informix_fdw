@@ -167,7 +167,7 @@ OPTIONS ( query 'SELECT * FROM foo',
 
 Currently, only fundamental Informix data types are supported. There's
 no support for opaque or user defined types at the moment. Implemented
-datatype conversion routines:
+datatype conversion routines for retrieval:
 
 BOOLEAN
 DATETIME
@@ -187,6 +187,18 @@ NVARCHAR
 BYTE
 TEXT
 NUMERIC
+
+The following types are currently supported for DML:
+
+TIMESTAMPTZ, TIMESTAMP => DATETIME
+DATE                   => DATE
+
+Note that Informix doesn't support time zones, thus all TIMESTAMPTZ values will
+be converted into a timestamp without time zone.
+
+Also Informix has a way to declare a special DATETIME or DATE value with a certain
+precision, e.g. DATE YEAR TO MONTH, where a date value in the format yyyy-mm is accepted.
+This is currently not supported.
 
 = FDW Options =
 

@@ -79,5 +79,6 @@ IfxCachedConnection *ifxConnCache_add(Oid foreignTableOid,
                                       bool *found);
 IfxCachedConnection *ifxConnCache_rm(char *conname,
                                      bool *found);
+IfxCachedConnection *ifxConnCache_exists(char *conname, bool *found);
 
 #endif

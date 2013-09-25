@@ -56,6 +56,69 @@ OPTIONS (table 'inttest',
          database :'INFORMIXDB');
 
 --
+-- v1 => varchar(200, 3)
+-- v2 => lvarchar(200)
+-- v3 => nvarchar(200)
+--
+CREATE FOREIGN TABLE varchar_test(id bigserial not null, v1 varchar(200), v2 text, v3 varchar(200))
+SERVER test_server
+OPTIONS(table 'varchar_test',
+              client_locale :'CLIENT_LOCALE',
+              db_locale :'DB_LOCALE',
+              database :'INFORMIXDB');
+
+--
+-- Foreign table to test very long string values.
+--
+-- NOTE: 32739 ist the maximum length of lvarchar in Informix.
+--
+CREATE FOREIGN TABLE longvarchar_test(id bigserial NOT NULL, v1 varchar(32739) NOT NULL)
+SERVER test_server
+OPTIONS(table 'longvarchar_test',
+              client_locale :'CLIENT_LOCALE',
+              db_locale :'DB_LOCALE',
+              database :'INFORMIXDB');
+
+--
+-- Foreign table to test Simple LO handling in the informix foreign data wrapper.
+--
+CREATE FOREIGN TABLE text_byte_test(id bigserial not null, v1 text, v2 bytea)
+SERVER test_server
+OPTIONS(table 'text_byte_test',
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB',
+        enable_blobs '1');
+
+CREATE FOREIGN TABLE datetime_test(id bigserial not null, v1 timestamp with time zone,
+                                   v2 date, v3 time)
+SERVER test_server
+OPTIONS(table 'datetime_test',
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB');
+
+--
+-- Foreign table to test SERIAL values
+--
+CREATE FOREIGN TABLE serial_test(id serial)
+SERVER test_server
+OPTIONS("table" 'serial_test',
+                client_locale :'CLIENT_LOCALE',
+                db_locale :'DB_LOCALE',
+                database :'INFORMIXDB');
+
+--
+-- Foreign table to test SERIAL8/BIGSERIAL values
+--
+CREATE FOREIGN TABLE serial8_test(id serial8)
+SERVER test_server
+OPTIONS("table" 'serial8_test',
+                client_locale :'CLIENT_LOCALE',
+                db_locale :'DB_LOCALE',
+                database :'INFORMIXDB');
+
+--
 -- Start a transaction.
 --
 
@@ -175,7 +238,122 @@ COMMIT;
 SELECT tx_in_progress, tx_num_commit, tx_num_rollback
 FROM ifx_fdw_get_connections() ORDER BY 1;
 
+--------------------------------------------------------------------------------
+-- DML for VARCHAR/NVARCHAR/LVARCHAR
+--------------------------------------------------------------------------------
+BEGIN;
+
+--
+-- This file is LATIN encoded
+--
+SET LOCAL client_encoding TO 'ISO8859-1';
+
+--
+-- INSERT with simple characters
+--
+INSERT INTO varchar_test VALUES(DEFAULT, 'abc', 'def', 'ghi');
+
+SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
+
+--
+-- INSERT of special character (german umlaut)
+--
+INSERT INTO varchar_test VALUES(DEFAULT, 'ßßß', 'ÄÖÜ', 'äöü');
+
+RESET client_encoding;
+
+SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
+
+DELETE FROM varchar_test;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for TEXT/BYTE (Simple LO)
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+--
+-- BYTEA => IFX BYTE
+-- TEXT  => IFX TEXT
+--
+-- NOTE: TEXT is a Simple LO in Informix as well!
+--
+
+--
+-- Simple string values...
+--
+INSERT INTO text_byte_test(v1, v2) VALUES('This is a text value',
+                                          '...and this value gets converted into binary');
+
+SELECT * FROM text_byte_test ORDER BY id ASC;;
+
+--
+-- Some special hex values for bytea...
+--
+INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
+                                          '\x00');
+INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
+                                          '\x00AC00EF');
+
+SELECT * FROM text_byte_test ORDER BY id ASC;
+
+-- some deletion
+DELETE FROM text_byte_test WHERE id IN (1, 2);
+
+-- ...and finally clean everything
+DELETE FROM text_byte_test;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for DATE/TIMESTAMP values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+INSERT INTO datetime_test(v1, v2, v3) VALUES('2013-08-19 15:30:00',
+                                             '2013-08-19',
+                                             '15:30:00');
+
+SELECT * FROM datetime_test ORDER BY id ASC;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for SERIAL values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+INSERT INTO serial_test VALUES(DEFAULT);
+INSERT INTO serial_test VALUES(1);
+-- INSERT INT_MAX value
+INSERT INTO serial_test VALUES(2147483647);
+
+SELECT * FROM serial_test;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for SERIAL8 values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+INSERT INTO serial8_test VALUES(DEFAULT);
+INSERT INTO serial8_test VALUES(1);
+INSERT into serial8_test values(9223372036854775807);
+
+SELECT * FROM serial8_test;
+
+COMMIT;
+
 DROP FOREIGN TABLE inttest;
+DROP FOREIGN TABLE longvarchar_test;
+DROP FOREIGN TABLE varchar_test;
+DROP FOREIGN TABLE text_byte_test;
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
 DROP EXTENSION informix_fdw;

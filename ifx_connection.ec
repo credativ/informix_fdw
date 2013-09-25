@@ -13,6 +13,13 @@
  *   any new values (thus, the order of the parametrized columns in the
  *   DML query).
  *
+ *   For all setter functions it is also absolutely mandatory to set
+ *   valid options into the specific stmt_info->ifxAttrDefs array item,
+ *   otherwise the functions won't be able to set correct values into
+ *   the specific sqlvar struct item. For example, IfxAttrDef.indicator
+ *   need to be set to a valid value to reflect wether the column will get
+ *   a NULL or NOT NULL datum.
+ *
  * Copyright (c) 2012, credativ GmbH
  *
  * IDENTIFICATION
@@ -989,6 +996,173 @@ void ifxSetInt2(IfxStatementInfo *info, int ifx_attnum, short value)
 }
 
 /*
+ * Copy the specified character value into the specified
+ * attribute number of the current SQLDA structure.
+ */
+void ifxSetText(IfxStatementInfo *info, int ifx_attnum, char *value)
+{
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	memcpy(ifx_value->sqldata, value, info->ifxAttrDefs[ifx_attnum].mem_allocated);
+
+	/*
+	 * Set length
+	 */
+	ifx_value->sqllen = info->ifxAttrDefs[ifx_attnum].mem_allocated;
+}
+
+/*
+ * Copy the specified buffer into a BYTE or TEXT
+ * BLOB column.
+ */
+void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
+					int buflen)
+{
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	ifx_loc_t *loc;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	loc = (ifx_loc_t *) ifx_value->sqldata;
+
+	loc->loc_indicator = *(ifx_value->sqlind);
+
+	/*
+	 * Use LOCMEMORY flag to tell Informix that we're
+	 * maintaining our own buffer.
+	 */
+	loc->loc_loctype   = LOCMEMORY;
+
+	/*
+	 * XXX: not sure why we have to set both, but nevertheless
+	 *      ESQL/C complains of loc_size and loc_bufsize aren't
+	 *      initialized properly.
+	 */
+	loc->loc_bufsize   = buflen;
+	loc->loc_size      = buflen;
+	loc->loc_buffer    = buf;
+}
+
+/*
+ * Copy a DATETIME value into the specified
+ * attribute number of the current SQLDA structure.
+ *
+ * The specified DATETIME value must be compatible with the
+ * IFX_ISO_TIMESTAMP format value. Otherwise we might not be
+ * able to convert into the target dtime value.
+ */
+void ifxSetTimestampFromString(IfxStatementInfo *info, int ifx_attnum,
+							   char *dtstring)
+{
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	mint                  converrcode;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * Take care for the datetime qualifier we need to use.
+	 */
+	//((dtime_t *)(ifx_value->sqldata))->dt_qual = TU_DTENCODE(TU_YEAR, TU_FRAC);
+
+	((dtime_t *)(ifx_value->sqldata))->dt_qual = ifx_value->sqllen;
+
+	/*
+	 * We get the DATETIME value as an ANSI string formatted value
+	 * Convert it back into an Informix dtime_t value.
+	 */
+	if ((converrcode = dtcvasc(dtstring,
+							   (dtime_t *)ifx_value->sqldata)) < 0)
+	{
+		/* An error ocurred, tell the caller something went wrong
+		 * with this conversion */
+		info->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		info->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+	}
+}
+
+/*
+ * Convert a time string given in the format
+ * hh24:mi:ss into an Informix DATETIME value.
+ */
+void ifxSetTimeFromString(IfxStatementInfo *info,
+						  int ifx_attnum,
+						  char *timestr)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+
+	/*
+	 * We assume a PostgreSQL TIMEOID datum is suitable to
+	 * fit into a corresponding date value. Set the datetime
+	 * qualifier to be suitable to hold a HH24:MI:SS.nnnnn value.
+	 */
+	datetime hour to fraction(5) *timeval;
+
+	EXEC SQL END DECLARE SECTION;
+
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	mint                  converrcode;
+
+	/*
+	 * Set NULL inidicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * Convert the value, but set the dtime_t qualifier before.
+	 */
+	timeval = (dtime_t *)(ifx_value->sqldata);
+	timeval->dt_qual = TU_DTENCODE(TU_HOUR, TU_F5);
+
+	if ((converrcode = dtcvfmtasc(timestr, "%H:%M:%S", timeval)) < 0)
+	{
+		/* An error ocurred, tell the caller somethin went wrong
+		 * with this conversion */
+		info->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		info->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+	}
+}
+
+/*
  * Retrieves the sqlvar value for the specified
  * attribute number as an character array.
  *
@@ -1449,6 +1623,8 @@ char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
 		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NULL;
 		return result;
 	}
+	else
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_NULL;
 
 	*loc_buf_len = loc->loc_size;
 	result = (char *) loc->loc_buffer;
@@ -1548,6 +1724,7 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				column_data->sqltype = CSHORTTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
+			case SQLSERIAL:
 			case SQLINT:
 				column_data->sqltype = CINTTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
@@ -1623,7 +1800,6 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				column_data->sqltype = CBIGINTTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
-			case SQLSERIAL:
 			case SQLINT8:
 			case SQLSERIAL8:
 			case SQLBIGSERIAL:

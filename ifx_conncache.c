@@ -217,6 +217,25 @@ ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 }
 
 /*
+ * Check for an existing Informix connection
+ */
+IfxCachedConnection *
+ifxConnCache_exists(char *conname, bool *found)
+{
+	IfxCachedConnection *item;
+
+	/*
+	 * Lookup the connection name, return true
+	 * in case the identifier was found in the connection
+	 * cache.
+	 */
+	item = hash_search(ifxCache.connections, (void *) conname,
+					   HASH_FIND, found);
+
+	return ((found) ? item : NULL);
+}
+
+/*
  * Remove an existing connection handle from the cache.
  * If the requested connection doesn't exist yet, NULL
  * is returned.

@@ -309,6 +309,13 @@ void setIfxInteger(IfxFdwExecutionState *state,
 void setIfxText(IfxFdwExecutionState *state,
 				TupleTableSlot *slot,
 				int attnum);
+void setIfxCharString(IfxFdwExecutionState *state,
+					  int                   attnum,
+					  char                 *val,
+					  int                   len);
+void setIfxDateTimestamp(IfxFdwExecutionState *state,
+						 TupleTableSlot       *slot,
+						 int                   attnum);
 
 /*
  * Internal API for PostgreSQL 9.3 and above.

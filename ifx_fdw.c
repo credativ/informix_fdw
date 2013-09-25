@@ -349,6 +349,18 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 	Assert(state->stmt_info.data != NULL);
 
 	/*
+	 * Set the local indicator value to tell the conversion
+	 * routines wether they deal with a SQL NULL datum.
+	 *
+	 * Check for any NULL datum before trying to get a C string
+	 * representation from the datum, otherwise we will crash.
+	 * Setter function are careful enough to pay attention to them,
+	 * if we have initialized the ifxAttrDefs array correctly.
+	 */
+	IFX_SET_INDICATOR_P(state, IFX_ATTR_PARAM_ID(state, attnum),
+						(slot->tts_isnull[attnum]) ? INDICATOR_NULL : INDICATOR_NOT_NULL);
+
+	/*
 	 * Call data conversion routine depending on the PostgreSQL
 	 * builtin source type.
 	 */
@@ -361,9 +373,60 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			setIfxInteger(state, slot, attnum);
 			break;
 		}
-		case TEXTOID:
 		case VARCHAROID:
+		case TEXTOID:
 		case BPCHAROID:
+		{
+			/*
+			 * Get a C string representation from this
+			 * datum, suitable to be passed down to Informix
+			 *
+			 * NOTE:
+			 *
+			 * Check for any NULL datum before trying to get a C string
+			 * representation from the text datum, otherwise we will crash.
+			 * setIfxSetCharString() is careful enough to do the right thing
+			 * (tm).
+			 */
+			int len    = 0;
+			char *cval = NULL;
+
+			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+			{
+				cval = TextDatumGetCString(slot->tts_values[attnum]);
+				Assert(cval != NULL);
+				len = strlen(cval);
+			}
+
+			setIfxCharString(state, attnum, cval, len);
+			break;
+		}
+		case BYTEAOID:
+		{
+			/*
+			 * Convert a bytea datum into a binary column
+			 * if possible. Since we need to deal with probably
+			 * embedded NULLs, handle the character buffer with care.
+			 */
+			char *buf    = NULL;
+			int   buflen = 0;
+
+			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+			{
+				buf    = VARDATA((bytea *)DatumGetPointer(slot->tts_values[attnum]));
+				buflen = VARSIZE((bytea *)DatumGetPointer(slot->tts_values[attnum])) - VARHDRSZ;
+			}
+
+			setIfxCharString(state, attnum, buf, buflen);
+			break;
+		}
+		case TIMESTAMPTZOID:
+		case TIMESTAMPOID:
+		case TIMEOID:
+		case DATEOID:
+			setIfxDateTimestamp(state, slot, attnum);
 			break;
 		default:
 		{
@@ -372,6 +435,18 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 				 state->stmt_info.ifxAttrDefs[attnum].type);
 			break;
 		}
+	}
+
+	/*
+	 * Check out wether the conversion was successful.
+	 */
+	if (! IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	{
+		ifxRewindCallstack(&state->stmt_info);
+		elog(ERROR, "could not convert attnum %d to informix type \"%d\", errcode %d",
+			 attnum,
+			 IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)),
+			 state->stmt_info.ifxAttrDefs[IFX_ATTR_PARAM_ID(state, attnum)].converrcode);
 	}
 }
 
@@ -959,9 +1034,14 @@ static void ifxEndForeignModify(EState *estate,
 	elog(DEBUG3, "end foreign modify");
 
 	/*
-	 * If an INSERT cursor is in use, we must flush it.
+	 * If an INSERT cursor is in use, we must flush it, but only
+	 * in case we weren't just called by an EXPLAIN...to prevent
+	 * this, check wether the insert cursor was indeed opened, which
+	 * is only the case if an insert action was really initiated (thus,
+	 * a plain EXPLAIN never would have opened the cursor).
 	 */
-	if (state->stmt_info.cursorUsage == IFX_INSERT_CURSOR)
+	if ((state->stmt_info.cursorUsage == IFX_INSERT_CURSOR)
+		&& (state->stmt_info.call_stack & IFX_STACK_OPEN))
 	{
 		ifxFlushCursor(&state->stmt_info);
 	}
@@ -1032,6 +1112,7 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			/* ...and we're done */
 			break;
 		}
+
 		case CMD_UPDATE:
 		{
 			/*
@@ -3938,6 +4019,37 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	/*
 	 * Lookup connection.
 	 *
+	 * We can't remove it immediately from the cache, since we
+	 * really don't know wether the connection has opened transactions.
+	 * This usually means a local transaction with a foreign scan is
+	 * in progress, so abort here in case this is true.
+	 *
+	 */
+	conn_cached = ifxConnCache_exists(conname, &found);
+
+	/* Check wether the handle was valid, first */
+	if (!found)
+	{
+		elog(ERROR, "unknown informix connection name: \"%s\"",
+			 conname);
+		PG_RETURN_VOID();
+	}
+
+	/*
+	 * If the connection is within a transaction, this means that
+	 * a current scan is in progress. Don't allow to close this
+	 * connection, but give the user a hint what happened.
+	 */
+	if (conn_cached->con.tx_in_progress > 0)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_ERROR),
+				 errmsg("connection \"%s\" has opened transactions",
+						conname),
+				 errdetail("commit or rollback the local transaction first")));
+	}
+
+    /*
 	 * We remove the connection handle from the cache first,
 	 * closing it afterwards then. This is assumed to be safe,
 	 * even when the function is used in a query predicate
@@ -3948,13 +4060,8 @@ ifxCloseConnection(PG_FUNCTION_ARGS)
 	 */
 	conn_cached = ifxConnCache_rm(conname, &found);
 
-	/* Check wether the handle was valid */
-	if (!found || !conn_cached)
-	{
-		elog(ERROR, "unknown informix connection name: \"%s\"",
-			 conname);
-		PG_RETURN_VOID();
-	}
+	/* Sanity check */
+	Assert(conn_cached != NULL);
 
 	/* okay, we have a valid connection handle...close it */
 	ifxDisconnectConnection(conname);

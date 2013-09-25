@@ -72,6 +72,7 @@
 #define IFX_DBDATE_FORMAT "Y4MD-"
 #define IFX_ISO_DATE "%iY-%m-%d"
 #define IFX_ISO_TIMESTAMP "%iY-%m-%d %H:%M:%S"
+#define IFX_ISO_TIMESTAMP_FRAC5 "%iY-%m-%d %H:%M:%S.%FFFFF"
 
 /*
  * Binary size of informix DATE value
@@ -88,7 +89,7 @@
  * Default buffer length for
  * DATETIME character strings.
  */
-#define IFX_DATETIME_BUFFER_LEN 26
+#define IFX_DATETIME_BUFFER_LEN 30
 
 /*
  * Which kind of CURSOR to use.
@@ -217,6 +218,10 @@ typedef struct IfxAttrDef
 	size_t            loc_buf_size;  /* memory allocated for additional BLOB buffer */
 	char             *loc_buf;       /* BLOB data buffer of size loc_buf_size */
 	int               offset;        /* offset into the data memory buffer */
+	int               converrcode;   /* internal Informix conversion error code,
+									  * 0 if no conversion error set. This value
+									  * is only set during modify action when converting
+									  * column values to Informix */
 } IfxAttrDef;
 
 /*
@@ -543,6 +548,13 @@ void ifxSetInteger(IfxStatementInfo *info, int ifx_attnum, int value);
 void ifxSetInt8(IfxStatementInfo *info, int ifx_attnum, char *value);
 void ifxSetBigint(IfxStatementInfo *info, int ifx_attnum, char *value);
 void ifxSetInt2(IfxStatementInfo *info, int ifx_attnum, short value);
+void ifxSetTimestampFromString(IfxStatementInfo *info, int ifx_attnum,
+							   char *dtstring);
+void ifxSetTimeFromString(IfxStatementInfo *info, int ifx_attnum,
+                          char *timestr);
+void ifxSetText(IfxStatementInfo *info, int ifx_attnum, char *value);
+void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
+					int buflen);
 
 /*
  * Helper macros.
