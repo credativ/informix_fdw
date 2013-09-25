@@ -803,7 +803,8 @@ void setIfxInteger(IfxFdwExecutionState *state,
 										   PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
 													  DatumGetInt64(slot->tts_values[attnum])));
-			if (IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+			if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
+				|| (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8))
 			{
 				/* INT8 (Informix ifx_int8_t) */
 				ifxSetInt8(&state->stmt_info,
@@ -812,7 +813,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			}
 			else
 			{
-				/* BIGINT */
+				/* BIGINT, IFX_INFX_INT8 */
 				ifxSetBigint(&state->stmt_info,
 							 IFX_ATTR_PARAM_ID(state, attnum),
 							 strval);
