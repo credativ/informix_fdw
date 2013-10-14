@@ -260,11 +260,11 @@ SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
 --
 INSERT INTO varchar_test VALUES(DEFAULT, 'ßßß', 'ÄÖÜ', 'äöü');
 
-RESET client_encoding;
-
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
 
 DELETE FROM varchar_test;
+
+RESET client_encoding;
 
 COMMIT;
 
@@ -319,6 +319,17 @@ INSERT INTO datetime_test(v1, v2, v3) VALUES('2013-08-19 15:30:00',
 
 SELECT * FROM datetime_test ORDER BY id ASC;
 
+-- DELETE specific time value
+DELETE FROM datetime_test WHERE v3 = '15:30:00';
+
+SELECT * FROM datetime_test ORDER BY id ASC;
+
+-- DELETE all
+DELETE FROM datetime_test;
+
+-- empty set expected
+SELECT * FROM datetime_test ORDER BY id ASC;
+
 COMMIT;
 
 --------------------------------------------------------------------------------
@@ -332,7 +343,18 @@ INSERT INTO serial_test VALUES(1);
 -- INSERT INT_MAX value
 INSERT INTO serial_test VALUES(2147483647);
 
-SELECT * FROM serial_test;
+SELECT * FROM serial_test ORDER BY id ASC;
+
+-- DELETE INT_MAX value
+DELETE FROM serial_test WHERE id = 2147483647;
+
+SELECT * FROM serial_test ORDER BY id ASC;
+
+-- DELETE all
+DELETE FROM serial_test;
+
+-- empty set expected
+SELECT * FROM serial_test ORDER BY id ASC;
 
 COMMIT;
 
@@ -346,7 +368,18 @@ INSERT INTO serial8_test VALUES(DEFAULT);
 INSERT INTO serial8_test VALUES(1);
 INSERT into serial8_test values(9223372036854775807);
 
-SELECT * FROM serial8_test;
+SELECT * FROM serial8_test ORDER BY id ASC;
+
+-- DELETE INT8_MAX value
+DELETE FROM serial8_test WHERE id = 9223372036854775807;
+
+SELECT * FROM serial8_test ORDER BY id ASC;
+
+-- DELETE all
+DELETE FROM serial8_test;
+
+-- empty set expected
+SELECT * FROM serial8_test ORDER BY id ASC;
 
 COMMIT;
 
@@ -354,6 +387,10 @@ DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
 DROP FOREIGN TABLE varchar_test;
 DROP FOREIGN TABLE text_byte_test;
+DROP FOREIGN TABLE serial_test;
+DROP FOREIGN TABLE serial8_test;
+DROP FOREIGN TABLE datetime_test;
+
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
 DROP EXTENSION informix_fdw;
