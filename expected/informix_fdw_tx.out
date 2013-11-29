@@ -387,21 +387,23 @@ SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
            v1           |     v2     |    v3    
 ------------------------+------------+----------
  2013-08-19 15:30:00-07 | 2013-08-19 | 15:30:00
- 2013-08-19 15:30:00-07 | 2013-08-19 | 15:30:00
-(2 rows)
+(1 row)
 
 -- DELETE specific time value
 DELETE FROM datetime_test WHERE v3 = '15:30:00';
-ERROR:  informix FDW error: "Syntax error or access violation "
-DETAIL:  SQLSTATE 42000 (SQLCODE=55)
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ v1 | v2 | v3 
+----+----+----
+(0 rows)
+
 -- DELETE all
 DELETE FROM datetime_test;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 -- empty set expected
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ v1 | v2 | v3 
+----+----+----
+(0 rows)
+
 COMMIT;
 --------------------------------------------------------------------------------
 -- DML for SERIAL values
