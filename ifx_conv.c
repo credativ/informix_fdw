@@ -37,6 +37,7 @@
 #include "utils/syscache.h"
 
 #include "ifx_fdw.h"
+#include "ifx_node_utils.h"
 
 /*******************************************************************************
  * Helper functions
@@ -52,6 +53,11 @@ deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
 #if PG_VERSION_NUM >= 90300
 static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
 									 Oid inputOid);
+
+static inline char *interval_to_cstring(IfxFdwExecutionState *state,
+										TupleTableSlot       *slot,
+										int                   attnum,
+										IfxFormatMode         mode);
 #endif
 
 /*******************************************************************************
@@ -134,6 +140,85 @@ Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum)
 
 	return result;
  }
+
+/*
+ * convertIfxInterval()
+ *
+ * Converts an Informix Interval data value into a PostgreSQL datum.
+ *
+ * Conversion is supported to
+ * TEXT
+ * BPCHAR
+ * VARCHAR
+ * INTERVAL
+ */
+Datum convertIfxInterval(IfxFdwExecutionState *state, int attnum)
+{
+	Datum   result;
+	char   *val;
+	Oid     inputOid;
+	regproc typeinputfunc;
+
+	result = PointerGetDatum(NULL);
+
+	switch (PG_ATTRTYPE_P(state, attnum))
+	{
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+		case INTERVALOID:
+			inputOid = PG_ATTRTYPE_P(state, attnum);
+			break;
+		default:
+		{
+			/* oops, unexpected datum conversion */
+			IFX_ATTR_SETNOTVALID_P(state, attnum);
+			return result;
+		}
+	}
+
+	/*
+	 * We get the Informix INTERVAL value as a formatted character string.
+	 * Prepare a buffer for it and call the appropiate conversion function
+	 * from our Informix API...
+	 */
+	val = (char *) palloc0(IFX_DATETIME_BUFFER_LEN);
+
+	if (ifxGetIntervalAsString(&(state->stmt_info),
+							   PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
+	{
+		/*
+		 * Got a SQL null value or conversion error. Leave it up to the
+		 * caller to look what's wrong. We can't error out at this stage,
+		 * since we need to give the caller a chance to clean up itself.
+		 */
+		return result;
+	}
+
+	PG_TRY();
+	{
+		/*
+		 * Call the target type input function, but keep an eye on
+		 * possible failing conversions. The caller needs to be informed
+		 * somehting went wrong...
+		 */
+		typeinputfunc = getTypeInputFunction(state, inputOid);
+		result        = OidFunctionCall3(typeinputfunc,
+										 CStringGetDatum(val),
+										 ObjectIdGetDatum(InvalidOid),
+										 Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
+	}
+	PG_CATCH();
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	/* ...and we're done */
+	return result;
+}
+
 
 /*
  * convertIfxTimestamp()
@@ -496,6 +581,51 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 #if PG_VERSION_NUM >= 90300
 
 /*
+ * Converts an interval column attribute into its string
+ * representation. interval_to_cstring() throws an error in case no
+ * valid format string for the given interval value can be generated.
+ * This could happen for example when creating a FMT_IFX format
+ * string with an interval which is outside the allowed range
+ * Informix accepts.
+ *
+ * This function always returns the interval in ANSI format without
+ * any fractions (YYYY-MM or DD HH24:MI:SS), depending on the format
+ * mode.
+ *
+ * NOTE: The function possibly throws an ereport(ERROR, ...) inside,
+ *       so the caller should be prepared to deal with conversion
+ *       errors.
+ */
+static inline char *interval_to_cstring(IfxFdwExecutionState *state,
+										TupleTableSlot       *slot,
+										int                   attnum,
+										IfxFormatMode         mode)
+{
+	char *format = NULL;
+	Datum datval;
+	IfxTemporalRange range;
+
+	/* NOTE: The minimal field identifier we support is TU_SECONDS! */
+	range  = ifxGetTemporalQualifier(&(state->stmt_info),
+									 IFX_ATTR_PARAM_ID(state, attnum));
+	range.precision = IFX_TU_SECOND;
+	format = ifxGetIntervalFormatString(range, mode);
+
+	/* In case we cannot retrieve a valid format string, abort. */
+	if (format == NULL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+						errmsg("cannot get a format string for interval attribute %d",
+							   attnum)));
+	}
+
+	datval = DirectFunctionCall2(interval_to_char,
+								 slot->tts_values[attnum],
+								 PointerGetDatum(cstring_to_text(format)));
+	return text_to_cstring(DatumGetTextP(datval));
+}
+
+/*
  * Store the given string value into the specified
  * SQLDA handle, depending on wich target type we have.
  */
@@ -519,6 +649,111 @@ void setIfxText(IfxFdwExecutionState *state,
 		case IFX_TEXT:
 		case IFX_BYTES:
 			break;
+		default:
+			break;
+	}
+}
+
+/*
+ * Transforms an PostgreSQL interval type
+ * into an compatible Informix Interval value.
+ *
+ * Internally, setIfxInterval() tries to convert the
+ * given PostgreSQL attribute value into a valid formatted
+ * character string representing an interval suitable to be
+ * passed to Informix. E.g:
+ *
+ * YEAR TO MONTH: YYYY-MM
+ * DAY TO FRACTION: DD HH24:MI:SS
+ *
+ * Currently, setIfxInterval doesn't convert fractions from a given
+ * interval value and ignores them.
+ */
+void setIfxInterval(IfxFdwExecutionState *state,
+					TupleTableSlot       *slot,
+					int                   attnum)
+{
+	/* Sanity check, SQLDA available? */
+	Assert(state->stmt_info.sqlda != NULL);
+
+	switch(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	{
+		case IFX_INTERVAL:
+		{
+			/*
+			 * Interval must be in a string format suitable for
+			 * Informix.
+			 */
+			char *strval = NULL;
+			IfxTemporalRange range;
+
+			/*
+			 * If a datum is NULL, there's no reason to try to convert
+			 * it into a character string. Mark it accordingly and we're done.
+			 */
+			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+			{
+				/*
+				 * Get the value and convert it into a character representation
+				 * suitable to be passed down to Informix.
+				 */
+				PG_TRY();
+				{
+					switch(PG_ATTRTYPE_P(state, attnum))
+					{
+						case INTERVALOID:
+						{
+							strval = interval_to_cstring(state, slot, attnum, FMT_PG);
+							break;
+						}
+						case VARCHAROID:
+						case TEXTOID:
+						{
+							/*
+							 * If the source value is a text type we expect it to be
+							 * in a format already suitable to be converted by our
+							 * Informix API to an Informix interval type. Be prepared
+							 * to deal with conversion errors, though...
+							 */
+							strval = text_to_cstring(DatumGetTextP(slot->tts_values[attnum]));
+
+							break;
+						}
+						default:
+						{
+							/* unsupported conversion */
+							ereport(ERROR,
+									(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+									 errmsg("informix_fdw unsupported type OID \"%u\" for conversion",
+											PG_ATTRTYPE_P(state, attnum))));
+						}
+					}
+				}
+				PG_CATCH();
+				{
+					ifxRewindCallstack(&(state->stmt_info));
+					PG_RE_THROW();
+				}
+				PG_END_TRY();
+			}
+
+			elog(DEBUG4, "informix_fdw: attnum %d, converted interval \"%s\"",
+				 attnum, strval);
+
+			/*
+			 * Copy the value into the Informix SQLDA structure. If successful, we're done.
+			 */
+			range = ifxGetTemporalQualifier(&(state->stmt_info),
+											IFX_ATTR_PARAM_ID(state, attnum));
+			range.precision = IFX_TU_SECOND;
+			ifxSetIntervalFromString(&(state->stmt_info),
+									 IFX_ATTR_PARAM_ID(state, attnum),
+									 ifxGetIntervalFormatString(range, FMT_IFX),
+									 strval);
+
+			break;
+		}
 		default:
 			break;
 	}
@@ -657,6 +892,9 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 				/* cleanup */
 				pfree(format);
 			}
+
+			elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
+				 attnum, strval);
 
 			/*
 			 * Okay, try to store the value into SQLDA

@@ -172,6 +172,7 @@ datatype conversion routines for retrieval:
 BOOLEAN
 DATETIME
 DATE
+INTERVAL
 SMALLINT
 INT2
 INT4
@@ -190,6 +191,11 @@ NUMERIC
 
 The following types are currently supported for DML:
 
+SERIAL, SERIAL8        => SERIAL, SERIAL8
+INTEGER, BIGINT        => INT8, INTEGER
+INTERVAL               => INTERVAL
+TEXT, BYTEA            => TEXT, BYTE (LO)
+VARCHAR, TEXT          => LVARCHAR, VARCHAR, NVARCHAR, TEXT
 TIMESTAMPTZ, TIMESTAMP => DATETIME
 DATE                   => DATE
 
@@ -199,6 +205,11 @@ be converted into a timestamp without time zone.
 Also Informix has a way to declare a special DATETIME or DATE value with a certain
 precision, e.g. DATE YEAR TO MONTH, where a date value in the format yyyy-mm is accepted.
 This is currently not supported.
+
+The Informix interval format has two defined ranges: YYYY-MM and DD HH24:MI:SS.FFFFF, where
+the fraction can have up to five digits. Currently the fractions are omitted when doing
+DML. If a PostgreSQL interval value spans two ranges, the value is truncated to fit into
+the target interval range on the remote server.
 
 = FDW Options =
 
@@ -407,6 +418,18 @@ the connection cache isn't initialized yet, which is treated as an error, too.
 
   This could lead to problems in case of incompatible locale and|or collation
   definitions on the PostgreSQL and Informix side.
+
+== Restrictions to DML ==
+
+- UPDATE and DELETE cannot be part of an UPDATE FROM or DELETE FROM clause
+  at the moment.
+
+  Since the Informix FDW employs an updatable cursor which interacts with the
+  associated foreign scan, it can happen that the cursor gets out of sync when
+  the PostgreSQL planner decides to use some specific join strategies, based on
+  the command (e.g. UPDATE remote_table SET ... FROM local_table WHERE ...
+
+  The FDW will issue an error in this case.
 
 == Datatype conversion issues ==
 

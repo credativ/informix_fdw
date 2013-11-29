@@ -87,7 +87,7 @@
 
 /*
  * Default buffer length for
- * DATETIME character strings.
+ * DATETIME and INTERVAL character strings.
  */
 #define IFX_DATETIME_BUFFER_LEN 30
 
@@ -190,6 +190,54 @@ typedef enum IfxSourceType
 
 } IfxSourceType;
 
+/*
+ * Defines Informix qualifier identifier
+ *
+ * We redefine them here, since we don't want to make
+ * them accessible directly through the PostgreSQL backend, since
+ * there are various symbol clashes around.
+ */
+#define	IFX_TU_YEAR  0
+#define	IFX_TU_MONTH  2
+#define	IFX_TU_DAY  4
+#define	IFX_TU_HOUR  6
+#define	IFX_TU_MINUTE  8
+#define	IFX_TU_SECOND  10
+#define	IFX_TU_FRAC  12
+#define	IFX_TU_F1  11
+#define	IFX_TU_F2  12
+#define	IFX_TU_F3  13
+#define	IFX_TU_F4  14
+#define	IFX_TU_F5  15
+
+/*
+ * Timestamp or interval qualifier range
+ */
+typedef struct IfxTemporalRange
+{
+    int start;
+    int end;
+    int precision;
+} IfxTemporalRange;
+
+/*
+ * Output format for interval/timestamp conversion
+ * format strings.
+ *
+ * Currently, PostgreSQL and Informix uses nearly identical
+ * format placeholders to format a interval or timestamp
+ * value into their corresponding types or vice versa. However,
+ * there are some minor differences (e.g. US vs. F format placeholders
+ * for the fraction of an interval value). ifxGetIntervalFormatString()
+ * currently is the only place which honours this difference. Use
+ * the following definitions to get the right format string
+ * back.
+ */
+typedef enum IfxFormatMode
+{
+    FMT_PG,
+	FMT_IFX
+} IfxFormatMode;
 
 /*
  * Defines Informix indicator values. Currently,
@@ -511,6 +559,8 @@ IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum,
 void ifxExecuteStmt(IfxStatementInfo *state);
 void ifxDescribeStmtInput(IfxStatementInfo *state);
 void ifxExecuteStmtSqlda(IfxStatementInfo *state);
+IfxTemporalRange ifxGetTemporalQualifier(IfxStatementInfo *state,
+										 int ifx_attnum);
 
 /*
  * Error handling
@@ -540,6 +590,8 @@ char *ifxGetTextFromLocator(IfxStatementInfo *state, int ifx_attnum,
 							long *loc_buf_len);
 char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum,
 					char *buf);
+char *ifxGetIntervalAsString(IfxStatementInfo *state, int ifx_attnum,
+							 char *buf);
 
 /*
  * Functions to copy values into an Informix SQLDA structure.
@@ -555,6 +607,9 @@ void ifxSetTimeFromString(IfxStatementInfo *info, int ifx_attnum,
 void ifxSetText(IfxStatementInfo *info, int ifx_attnum, char *value);
 void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
 					int buflen);
+void ifxSetIntervalFromString(IfxStatementInfo *info, int ifx_attnum,
+							  char *format,
+							  char *instring);
 
 /*
  * Helper macros.

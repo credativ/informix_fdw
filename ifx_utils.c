@@ -19,6 +19,45 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 static Datum
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);
 
+typedef struct ifxTemporalFormatIdent
+{
+	char *_IFX;
+	char *_PG;
+} ifxTemporalFormatIdent;
+
+/*
+ * Defines various format strings to convert
+ * Informix temporal types.
+ *
+ * NOTE: NULL indicates that this position is currently
+ *       unused, but to ease the access through ranges
+ *       we still use the array indexes at this point.
+ *       Any code iterating through this ident array must
+ *       be aware of NULL dereferencing!
+ */
+static ifxTemporalFormatIdent ifxTemporalFormat[] =
+{
+	{ "%Y", "YYYY" },
+	{ NULL, NULL },
+	{ "%m", "MM" },
+	{ NULL, NULL },
+	{ "%d", "DD" },
+	{ NULL, NULL},
+	{ "%H", "HH24" },
+	{ NULL, NULL },
+	{ "%M", "MI" },
+	{ NULL, NULL },
+	{ "%S", "SS" },
+	{ "%F", "MS" },
+	{ "%2F", "MS" },
+	{ "%3F", "MS" },
+	{ "%4F", "US" },
+	{ "%5F", "US" }
+};
+
+#define IFX_PG_INTRVL_FORMAT(ident, mode) \
+	(((mode) == FMT_PG) ? ifxTemporalFormat[(ident)]._PG \
+	 : ifxTemporalFormat[(ident)]._IFX)
 
 /*
  * Deserialize data from fdw_private, passed
@@ -274,6 +313,88 @@ Datum ifxSetSerializedInt16Field(List *list, int ident, int16 value)
 	Assert(const_expr->consttype = INT2OID);
 	const_expr->constvalue = Int16GetDatum(value);
 	return const_expr->constvalue;
+}
+
+/*
+ * Returns a format string for a given Interval
+ * qualifier range. This format string is suitable to be
+ * passed to ESQL/C format routines directly to convert
+ * a string formatted interval value back into its binary
+ * representation.
+ *
+ * In case the range qualifier of the given range value is
+ * out of the valid ranges an Informix interval value allows,
+ * NULL is returned.
+ *
+ * To summarize, the following interval ranges are supported
+ * currently:
+ *
+ * - TU_YEAR - TU_MONTH (gives YYYY-MM)
+ * - TU_DAY - TU_F1-5 (gives DD HH24:MIN:SS.FFFFF)
+ *
+ * ifxGetIntervalFromString() recognizes the precision of the
+ * given range as the lowest digit to be returned within the format
+ * string.
+ */
+char *ifxGetIntervalFormatString(IfxTemporalRange range, IfxFormatMode mode)
+{
+	StringInfoData strbuf;
+	int i;
+
+	initStringInfo(&strbuf);
+
+	i = range.start;
+
+	while ((i <= range.end) && (i <= range.precision))
+	{
+		if (IFX_PG_INTRVL_FORMAT(i, mode) == NULL)
+		{
+			i++;
+			continue;
+		}
+
+		appendStringInfoString(&strbuf, IFX_PG_INTRVL_FORMAT(i, mode));
+
+		/* next one ... */
+		i++;
+
+		/*
+		 * Append a correct filler character...if necessary ;)
+		 */
+		if ((i < range.end)
+			&& (i > range.start))
+		{
+			switch(i - 1)
+			{
+				case IFX_TU_MONTH:
+				case IFX_TU_YEAR:
+					appendStringInfoString(&strbuf, "-");
+					break;
+				case IFX_TU_DAY:
+					appendStringInfoString(&strbuf, " ");
+					break;
+				case IFX_TU_HOUR:
+				case IFX_TU_MINUTE:
+					appendStringInfoString(&strbuf, ":");
+					break;
+				case IFX_TU_SECOND:
+					/* must be fraction here */
+					//appendStringInfoString(&strbuf, ".");
+				case IFX_TU_F1:
+				case IFX_TU_F2:
+				case IFX_TU_F3:
+				case IFX_TU_F4:
+				case IFX_TU_F5:
+					/* abort since this is the lowest precision */
+					i = range.end;
+					break;
+				default:
+					break;
+			}
+		}
+	}
+
+	return strbuf.data;
 }
 
 #if PG_VERSION_NUM >= 90300

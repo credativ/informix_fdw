@@ -299,6 +299,7 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxDateString(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum);
+Datum convertIfxInterval(IfxFdwExecutionState *state, int attnum);
 void ifxRewindCallstack(IfxStatementInfo *info);
 IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo);
 Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum);
@@ -316,6 +317,9 @@ void setIfxCharString(IfxFdwExecutionState *state,
 void setIfxDateTimestamp(IfxFdwExecutionState *state,
 						 TupleTableSlot       *slot,
 						 int                   attnum);
+void setIfxInterval(IfxFdwExecutionState *state,
+					TupleTableSlot       *slot,
+					int                   attnum);
 
 /*
  * Internal API for PostgreSQL 9.3 and above.

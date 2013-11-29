@@ -1067,6 +1067,60 @@ void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
 }
 
 /*
+ * Copy a INTERVAL value into the specified attribute
+ * number of the current SQLDA structure.
+ *
+ * The specified INTERVAL value must be compatible with
+ * the ANSI format of the interval column and its
+ * qualifier. See ifx_conv.c:setIfxInterval for details.
+ */
+void ifxSetIntervalFromString(IfxStatementInfo *info,
+							  int ifx_attnum,
+							  char *format,
+							  char *instring)
+{
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	int       converrcode;
+	intrvl_t *intrvl;
+
+	/*
+	 * Init...
+	 */
+	ifx_sqlda = (struct sqlda *) info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	/*
+	 * Depending on the qualifier of the target column
+	 * we need a corresponding formatted value. Retrieve
+	 * a corresponding format value depending on the current
+	 * interval range.
+	 */
+	intrvl = (intrvl_t *)(ifx_value->sqldata);
+	intrvl->in_qual = ifx_value->sqllen;
+
+	if ((converrcode = incvfmtasc(instring, format, intrvl)) != 0)
+	{
+		/* An error ocurred, tell the caller something went wrong
+		 * with this conversion */
+		info->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		info->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+	}
+
+	/*
+	 * Conversion looks good, proceed...
+	 */
+}
+
+/*
  * Copy a DATETIME value into the specified
  * attribute number of the current SQLDA structure.
  *
@@ -1095,8 +1149,6 @@ void ifxSetTimestampFromString(IfxStatementInfo *info, int ifx_attnum,
 	/*
 	 * Take care for the datetime qualifier we need to use.
 	 */
-	//((dtime_t *)(ifx_value->sqldata))->dt_qual = TU_DTENCODE(TU_YEAR, TU_FRAC);
-
 	((dtime_t *)(ifx_value->sqldata))->dt_qual = ifx_value->sqllen;
 
 	/*
@@ -1163,6 +1215,37 @@ void ifxSetTimeFromString(IfxStatementInfo *info,
 }
 
 /*
+ * Returns the start and end of a given informix attribute value
+ * in case its an interval or datetime type.
+ * The caller is responsible to pass a valid attribute number,
+ * no further checking done.
+ *
+ * The returned IfxTemporalRange reports the TU_START and
+ * TU_END of the given temporal type. The precision is always
+ * initialized to be equal to TU_END.
+ */
+IfxTemporalRange ifxGetTemporalQualifier(IfxStatementInfo *state,
+										 int ifx_attnum)
+{
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	IfxTemporalRange      range;
+
+	ifx_sqlda = (struct sqlda *)state->sqlda;
+
+	/*
+	 * Extract the qualifier, determine starting and
+	 * end of the qual.
+	 */
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+	range.start = TU_START(ifx_value->sqllen);
+	range.end   = TU_END(ifx_value->sqllen);
+	range.precision = TU_END(ifx_value->sqllen);
+
+	return range;
+}
+
+/*
  * Retrieves the sqlvar value for the specified
  * attribute number as an character array.
  *
@@ -1198,6 +1281,7 @@ char *ifxGetTimestampAsString(IfxStatementInfo *state, int ifx_attnum,
 	struct sqlda *ifx_sqlda;
 	struct sqlvar_struct *ifx_value;
 	dtime_t val;
+	int     converrcode;
 
 	/*
 	 * Init stuff...
@@ -1224,9 +1308,65 @@ char *ifxGetTimestampAsString(IfxStatementInfo *state, int ifx_attnum,
 	/*
 	 * Convert into a C string.
 	 */
-	if (dttoasc(&val, buf) != 0)
+	if ((converrcode = dttoasc(&val, buf)) != 0)
+	{
+		/* An error ocurred, tell the caller something went wrong
+		 * with this conversion */
+		state->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		state->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+		return NULL;
+	}
+
+	return buf;
+}
+
+/*
+ * Retrieves an INTERVAL value as a string from
+ * the given tuple.
+ *
+ * buf must be a valid allocated string buffer suitable
+ * to hold the string value.
+ */
+char *ifxGetIntervalAsString(IfxStatementInfo *state, int ifx_attnum,
+							 char *buf)
+{
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	intrvl_t              val;
+	int                   converrcode;
+
+	if (!buf)
 	{
 		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return NULL;
+	}
+
+	/*
+	 * Init stuff.
+	 */
+	ifx_sqlda = (struct sqlda *) state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * If we got a NULL value, nothing more to do...
+	 */
+	if (ifxSetIndicator(&state->ifxAttrDefs[ifx_attnum],
+						ifx_value) == INDICATOR_NULL)
+		return NULL;
+
+	memcpy(&val, (int *)ifx_value->sqldata,
+		   state->ifxAttrDefs[ifx_attnum].mem_allocated);
+
+	/*
+	 * Convert the interval value into a string suitable to be
+	 * processed by PostgreSQL
+	 */
+	if ((converrcode = intoasc(&val, buf)) < 0)
+	{
+		/* An error ocurred, tell the caller something went wrong
+		 * with this conversion */
+		state->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		state->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
 		return NULL;
 	}
 

@@ -188,6 +188,16 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 								   int attnum);
 static IfxFdwExecutionState *ifxCopyExecutionState(IfxFdwExecutionState *state);
 
+static int
+ifxIsForeignRelUpdatable(Relation rel);
+
+static void
+ifxExplainForeignModify(ModifyTableState *mstate,
+						ResultRelInfo    *rinfo,
+						List             *fdw_private,
+						int               subplan_index,
+						ExplainState     *es);
+
 #endif
 
 static void ifx_fdw_xact_callback(XactEvent event, void *arg);
@@ -299,6 +309,73 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
  */
 
 #if PG_VERSION_NUM >= 90300
+
+/*
+ * Extra information for EXPLAIN on a modify action.
+ */
+static void
+ifxExplainForeignModify(ModifyTableState *mstate,
+						ResultRelInfo    *rinfo,
+						List             *fdw_private,
+						int               subplan_index,
+						ExplainState     *es)
+{
+	/*
+	 * Get the current SQL and display it in the VERBOSE output
+	 * of this EXPLAIN command.
+	 */
+	if (es->verbose)
+	{
+		IfxFdwExecutionState  state;
+
+		/* Deserialize from list */
+		ifxDeserializeFdwData(&state, fdw_private);
+
+		/* Give some possibly useful info about the remote query used */
+		if (es->costs)
+		{
+			ExplainPropertyText("Informix query", state.stmt_info.query, es);
+		}
+	}
+}
+
+/*
+ * Determines wether a remote Informix table is updatable.
+ *
+ * The Informix FDW assumes that every relation is updatable, except
+ * a remote table was specified with the 'query' option.
+ *
+ * A foreign table might also reference a view on the remote
+ * Informix server, but we leave it up to the remote server
+ * to give an appropiate error message, if that remote view
+ * is not updatable.
+ */
+static int
+ifxIsForeignRelUpdatable(Relation rel)
+{
+	ForeignTable *table;
+	bool          updatable;
+	ListCell     *lc;
+
+	elog(DEBUG3, "informix_fdw: foreign rel updatable");
+
+	table     = GetForeignTable(RelationGetRelid(rel));
+	updatable = true;
+
+	foreach(lc, table->options)
+	{
+		DefElem *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "query") == 0)
+		{
+			updatable = false;
+		}
+	}
+
+	return updatable
+		? (1 << CMD_INSERT) | (1 << CMD_UPDATE) | (1 << CMD_DELETE)
+		: 0;
+}
 
 /*
  * Copies the specified IfxFdwExecutionState structure into
@@ -428,6 +505,9 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 		case DATEOID:
 			setIfxDateTimestamp(state, slot, attnum);
 			break;
+		case INTERVALOID:
+			setIfxInterval(state, slot, attnum);
+			break;
 		default:
 		{
 			ifxRewindCallstack(&state->stmt_info);
@@ -520,6 +600,8 @@ ifxAddForeignUpdateTargets(Query *parsetree,
 {
 	Var         *var;
 	TargetEntry *tle;
+
+	elog(DEBUG3, "informix_fdw: add foreign targets");
 
 	var = makeVar(parsetree->resultRelation,
 				  SelfItemPointerAttributeNumber,
@@ -2767,6 +2849,8 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 	fdwRoutine->ExecForeignDelete       = ifxExecForeignDelete;
 	fdwRoutine->ExecForeignUpdate       = ifxExecForeignUpdate;
 	fdwRoutine->EndForeignModify        = ifxEndForeignModify;
+	fdwRoutine->IsForeignRelUpdatable   = ifxIsForeignRelUpdatable;
+	fdwRoutine->ExplainForeignModify    = ifxExplainForeignModify;
 
 	#endif
 
@@ -3408,8 +3492,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 				&& !*isnull)
 			{
 				ifxRewindCallstack(&state->stmt_info);
-				elog(ERROR, "could not convert informix type id %d into pg type %u",
-					 IFX_ATTRTYPE_P(state, attnum),
+				elog(ERROR, "could not convert informix character type into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 
@@ -3428,8 +3511,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			 */
 			if (! IFX_ATTR_IS_VALID_P(state, attnum))
 			{
-				elog(ERROR, "could not convert informix type id %d into pg type %u",
-					 IFX_ATTRTYPE_P(state, attnum),
+				elog(ERROR, "could not convert informix LO type into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 
@@ -3455,8 +3537,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			if (! IFX_ATTR_IS_VALID_P(state, attnum))
 			{
 				ifxRewindCallstack(&state->stmt_info);
-				elog(ERROR, "could not convert informix type id %d into pg type %u",
-					 IFX_ATTRTYPE_P(state, attnum),
+				elog(ERROR, "could not convert informix boolean into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 
@@ -3478,8 +3559,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
 			{
 				ifxRewindCallstack(&state->stmt_info);
-				elog(ERROR, "could not convert informix type id %d into pg type %u",
-					 IFX_ATTRTYPE_P(state, attnum),
+				elog(ERROR, "could not convert informix date into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 
@@ -3500,8 +3580,26 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
 			{
 				ifxRewindCallstack(&state->stmt_info);
-				elog(ERROR, "could not convert informix type id %d into pg type %u",
-					 IFX_ATTRTYPE_P(state, attnum),
+				elog(ERROR, "could not convert informix datetime into pg type %u",
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
+			IFX_SETVAL_P(state, attnum, dat);
+			break;
+		}
+		case IFX_INTERVAL:
+		{
+			/* SQLINTERVAL value */
+			Datum dat;
+			dat = convertIfxInterval(state, attnum);
+
+			/* Valid datum ? */
+			if ((DatumGetPointer(dat) == NULL)
+				&& ! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix interval into pg type %u",
 					 PG_ATTRTYPE_P(state, attnum));
 			}
 

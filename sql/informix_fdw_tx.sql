@@ -119,6 +119,21 @@ OPTIONS("table" 'serial8_test',
                 database :'INFORMIXDB');
 
 --
+-- Foreign table to test INTERVAL values
+--
+CREATE FOREIGN TABLE interval_test (
+    f1 interval,
+    f2 interval,
+    f3 interval
+)
+SERVER test_server
+OPTIONS ("table" 'interval_test',
+                 client_locale :'CLIENT_LOCALE',
+                 db_locale :'DB_LOCALE',
+                 database :'INFORMIXDB'
+);
+
+--
 -- Start a transaction.
 --
 
@@ -313,22 +328,24 @@ COMMIT;
 
 BEGIN;
 
+SET LOCAL DateStyle TO 'ISO, DMY';
+
 INSERT INTO datetime_test(v1, v2, v3) VALUES('2013-08-19 15:30:00',
                                              '2013-08-19',
                                              '15:30:00');
 
-SELECT * FROM datetime_test ORDER BY id ASC;
+SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
 
 -- DELETE specific time value
 DELETE FROM datetime_test WHERE v3 = '15:30:00';
 
-SELECT * FROM datetime_test ORDER BY id ASC;
+SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
 
 -- DELETE all
 DELETE FROM datetime_test;
 
 -- empty set expected
-SELECT * FROM datetime_test ORDER BY id ASC;
+SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
 
 COMMIT;
 
@@ -383,6 +400,48 @@ SELECT * FROM serial8_test ORDER BY id ASC;
 
 COMMIT;
 
+--------------------------------------------------------------------------------
+-- DML for SERIAL8 values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+--
+-- Informix supports interval types with a range of YYYY-MM and
+-- dd hh24:mi:ss.fffff, where the fractions can have up to 5 digits.
+--
+-- Fractions aren't supported by the conversion from PostgreSQL to
+-- Informix atm and are omitted. Interval values from PostgreSQL
+-- which are overlapping the supported interval ranges in Informix
+-- (e.g. 5 years 5 minutes) are truncated.
+--
+
+-- should succeed
+INSERT INTO interval_test VALUES('5 years 1 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
+INSERT INTO interval_test VALUES('5 years 15 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
+INSERT INTO interval_test VALUES('1 years 0 month', '5 days 1 hours', '3 hours');
+INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 23 hours 59 minutes 59 seconds', '-24 hours 59 minutes');
+INSERT INTO interval_test VALUES(NULL, NULL, NULL);
+
+SELECT * FROM interval_test ORDER BY f1;
+
+SELECT * FROM interval_test WHERE f1 IS NULL;
+
+DELETE FROM interval_test WHERE f1 IS NULL;
+
+SELECT * FROM interval_test WHERE f1 IS NULL;
+
+DELETE FROM interval_test;
+
+COMMIT;
+
+BEGIN;
+
+-- should fail, spans more than 100 days, syntax error in last interval value
+INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 24 hours', '-24 hours -59 minutes');
+
+COMMIT;
+
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
 DROP FOREIGN TABLE varchar_test;
@@ -390,6 +449,7 @@ DROP FOREIGN TABLE text_byte_test;
 DROP FOREIGN TABLE serial_test;
 DROP FOREIGN TABLE serial8_test;
 DROP FOREIGN TABLE datetime_test;
+DROP FOREIGN TABLE interval_test;
 
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;

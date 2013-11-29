@@ -88,4 +88,5 @@ void ifxGenerateInsertSql(IfxFdwExecutionState *state,
 						  IfxConnectionInfo    *coninfo,
 						  PlannerInfo *root,
 						  Index        rtindex);
+char *ifxGetIntervalFormatString(IfxTemporalRange range, IfxFormatMode mode);
 #endif
