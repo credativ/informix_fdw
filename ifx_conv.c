@@ -1654,6 +1654,23 @@ static List *make_deparse_context(Oid foreignRelid)
 	(b)->predicates = lappend((b)->predicates, (a)); \
 	(b)->count++;
 
+static inline bool isCompatibleForPushdown(Oid typeOid)
+{
+	switch(typeOid)
+	{
+		case INTERVALOID:
+		case TIMESTAMPOID:
+		case TIMEOID:
+		case TIMESTAMPTZOID:
+		case TIMETZOID:
+		case DATEOID:
+			return false;
+	}
+
+	/* all other values are safe */
+	return true;
+}
+
 /*
  * ifx_predicate_tree_walker()
  *
@@ -1860,7 +1877,18 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 						break;
 					}
 					case T_Const:
+					{
+						Const *const_val = (Const *) oprarg;
+
+						/*
+						 * Check wether this constant value has a datatype
+						 * which cannot be safely pushed down.
+						 */
+						if (!isCompatibleForPushdown(const_val->consttype))
+							operand_supported = false;
+
 						break;
+					}
 					default:
 						operand_supported = false;
 						break;
