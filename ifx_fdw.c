@@ -3821,6 +3821,8 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	pushdownCxt.foreign_rtid  = baserel->relid;
 	pushdownCxt.predicates    = NIL;
 	pushdownCxt.count         = 0;
+	pushdownCxt.count_removed = 0;
+	pushdownCxt.has_or_expr   = false;
 
 	/* Be paranoid, excluded RestrictInfo list initialized to be empty */
 	*excl_restrictInfo = NIL;
@@ -3872,6 +3874,10 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	 * assume a AND_EXPR per default.
 	 */
 	oprStr = "AND";
+
+	if (pushdownCxt.has_or_expr
+		&& ( pushdownCxt.count_removed > 0))
+		return "";
 
 	/*
 	 * Filter step done, if any predicates to be able to be

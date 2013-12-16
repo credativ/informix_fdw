@@ -224,6 +224,8 @@ typedef struct IfxPushdownOprContext
 	Index foreign_rtid;  /* range table index of foreign table */
 	List *predicates;    /* list of IfxPushDownOprInfo */
 	int   count;         /* number of elements in predicates list */
+	int   count_removed; /* number of removed predicates for FDW pushdown */
+	bool  has_or_expr;
 } IfxPushdownOprContext;
 
 /*

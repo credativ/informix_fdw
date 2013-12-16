@@ -1737,6 +1737,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 					case OR_EXPR:
 						info->type        = IFX_OPR_OR;
 						info->expr_string = cstring_to_text("OR");
+						context->has_or_expr = true;
 						break;
 					case NOT_EXPR:
 						info->type        = IFX_OPR_NOT;
@@ -1820,7 +1821,10 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		 * If no supported expression is found, return.
 		 */
 		if (!operand_supported)
+		{
+			context->count_removed++;
 			return true;
+		}
 
 		/*
 		 * Mark this expression for pushdown.
@@ -1896,7 +1900,10 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 				/* exit immediately */
 				if(!operand_supported)
+				{
+					context->count_removed++;
 					break;
+				}
 			}
 
 			/*
@@ -1905,7 +1912,10 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			 * predicate list.
 			 */
 			if (!operand_supported)
+			{
+				context->count_removed++;
 				return true; /* done */
+			}
 
 			/*
 			 * Mark this predicate for pushdown.
@@ -1920,6 +1930,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		else
 		{
 			/* Operator not supported */
+			context->count_removed++;
 			return true;
 		}
 	}
