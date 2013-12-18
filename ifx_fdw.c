@@ -3875,6 +3875,14 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	 */
 	oprStr = "AND";
 
+	/*
+	 * Check wether ifx_predicate_tree_walker() encountered a OR'ed
+	 * expression and removed some clauses...we can't rely on the returned
+	 * predicate string, so assume we can't push down any. This won't be safe,
+	 * since we might push down a partial OR expression which would lead
+	 * to wrong results. We might try to be a little smarter here, but leave
+	 * that to future improvements...
+	 */
 	if (pushdownCxt.has_or_expr
 		&& ( pushdownCxt.count_removed > 0))
 		return "";
