@@ -450,6 +450,11 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			setIfxInteger(state, slot, attnum);
 			break;
 		}
+		case NUMERICOID:
+		{
+			setIfxDecimal(state, slot, attnum);
+			break;
+		}
 		case VARCHAROID:
 		case TEXTOID:
 		case BPCHAROID:

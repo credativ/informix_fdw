@@ -596,6 +596,7 @@ char *ifxGetIntervalAsString(IfxStatementInfo *state, int ifx_attnum,
 /*
  * Functions to copy values into an Informix SQLDA structure.
  */
+void ifxSetDecimal(IfxStatementInfo *state, int ifx_attnum, char *value);
 void ifxSetInteger(IfxStatementInfo *info, int ifx_attnum, int value);
 void ifxSetInt8(IfxStatementInfo *info, int ifx_attnum, char *value);
 void ifxSetBigint(IfxStatementInfo *info, int ifx_attnum, char *value);

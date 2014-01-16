@@ -34,6 +34,7 @@
 #include "utils/builtins.h"
 #include "utils/formatting.h"
 #include "utils/lsyscache.h"
+#include "utils/numeric.h"
 #include "utils/syscache.h"
 
 #include "ifx_fdw.h"
@@ -651,6 +652,96 @@ void setIfxText(IfxFdwExecutionState *state,
 			break;
 		default:
 			break;
+	}
+}
+
+/*
+ * setIfxDecimal()
+ *
+ * Converts a decimal value from PostgreSQL into
+ * an Informix value and stores it into the specified attribute.
+ *
+ * Given a PostgreSQL numeric value, we don't check
+ * the scale and precision of the target type wether it does fit
+ * the given value. We rely on the Informix routines to return
+ * an appropiate error in this case.
+ */
+void setIfxDecimal(IfxFdwExecutionState *state,
+				   TupleTableSlot       *slot,
+				   int attnum)
+{
+	regproc  typout;
+	char    *strval;
+
+	/* Sanity check, SQLDA available? */
+	Assert(state->stmt_info.sqlda != NULL);
+	strval = NULL;
+
+	/*
+	 * Take care of NULL datums.
+	 */
+	if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	{
+
+		/*
+		 * In any case we expect the source datum to be converted
+		 * into a character string. Call the datum output function to
+		 * get it's text representation.
+		 */
+		typout = getTypeOutputFunction(state,
+									   PG_ATTRTYPE_P(state, attnum));
+
+		/*
+		 * Take care of a possible failure during conversion.
+		 */
+		PG_TRY();
+		{
+			strval = DatumGetCString(OidFunctionCall1(typout,
+													  slot->tts_values[attnum]));
+		}
+		PG_CATCH();
+		{
+			ifxRewindCallstack(&(state->stmt_info));
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
+		/*
+		 * strval must be a valid character string at this point.
+		 */
+		if (strval == NULL)
+		{
+			ifxRewindCallstack(&(state->stmt_info));
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+					 errmsg("informix_fdw: unexpected NULL value for attribute \"%d\" in numeric string representation",
+							attnum)));
+		}
+	}
+
+	/*
+	 * Assign the value into the Informix SQLDA structure. ifxSetDecimal()
+	 * takes enough care for NULL values, so no additional checks required.
+	 */
+	switch(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	{
+		case IFX_DECIMAL:
+		{
+			ifxSetDecimal(&(state->stmt_info),
+						  IFX_ATTR_PARAM_ID(state, attnum),
+						  strval);
+			break;
+		}
+		default:
+		{
+			/* unsupported conversion */
+			ereport(ERROR,
+					(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+					 errmsg("informix_fdw: unsupported conversion from type OID \"%u\" to informix type \"%d\"",
+							PG_ATTRTYPE_P(state, attnum),
+							IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))));
+		}
 	}
 }
 

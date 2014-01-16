@@ -1503,6 +1503,57 @@ char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum, char *buf)
 }
 
 /*
+ * Assigns the specified decimal value string into
+ * a binary dec_t datatype and stores it into the
+ * specified attribute. The character string must be a valid
+ * representation suitable to be converted into an Informix
+ * dec_t binary representation. converrcode will be set if any
+ * conversion error is encountered.
+ */
+void ifxSetDecimal(IfxStatementInfo *state, int ifx_attnum, char *value)
+{
+	dec_t binval;
+	int   converrcode;
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Set NULL inidicator
+	 */
+	if (ifxSetSqlVarIndicator(state,
+							  ifx_attnum,
+							  state->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	ifx_sqlda = (struct sqlda *) state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * Try to convert the given character string into
+	 * a valid dec_t binary value. Set converrcode if
+	 * any error occured.
+	 */
+	if ((converrcode = deccvasc(value, strlen(value), &binval)) < 0)
+	{
+		/* Something went wrong. Safe the error code and
+		 * return to the caller, telling him that this
+		 * attribute is not valid
+		 */
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		state->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+		return;
+	}
+
+	/*
+	 * Store the value into SQLDA
+	 */
+	memcpy(ifx_value->sqldata, &binval,
+		   state->ifxAttrDefs[ifx_attnum].mem_allocated);
+
+	/* ...and we're done */
+}
+
+/*
  * ifxGetInt2
  *
  * Retrieves a smallint value for the specified

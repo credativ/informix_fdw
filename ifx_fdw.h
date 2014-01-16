@@ -322,6 +322,9 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 void setIfxInterval(IfxFdwExecutionState *state,
 					TupleTableSlot       *slot,
 					int                   attnum);
+void setIfxDecimal(IfxFdwExecutionState *state,
+				   TupleTableSlot       *slot,
+				   int attnum);
 
 /*
  * Internal API for PostgreSQL 9.3 and above.

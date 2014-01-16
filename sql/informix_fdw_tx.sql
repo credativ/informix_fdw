@@ -134,6 +134,20 @@ OPTIONS ("table" 'interval_test',
 );
 
 --
+-- Foreign table to test DECIMAL values
+--
+CREATE FOREIGN TABLE decimal_test (
+       f1 numeric(10,0) NOT NULL,
+       f2 numeric(2,2),
+       f3 numeric(10,9)
+) SERVER test_server
+OPTIONS ("table" 'decimal_test',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB'
+);
+
+--
 -- Start a transaction.
 --
 
@@ -401,7 +415,30 @@ SELECT * FROM serial8_test ORDER BY id ASC;
 COMMIT;
 
 --------------------------------------------------------------------------------
--- DML for SERIAL8 values
+-- DML for INTERVAL values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+-- should work
+INSERT INTO decimal_test VALUES((2^32)::numeric, 0.24, 4.91);
+
+SAVEPOINT A;
+-- should fail, exceeds precision
+INSERT INTO decimal_test VALUES((2^64)::numeric, 0.1, 9.91);
+ROLLBACK TO A;
+
+-- inserts NULL
+INSERT INTO decimal_test VALUES(45.491111, NULL, NULL);
+
+SELECT * FROM decimal_test ORDER BY f1;
+
+SELECT * FROM decimal_test WHERE f1 = 2^32;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for INTERVAL values
 --------------------------------------------------------------------------------
 
 BEGIN;
@@ -450,6 +487,7 @@ DROP FOREIGN TABLE serial_test;
 DROP FOREIGN TABLE serial8_test;
 DROP FOREIGN TABLE datetime_test;
 DROP FOREIGN TABLE interval_test;
+DROP FOREIGN TABLE decimal_test;
 
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
