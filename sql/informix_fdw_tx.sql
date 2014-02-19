@@ -488,6 +488,54 @@ INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 24 hours', '-24 
 
 COMMIT;
 
+--------------------------------------------------------------------------------
+-- Transaction/Savepoint tests
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+-- insert some values
+INSERT INTO inttest VALUES(-1, -2, -3), (1, 2, 3), (4, 5, 6);
+SELECT * FROM inttest ORDER BY f1;
+
+SAVEPOINT A;
+
+INSERT INTO inttest VALUES(7, 8, 9);
+SELECT * FROM inttest ORDER BY f1;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+SAVEPOINT B;
+
+DELETE FROM inttest WHERE f1 = -1;
+SELECT * FROM inttest ORDER BY f1;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+-- commit SAVEPOINT B;
+ROLLBACK TO SAVEPOINT B;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+SELECT * FROM inttest ORDER BY f1;
+
+RELEASE SAVEPOINT B;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+SELECT * FROM inttest ORDER BY f1;
+
+-- rollback to SAVEPOINT A;
+ROLLBACK TO SAVEPOINT A;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+SELECT * FROM inttest ORDER BY f1;
+
+ROLLBACK;
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
 DROP FOREIGN TABLE varchar_test;

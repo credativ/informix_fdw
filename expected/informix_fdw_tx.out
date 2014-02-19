@@ -576,6 +576,109 @@ BEGIN;
 INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 24 hours', '-24 hours -59 minutes');
 ERROR:  could not convert attnum 1 to informix type "14", errcode -1263
 COMMIT;
+--------------------------------------------------------------------------------
+-- Transaction/Savepoint tests
+--------------------------------------------------------------------------------
+BEGIN;
+-- insert some values
+INSERT INTO inttest VALUES(-1, -2, -3), (1, 2, 3), (4, 5, 6);
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
+
+SAVEPOINT A;
+INSERT INTO inttest VALUES(7, 8, 9);
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
+
+SAVEPOINT B;
+DELETE FROM inttest WHERE f1 = -1;
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(3 rows)
+
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              3
+(1 row)
+
+-- commit SAVEPOINT B;
+ROLLBACK TO SAVEPOINT B;
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
+
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
+
+RELEASE SAVEPOINT B;
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
+
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
+
+-- rollback to SAVEPOINT A;
+ROLLBACK TO SAVEPOINT A;
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              1
+(1 row)
+
+SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
+
+ROLLBACK;
+SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              0
+(1 row)
+
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
 DROP FOREIGN TABLE varchar_test;

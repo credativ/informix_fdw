@@ -95,6 +95,17 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 (List *) ((ForeignScan *)(a)->ss.ps.plan)->fdw_private
 #endif
 
+/*
+ * The following definitions vary between PostgreSQL releases
+ * and subxact handling. Thus we encapsulate them within
+ * macros, so we don't need to #ifdef the function itself...
+ */
+#if PG_VERSION_NUM < 90300
+#define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_COMMIT_SUB
+#else
+#define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_PRE_COMMIT_SUB
+#endif
+
 /*******************************************************************************
  * FDW helper functions.
  */
@@ -206,6 +217,15 @@ static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
 static int ifxXactFinalize(IfxCachedConnection *cached,
 						   IfxXactAction action,
 						   bool connection_error_ok);
+static void ifx_fdw_subxact_callback(SubXactEvent event,
+									 SubTransactionId subId,
+									 SubTransactionId parentId,
+									 void *arg);
+
+/*
+ * Shared Library initialization.
+ */
+void _PG_init(void);
 
 /*******************************************************************************
  * FDW callback routines.
@@ -1527,6 +1547,14 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 		elog(DEBUG1, "informix database connection using transactions");
 		cached_handle->con.tx_enabled = (*coninfo)->tx_enabled;
 
+		/*
+		 * NOTE: ifxMakeConnectionInfo() already saved the current
+		 *       xact nest level, which ifxStartTransaction() needs to
+		 *       know to do the right(tm) action. It will start
+		 *       a new transaction or (if required) all corresponding
+		 *       SAVEPOINTs on the remote server.
+		 */
+
         /* ... and start the transaction */
         if (ifxStartTransaction(&cached_handle->con, *coninfo) < 0)
 		{
@@ -1542,8 +1570,6 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 			elog(WARNING, "informix_fdw: could not start transaction: \"%s\", SQLSTATE %s",
 				 message.text, message.sqlstate);
 		}
-		else
-			RegisterXactCallback(ifx_fdw_xact_callback, NULL);
 	}
 
 	/* ...the same for ANSI mode */
@@ -4047,6 +4073,11 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	/* Assume non-tx enabled database, determined later */
 	coninfo->tx_enabled = 0;
 
+	/*
+	 * Save the current nest level of transactions.
+	 */
+	coninfo->xact_level = GetCurrentTransactionNestLevel();
+
 	/* Assume non-ANSI database */
 	coninfo->db_ansi = 0;
 
@@ -4433,7 +4464,7 @@ static int ifxXactFinalize(IfxCachedConnection *cached,
 		/*
 		 * Commit the transaction
 		 */
-		if ((result = ifxCommitTransaction(&cached->con)) < 0)
+		if ((result = ifxCommitTransaction(&cached->con, 0)) < 0)
 		{
 			/* oops, something went wrong ... */
 			ifxGetSqlStateMessage(1, &message);
@@ -4448,7 +4479,7 @@ static int ifxXactFinalize(IfxCachedConnection *cached,
 	else if (action == IFX_TX_ROLLBACK)
 	{
 		/* Rollback current transaction */
-		if (ifxRollbackTransaction(&cached->con) < 0)
+		if (ifxRollbackTransaction(&cached->con, 0) < 0)
 		{
 			/* oops, something went wrong ... */
 			ifxGetSqlStateMessage(1, &message);
@@ -4554,4 +4585,101 @@ static void ifx_fdw_xact_callback(XactEvent event, void *arg)
 		 */
 		ifx_fdw_xact_callback_internal(cached, event);
 	}
+}
+
+static void ifx_fdw_subxact_callback(SubXactEvent event,
+									 SubTransactionId subId,
+									 SubTransactionId parentId,
+									 void *arg)
+{
+	HASH_SEQ_STATUS      hsearch_status;
+	IfxCachedConnection *cached;
+	int                  curlevel;
+
+	/*
+	 * No-op if no transaction in progress.
+	 */
+	if (ifxXactInProgress < 1)
+		return;
+
+	/*
+	 * Nothing to do on subtransaction start or abort.
+	 */
+	if (!(event == IFX_PGFDWAPI_SUBXACT_COMMIT ||
+		  event == SUBXACT_EVENT_ABORT_SUB))
+		return;
+
+	/*
+	 * We scan all current active Informix connections to find
+	 * any with active subtransactions. We are only interested in
+	 * nested transactions of the same nest level.
+	 */
+	curlevel = GetCurrentTransactionNestLevel();
+	hash_seq_init(&hsearch_status, ifxCache.connections);
+	while ((cached = (IfxCachedConnection *) hash_seq_search(&hsearch_status)))
+	{
+		/*
+		 * Nothing found
+		 */
+		if (cached == NULL)
+			continue;
+
+		/*
+		 * If the current nest level is higher than the
+		 * nest level of the current connection handle, do nothing.
+		 */
+		if (cached->con.tx_in_progress < curlevel)
+			continue; /* next one */
+
+		/*
+		 * If we encounter a cached connection with a nest level
+		 * still higher what we are currently are locally, we did something
+		 * wrong and missed this SAVEPOINT entirely. Give a warning that something
+		 * fishy is going on...
+		 */
+		if (cached->con.tx_in_progress > curlevel)
+		{
+			elog(WARNING, "informix_fdw: leaked savepoint detected on connection \"%s\", level %d",
+				 cached->con.ifx_connection_name,
+				 cached->con.tx_in_progress);
+		}
+
+		if (event == IFX_PGFDWAPI_SUBXACT_COMMIT)
+		{
+			/* Handle subxact commit */
+
+			elog(DEBUG3, "informix_fdw: commit xact level %d", curlevel);
+
+			/* Release/Commit the SAVEPOINT */
+			if (ifxCommitTransaction(&cached->con, curlevel) < 0)
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_FDW_ERROR),
+						 errmsg("informix_fdw: cannot commit xact level %d", curlevel),
+						 errhint("commit error on informix connection \"%s\"",
+								 cached->con.ifx_connection_name)));
+			}
+		}
+		else
+		{
+			/* This is subxact rollback action */
+			elog(DEBUG3, "informix_fdw: rollback xact level %d", curlevel);
+
+			if (ifxRollbackTransaction(&cached->con, curlevel) < 0)
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_FDW_ERROR),
+						 errmsg("informix_fdw: cannot rollback xact level %d", curlevel),
+						 errhint("rollback error on informix connection \"%s\"",
+								 cached->con.ifx_connection_name)));
+			}
+		}
+	}
+
+}
+
+void _PG_init()
+{
+	RegisterXactCallback(ifx_fdw_xact_callback, NULL);
+	RegisterSubXactCallback(ifx_fdw_subxact_callback, NULL);
 }

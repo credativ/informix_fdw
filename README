@@ -390,26 +390,21 @@ The function throws an error if the existing connection does not exist or
 couldn't be disconnected. If no Informix connections were already used in a session,
 the connection cache isn't initialized yet, which is treated as an error, too.
 
+= Transaction control =
+
+The Informix FDW is able to coordinate transactions with local PostgreSQL
+transactions and savepoints. For example, parent transactions start also
+a new transaction on the remote server (if not already in progress). If
+a SAVEPOINT is started locally on the PostgreSQL server, there will also be a
+SAVEPOINT on the remote Informix server. SAVEPOINTs are stacked, so that each
+ROLLBACK TO command will ROLLBACK and RELEASE the corresponding SAVEPOINT on
+the remote Informix server.
+
 = Caveats =
 
 - Even if not currently enforced, the Informix FDW heavily relies
   on the fact, that a foreign table has the same name like its counterpart
   on the remote Informix server.
-
-- There is currently a hole in the predicate pushdown implementation:
-
-  The code assumes, that it is safe to omit arguments from a boolean expression,
-  even if it is a OR expression. This is obviously wrong, e.g. for the following
-  example:
-
-  <Var> = 1 OR <FuncExpr>(<Var>) = 2
-
-  Since the Informix FDW currently doesn't push down FuncExpr at all, it will
-  omit this expression from the predicate list, which will lead to a wrong
-  result. Currently the only solution to get such a query right against a
-  foreign Informix table is to turn predicate pushdown off. This is subject
-  to change in the very near future, but the only reasonable solution seems to
-  to abandon the expression completely.
 
 - The predicate pushdown feature allows to push down predicates of the
   following type:
@@ -433,11 +428,14 @@ the connection cache isn't initialized yet, which is treated as an error, too.
 
 == Datatype conversion issues ==
 
-- Informix SQLDATE allows 0000-00-00, this is treated as NULL
+- Interval ranges are restricted in Informix to YYYY-MM and DD HH24:MI:SS.FFFFF. If used
+  in a DML transactions, those values are truncated when inserted from PostgreSQL.
+
+- TEXT in Informix is known to have encoding issues that doesn't work properly with
+  PostgreSQL text and varchar types. You might find it better to use bytea instead, however,
+  this format isn't very suitable to work with. The Informix FDW supports conversion from
+  TEXT to bytea nevertheless.
 
 = ToDo =
-
-- Better error handling in case of NULL datum in the various convert*
-  routines in ifx_conv.c.
 
 - Improve usage of planner/local foreign table statistics.

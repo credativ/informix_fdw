@@ -354,6 +354,7 @@ typedef struct IfxConnectionInfo
 	char *client_locale;
 	char *db_locale;
 	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
+	int   xact_level; /* current nest level of transactions */
 	short db_ansi; /* 0 = non-ANSI database, 1 = ANSI-enabled database */
 	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
 	short enable_blobs; /* 0 = no special BLOB support,
@@ -547,10 +548,6 @@ void ifxDeallocateDescriptor(char *descr_name);
 char ifxGetSQLCAWarn(signed short warn);
 int ifxGetSQLCAErrd(signed short ca);
 void ifxSetDescriptorCount(char *descr_name, int count);
-int ifxCommitTransaction(IfxPGCachedConnection *cached);
-int ifxRollbackTransaction(IfxPGCachedConnection *cached);
-int ifxStartTransaction(IfxPGCachedConnection *cached,
-						IfxConnectionInfo *coninfo);
 void ifxGetSystableStats(char *tablename, IfxPlanData *planData);
 void ifxPutValuesInPrepared(IfxStatementInfo *state);
 void ifxFlushCursor(IfxStatementInfo *info);
@@ -561,6 +558,15 @@ void ifxDescribeStmtInput(IfxStatementInfo *state);
 void ifxExecuteStmtSqlda(IfxStatementInfo *state);
 IfxTemporalRange ifxGetTemporalQualifier(IfxStatementInfo *state,
 										 int ifx_attnum);
+
+/*
+ * Transaction control
+ */
+int ifxCommitTransaction(IfxPGCachedConnection *cached, int subXactLevel);
+int ifxRollbackTransaction(IfxPGCachedConnection *cached, int subXactLevel);
+int ifxStartTransaction(IfxPGCachedConnection *cached,
+						IfxConnectionInfo *coninfo);
+
 
 /*
  * Error handling

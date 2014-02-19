@@ -29,6 +29,7 @@
  */
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "ifx_type_compat.h"
 
@@ -49,6 +50,10 @@ unsigned int ifxXactInProgress = 0;
 static void ifxSetEnv(IfxConnectionInfo *coninfo);
 static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
 												struct sqlvar_struct *ifx_value);
+static void ifxReleaseSavepoint(int level);
+static void ifxRollbackSavepoint(int level);
+static void ifxSavepoint(IfxPGCachedConnection *cached,
+						 IfxConnectionInfo *coninfo);
 
 /*
  * Establish a named INFORMIX database connection with transactions
@@ -94,25 +99,58 @@ int ifxStartTransaction(IfxPGCachedConnection *cached, IfxConnectionInfo *coninf
 	 * No-op if non-logged database or parent transaction
 	 * already in progress...
 	 */
-	if ((coninfo->tx_enabled == 1)
-		&& (cached->tx_in_progress < 1))
+	if (coninfo->tx_enabled == 1)
 	{
-		EXEC SQL BEGIN WORK;
-		EXEC SQL SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
-		if (ifxGetSqlStateClass() != IFX_ERROR)
+		/*
+		 * If we already have started a transaction, we use a
+		 * SAVEPOINT instead.
+		 */
+		if (cached->tx_in_progress < 1)
 		{
-			cached->tx_in_progress = 1;
-			++ifxXactInProgress;
-			return 0;
+			EXEC SQL BEGIN WORK;
+			EXEC SQL SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+			if (ifxGetSqlStateClass() != IFX_ERROR)
+			{
+				cached->tx_in_progress = 1;
+				++ifxXactInProgress;
+			}
+			else
+				return -1;
 		}
-		else
+
+		/*
+		 * If the nested level didn't change, this is a no-op. No further
+		 * nested transaction started so far.
+		 */
+		if (cached->tx_in_progress == coninfo->xact_level)
+			return 0;
+
+		/*
+		 * Okay, looks like this connection already has established
+		 * a parent transaction and a new nested subtransaction.
+		 * Since the xact level increased in the meantime, we need
+		 * to create a corresponding SAVEPOINT for the
+		 * current nest level on the remote server as well.
+		 */
+		while(cached->tx_in_progress < coninfo->xact_level)
 		{
-			/*
-			 * Indicate something went wrong, leave it up
-			 * to the caller to inspect SQLSTATE
-			 */
-			return -1;
+			ifxSavepoint(cached, coninfo);
+
+			if (ifxGetSqlStateClass() != IFX_ERROR)
+			{
+				cached->tx_in_progress = coninfo->xact_level;
+				++ifxXactInProgress;
+			}
+			else
+			{
+				/*
+				 * Indicate something went wrong, leave it up
+				 * to the caller to inspect SQLSTATE
+				 */
+				return -1;
+			}
 		}
 	}
 
@@ -120,13 +158,104 @@ int ifxStartTransaction(IfxPGCachedConnection *cached, IfxConnectionInfo *coninf
 	return 0;
 }
 
-int ifxRollbackTransaction(IfxPGCachedConnection *cached)
+/*
+ * ifxReleaseSavepoint()
+ *
+ * Release the given savepoint identified by level.
+ *
+ * NOTE: This function isn't intended to be called directly, the caller
+ *       needs to make sure the transaction state is actually
+ *       adjusted in the cached connection handle. See ifxCommitTransaction()
+ *       or ifxRollbackTransaction() for details.
+ */
+static void ifxReleaseSavepoint(int level)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char ifx_sql[256];
+	EXEC SQL END DECLARE SECTION;
+
+	bzero(ifx_sql, sizeof(ifx_sql));
+	snprintf(ifx_sql, sizeof(ifx_sql), "RELEASE SAVEPOINT ifxfdw_svpt%d",
+			 level);
+
+	EXEC SQL EXECUTE IMMEDIATE :ifx_sql;
+}
+
+/*
+ * ifxRollbackSavepoint()
+ *
+ * Rollback the specified savepoint identified by level.
+ *
+ * NOTE: This function isn't intended to be called directly, the caller
+ *       needs to make sure the transaction state is actually
+ *       adjusted in the cached connection handle. See ifxCommitTransaction()
+ *       or ifxRollbackTransaction() for details.
+ */
+static void ifxRollbackSavepoint(int level)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char ifx_sql[256];
+	EXEC SQL END DECLARE SECTION;
+
+	bzero(ifx_sql, sizeof(ifx_sql));
+	snprintf(ifx_sql, sizeof(ifx_sql), "ROLLBACK TO SAVEPOINT ifxfdw_svpt%d",
+			 level);
+
+	EXEC SQL EXECUTE IMMEDIATE :ifx_sql;
+}
+
+/*
+ * ifxSavepoint()
+ *
+ * Creates a savepoint within the current nested xact level.
+ *
+ * NOTE: This function isn't intended to be called directly, the caller
+ *       needs to make sure the transaction state is actually
+ *       adjusted in the cached connection handle. See ifxCommitTransaction()
+ *       or ifxRollbackTransaction() for details.
+ */
+static void ifxSavepoint(IfxPGCachedConnection *cached, IfxConnectionInfo *coninfo)
+{
+	EXEC SQL BEGIN DECLARE SECTION;
+	char ifx_sql[256];
+	EXEC SQL END DECLARE SECTION;
+
+	/*
+	 * Generate the SAVEPOINT SQL command sent to the Informix server.
+	 * NOTE: Since we rely on the caller, we don't increment the
+	 *       nest level here directly and leave this duty to the caller.
+	 */
+	bzero(ifx_sql, sizeof(ifx_sql));
+	snprintf(ifx_sql, sizeof(ifx_sql), "SAVEPOINT ifxfdw_svpt%d",
+			 cached->tx_in_progress + 1);
+
+	EXEC SQL EXECUTE IMMEDIATE :ifx_sql;
+}
+
+/*
+ * Rollback a parent transaction or SAVEPOINT.
+ *
+ * If subXactLevel is specified and the current cached connection handle
+ * is within a nested xact level, the transaction is rolled back to the
+ * SAVEPOINT identified by subXactLevel.
+ *
+ * Specify 0 within subXactLevel to ROLLBACK the whole parent transaction.
+ */
+int ifxRollbackTransaction(IfxPGCachedConnection *cached, int subXactLevel)
 {
 	/*
 	 * No-op, if no transaction in progress.
+	 * We don't treat this as an error currently, since we
+	 * might talk with a remote Informix database with no logging.
 	 */
+	if (cached->tx_in_progress <= 0)
+		return 0;
 
-	if (cached->tx_in_progress >= 1)
+	/*
+	 * Rollback transaction.
+	 */
+	if ((cached->tx_in_progress == 1)
+		|| (cached->tx_in_progress > 1 && subXactLevel == 0))
 	{
 		EXEC SQL ROLLBACK WORK;
 
@@ -135,7 +264,6 @@ int ifxRollbackTransaction(IfxPGCachedConnection *cached)
 			--cached->tx_in_progress;
 			--ifxXactInProgress;
 			++cached->tx_num_rollback;
-			return 0;
 		}
 		else
 		{
@@ -146,14 +274,56 @@ int ifxRollbackTransaction(IfxPGCachedConnection *cached)
 			return -1;
 		}
 	}
+	else
+	{
+		/*
+		 * If tx_in_progress is larger than 1, then we know that
+		 * we are currently nested within several subtransactions
+		 * locally. Rollback to the savepoint specified by the
+		 * subXactLevel parameter...
+		 */
+		ifxRollbackSavepoint(subXactLevel);
 
-	/* no-op treated as success! */
+		if (ifxGetSqlStateClass() == IFX_ERROR)
+			return -1;
+
+		/*
+		 * ...and finally release the savepoint.
+		 */
+		ifxReleaseSavepoint(subXactLevel);
+
+		if (ifxGetSqlStateClass() != IFX_ERROR)
+		{
+			/* decrease the nest level */
+			--cached->tx_in_progress;
+			--ifxXactInProgress;
+
+			/*
+			 * NOTE: We count parent transactions in the stats
+			 * only!
+			 */
+		}
+		else
+		{
+			/*
+			 * Indicate something went wrong, leave it up
+			 * to the caller to inspect SQLSTATE.
+			 */
+			return -1;
+		}
+	}
+
+	/* only reached in case of success */
 	return 0;
 }
 
-int ifxCommitTransaction(IfxPGCachedConnection *cached)
+/*
+ * Commit a transaction or release a SAVEPOINT identified by
+ * subXactLevel.
+ */
+int ifxCommitTransaction(IfxPGCachedConnection *cached, int subXactLevel)
 {
-	if (cached->tx_in_progress >= 1)
+	if (cached->tx_in_progress == 1)
 	{
 		EXEC SQL COMMIT WORK;
 
@@ -162,7 +332,6 @@ int ifxCommitTransaction(IfxPGCachedConnection *cached)
 			cached->tx_in_progress = 0;
 			--ifxXactInProgress;
 			++cached->tx_num_commit;
-			return 0;
 		}
 		else
 		{
@@ -171,6 +340,24 @@ int ifxCommitTransaction(IfxPGCachedConnection *cached)
 			 * to the caller to inspect SQLSTATE
 			 */
 			return -1;
+		}
+	}
+	else if (cached->tx_in_progress > 1)
+	{
+		/*
+		 * Commit the current savepoint.
+		 */
+		ifxReleaseSavepoint(subXactLevel);
+
+		if (ifxGetSqlStateClass() != IFX_ERROR)
+		{
+			--cached->tx_in_progress;
+			--ifxXactInProgress;
+
+			/*
+			 * NOTE: We count parent transactions in the stats
+			 * only!
+			 */
 		}
 	}
 
