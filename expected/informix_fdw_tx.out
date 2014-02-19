@@ -114,6 +114,19 @@ OPTIONS ("table" 'interval_test',
                  database :'INFORMIXDB'
 );
 --
+-- Foreign table to test DECIMAL values
+--
+CREATE FOREIGN TABLE decimal_test (
+       f1 numeric(10,0) NOT NULL,
+       f2 numeric(2,2),
+       f3 numeric(10,9)
+) SERVER test_server
+OPTIONS ("table" 'decimal_test',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB'
+);
+--
 -- Start a transaction.
 --
 BEGIN;
@@ -473,7 +486,50 @@ SELECT * FROM serial8_test ORDER BY id ASC;
 
 COMMIT;
 --------------------------------------------------------------------------------
--- DML for SERIAL8 values
+-- DML for DECIMAL values
+--------------------------------------------------------------------------------
+BEGIN;
+-- should work
+INSERT INTO decimal_test VALUES((2^32)::numeric, 0.24, 4.91);
+SAVEPOINT A;
+-- should fail, exceeds precision
+INSERT INTO decimal_test VALUES((2^64)::numeric, 0.1, 9.91);
+ERROR:  numeric field overflow
+DETAIL:  A field with precision 10, scale 0 must round to an absolute value less than 10^10.
+ROLLBACK TO A;
+-- inserts NULL
+INSERT INTO decimal_test VALUES(45.491111, NULL, NULL);
+SELECT * FROM decimal_test ORDER BY f1;
+     f1     |  f2  |     f3      
+------------+------+-------------
+         45 |      |            
+ 4294967296 | 0.24 | 4.910000000
+(2 rows)
+
+SELECT * FROM decimal_test WHERE f1 = 2^32;
+     f1     |  f2  |     f3      
+------------+------+-------------
+ 4294967296 | 0.24 | 4.910000000
+(1 row)
+
+-- UPDATE
+UPDATE decimal_test SET f1 = -(2^32), f2 = -0.33, f3 = 9.999999999 WHERE f1 = 2^32;
+SELECT * FROM decimal_test ORDER BY f1;
+     f1      |  f2   |     f3      
+-------------+-------+-------------
+ -4294967296 | -0.33 | 9.999999999
+          45 |       |            
+(2 rows)
+
+DELETE FROM decimal_test;
+SELECT * FROM decimal_test ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
+
+COMMIT;
+--------------------------------------------------------------------------------
+-- DML for INTERVAL values
 --------------------------------------------------------------------------------
 BEGIN;
 --
@@ -528,6 +584,7 @@ DROP FOREIGN TABLE serial_test;
 DROP FOREIGN TABLE serial8_test;
 DROP FOREIGN TABLE datetime_test;
 DROP FOREIGN TABLE interval_test;
+DROP FOREIGN TABLE decimal_test;
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
 DROP EXTENSION informix_fdw;

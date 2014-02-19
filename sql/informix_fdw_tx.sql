@@ -415,7 +415,7 @@ SELECT * FROM serial8_test ORDER BY id ASC;
 COMMIT;
 
 --------------------------------------------------------------------------------
--- DML for INTERVAL values
+-- DML for DECIMAL values
 --------------------------------------------------------------------------------
 
 BEGIN;
@@ -434,6 +434,15 @@ INSERT INTO decimal_test VALUES(45.491111, NULL, NULL);
 SELECT * FROM decimal_test ORDER BY f1;
 
 SELECT * FROM decimal_test WHERE f1 = 2^32;
+
+-- UPDATE
+UPDATE decimal_test SET f1 = -(2^32), f2 = -0.33, f3 = 9.999999999 WHERE f1 = 2^32;
+
+SELECT * FROM decimal_test ORDER BY f1;
+
+DELETE FROM decimal_test;
+
+SELECT * FROM decimal_test ORDER BY f1;
 
 COMMIT;
 
