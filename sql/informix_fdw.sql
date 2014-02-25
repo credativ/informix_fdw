@@ -133,6 +133,7 @@ CREATE FOREIGN TABLE dec_test (val1 numeric(9,2), val2 numeric(8,0))
 SERVER test_server
 OPTIONS(database :'INFORMIXDB',
         client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
         query 'SELECT value AS val1, value AS val2 FROM dec_test');
 
 SELECT * FROM dec_test ORDER BY val1;
@@ -149,6 +150,7 @@ CREATE FOREIGN TABLE nvarchar_test
 SERVER test_server
 OPTIONS(database :'INFORMIXDB',
         client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
         query 'SELECT val AS val1, val AS val2, val AS val3 FROM nvarchar_test');
 
 -- Should succeed
@@ -165,6 +167,7 @@ CREATE FOREIGN TABLE nvarchar_test
 SERVER test_server
 OPTIONS(database :'INFORMIXDB',
         client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
         query 'SELECT val AS val1, val AS val2, val AS val3 FROM nvarchar_test');
 
 -- Should fail
@@ -182,6 +185,7 @@ CREATE FOREIGN TABLE serial_test
 SERVER test_server
 OPTIONS(database :'INFORMIXDB',
         client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
         table 'serial_test');
 
 -- should succeed
@@ -220,6 +224,7 @@ CREATE FOREIGN TABLE bar_serial(
 SERVER test_server
 OPTIONS(database :'INFORMIXDB',
         client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
         table 'bar_serial');
 
 -- one row, self join
