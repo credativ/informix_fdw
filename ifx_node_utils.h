@@ -42,7 +42,7 @@
  * Number of serialized Const nodes passed
  * from ifxPlanForeignScan()
  */
-#define N_SERIALIZED_FIELDS 9
+#define N_SERIALIZED_FIELDS 10
 
 /*
  * Identifier for serialized Const fields
@@ -59,6 +59,7 @@
 #define SERIALIZED_CURSOR_TYPE  6
 #define SERIALIZED_SPECIAL_COLS 7
 #define SERIALIZED_REFID        8
+#define SERIALIZED_USE_ROWID    9
 
 #define SERIALIZED_DATA(_vals_) Const * (_vals_)[N_SERIALIZED_FIELDS]
 #define AFFECTED_ATTR_NUMS_IDX (N_SERIALIZED_FIELDS)

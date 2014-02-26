@@ -492,6 +492,15 @@ COMMIT;
 -- Transaction/Savepoint tests
 --------------------------------------------------------------------------------
 
+DROP FOREIGN TABLE inttest;
+
+CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
+SERVER test_server
+OPTIONS (table 'inttest',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB');
+
 BEGIN;
 
 -- insert some values
@@ -535,6 +544,147 @@ SELECT * FROM inttest ORDER BY f1;
 ROLLBACK;
 
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+
+--------------------------------------------------------------------------------
+-- Test CURSOR based DML
+--------------------------------------------------------------------------------
+
+DROP FOREIGN TABLE inttest;
+
+CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
+SERVER test_server
+OPTIONS (table 'inttest',
+         disable_rowid '1',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB');
+
+BEGIN;
+
+INSERT INTO inttest(f1, f2, f3) VALUES(1001, 2002, 3003), (4004, 5005, 6006), (7007, 8008, 9009);
+
+SELECT * FROM inttest ORDER BY f1 ASC;
+
+UPDATE inttest SET f1 = -1 * 4004 WHERE f1 = 4004;
+
+SELECT * FROM inttest ORDER BY f1 ASC;
+
+DELETE FROM inttest WHERE f1 = 4004;
+
+SELECT * FROM inttest ORDER BY f1 ASC;
+
+DELETE FROM inttest;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- Some more complicated DML statements, default behavior
+--------------------------------------------------------------------------------
+
+DROP FOREIGN TABLE inttest;
+
+CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
+SERVER test_server
+OPTIONS (table 'inttest',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB');
+
+
+BEGIN;
+
+CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
+INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
+INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+--
+-- This UPDATE should lead to a hash join, where the remote table
+-- is hashed first. With the default rowID behavior, this is expected to
+-- work properly. We make other join conditions more expensive to nearly
+-- force such a plan...
+--
+SET LOCAL enable_nestloop = off;
+SET LOCAL enable_mergejoin = off;
+
+UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+--
+-- ...and DELETE.
+--
+DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+DELETE FROM inttest;
+
+COMMIT;
+
+--
+-- Change ROWID-based modify action to cursor-based modify action.
+--
+ALTER FOREIGN TABLE inttest OPTIONS(ADD disable_rowid '1');
+
+BEGIN;
+
+CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
+INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
+INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+--
+-- This UPDATE should lead to a hash join, where the remote table
+-- is hashed first. With the default rowID behavior, this is expected to
+-- work properly. We make other join conditions more expensive to nearly
+-- force such a plan...
+--
+SET LOCAL enable_nestloop = off;
+SET LOCAL enable_mergejoin = off;
+
+SAVEPOINT A;
+
+--
+-- This should fail, since we don't support such updates (the cursor
+-- will be positioned on the wrong tuple, thus we encounter an invalid
+-- state.
+--
+UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
+
+ROLLBACK TO A;
+RELEASE SAVEPOINT A;
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+SAVEPOINT B;
+
+--
+-- ...and DELETE.
+--
+-- This is expected to fail, too, since it has the same problem as the UPDATE
+-- above.
+--
+DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
+
+ROLLBACK TO B;
+
+SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+
+DELETE FROM inttest;
+
+COMMIT;
+
+--
+-- Change back to default behavior
+--
+ALTER FOREIGN TABLE inttest OPTIONS(DROP disable_rowid);
+
+--------------------------------------------------------------------------------
+-- Regression Tests End, Cleanup
+--------------------------------------------------------------------------------
 
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
