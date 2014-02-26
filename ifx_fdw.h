@@ -142,6 +142,18 @@ typedef struct IfxFdwExecutionState
 	bool rescan;
 
 	/*
+	 * Use rowid in modify actions. This is the default
+	 * and is set during ifxBeginForeignModify().
+	 */
+	bool use_rowid;
+
+	/*
+	 * Holds the attribute number of the ROWID
+	 * resjunk columns, if use_rowid is set to true.
+	 */
+	AttrNumber rowid_attno;
+
+	/*
 	 * Dynamic list of foreign table attribute
 	 * definitions.
 	 */
@@ -276,6 +288,15 @@ typedef struct IfxPushdownOprContext
  * Excludes dropped columns for example.
  */
 #define PG_VALID_COLS_COUNT(x) ((x)->pgAttrCount - (x)->pgDroppedAttrCount)
+
+/*
+ * In case we use a ROWID to modify the remote Informix table,
+ * reserve an extra slot, which is required to fetch the ID later.
+ *
+ * NOTE: We *don't* reflect the extra slot within pgAttrCount, since
+ *       this will confuse the attribute number mapping code.
+ */
+#define IFX_PGATTRCOUNT(a) (((a)->use_rowid) ? (a)->pgAttrCount + 1 : (a)->pgAttrCount)
 
 /*
  * Returns the param id for a prepared informix statement and its

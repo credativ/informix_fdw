@@ -92,6 +92,8 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 															   SERIALIZED_SPECIAL_COLS);
 	state->stmt_info.refid        = ifxGetSerializedInt32Field(params,
 															   SERIALIZED_REFID);
+	state->use_rowid              = ifxGetSerializedInt16Field(params,
+															   SERIALIZED_USE_ROWID);
 	state->affectedAttrNums       = list_nth(params, AFFECTED_ATTR_NUMS_IDX);
 }
 
@@ -181,6 +183,9 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 
 	const_vals[SERIALIZED_REFID]
 		= makeFdwInt32Const(state->stmt_info.refid);
+
+	const_vals[SERIALIZED_USE_ROWID]
+		= makeFdwInt16Const(state->use_rowid);
 }
 
 /*
@@ -424,9 +429,21 @@ void ifxGenerateDeleteSql(IfxFdwExecutionState *state,
 	 * by using the CURRENT OF <cursor> syntax.
 	 */
 	initStringInfo(&sql);
-	appendStringInfo(&sql, "DELETE FROM %s WHERE CURRENT OF %s",
-					 coninfo->tablename,
+	appendStringInfo(&sql, "DELETE FROM %s",
+					 coninfo->tablename);
+
+	/*
+	 * We need to append the WHERE expression, but we
+	 * need to distinguish between using a ROWID to identify
+	 * the remote target tuple or (if disable_rowid was specified)
+	 * the name of the updatable cursor.
+	 */
+	if (coninfo->disable_rowid)
+		appendStringInfo(&sql, " WHERE CURRENT OF %s",
 					 state->stmt_info.cursor_name);
+	else
+		appendStringInfo(&sql, " WHERE rowid = ?");
+
 	state->stmt_info.query = sql.data;
 }
 
@@ -482,11 +499,16 @@ void ifxGenerateUpdateSql(IfxFdwExecutionState *state,
 	}
 
 	/*
-	 * Finally the WHERE condition needs to be added. Since
-	 * we rely on an updatable cursor for now, it's enough
-	 * to append WHERE CURRENT OF <cursor>...
+	 * Finally the WHERE condition needs to be added.
+	 *
+	 * Per default we use the ROWID to identify the remote tuple for the
+	 * UPDATE target, but we might also fallback to an updatable cursor
+	 * if disable_rowid was passed to the table.
 	 */
-	appendStringInfo(&sql, "WHERE CURRENT OF %s", state->stmt_info.cursor_name);
+	if (coninfo->disable_rowid)
+		appendStringInfo(&sql, "WHERE CURRENT OF %s", state->stmt_info.cursor_name);
+	else
+		appendStringInfo(&sql, "WHERE rowid = ?");
 
 	/*
 	 * And we're done.

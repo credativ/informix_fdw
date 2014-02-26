@@ -58,6 +58,7 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "client_locale",    ForeignTableRelationId },
 	{ "db_locale",        ForeignTableRelationId },
 	{ "disable_predicate_pushdown", ForeignTableRelationId },
+	{ "disable_rowid",              ForeignTableRelationId },
 	{ "enable_blobs",               ForeignTableRelationId },
 	{ NULL,                         ForeignTableRelationId }
 };
@@ -96,9 +97,9 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 #endif
 
 /*
- * The following definitions vary between PostgreSQL releases
- * and subxact handling. Thus we encapsulate them within
- * macros, so we don't need to #ifdef the function itself...
+ * The following definitions vary between PostgreSQL releases.
+ * Thus we encapsulate them within macros, so we don't need to
+ # #ifdef the function itself...
  */
 #if PG_VERSION_NUM < 90300
 #define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_COMMIT_SUB
@@ -183,6 +184,15 @@ ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 					  TupleTableSlot *tupleSlot);
 
 #if PG_VERSION_NUM >= 90300
+
+static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
+								 int                   paramId,
+								 TupleTableSlot       *planSlot);
+
+static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
+								 Relation              rel,
+								 ItemPointer           encoded_rowid,
+								 TupleTableSlot       *slot);
 
 static void ifxPrepareModifyQuery(IfxStatementInfo  *info,
 								  IfxConnectionInfo *coninfo,
@@ -331,6 +341,91 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
 #if PG_VERSION_NUM >= 90300
 
 /*
+ * Set the given ROWID into the Informix
+ * SQLDA structure.
+ */
+static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
+								 int                   paramId,
+								 TupleTableSlot       *planSlot)
+{
+	int   rowid;
+	ItemPointer iptr;
+	bool  isnull;
+
+	/*
+	 * Fetch the current rowid from the resjunk column...
+	 */
+	iptr = (ItemPointer) DatumGetPointer(ExecGetJunkAttribute(planSlot,
+															  state->rowid_attno,
+															  &isnull));
+
+	/* Should be valid */
+	Assert(PointerIsValid(iptr));
+
+	if (isnull)
+		elog(ERROR, "informix_fdw: could not extract rowid");
+
+	/*
+	 * Convert the ItemPointer back into a 4 Byte ROWID value
+	 * for Informix. We can't rely on ItemPointerGetBlockNumber()
+	 * since it will fail the Assertion for a given OffsetNumber
+	 * otherwise.
+	 */
+	rowid = (int) ((iptr->ip_blkid.bi_hi << 16) | ((uint16) iptr->ip_blkid.bi_lo));
+
+	/*
+	 * Mark the value valid, otherwise the conversion routine
+	 * will give up immediately...
+	 */
+	IFX_SET_INDICATOR_P(state, paramId, INDICATOR_NOT_NULL);
+
+	/*
+	 * ...let the conversion do its job.
+	 */
+	ifxSetInteger(&(state->stmt_info), paramId, rowid);
+}
+
+/*
+ * Extract the Informix ROWID from the current
+ * tuple. The ROWID is encoded within a PostgreSQL ItemPointer
+ * and returned to the caller.
+ *
+ * Returns NULL in case no ROWID could be extracted.
+ */
+static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state)
+{
+	ItemPointer rowid;
+	bool        isnull;
+
+	/* init */
+	rowid = NULL;
+
+	/* Requires disable_rowid == false! */
+	if (!state->use_rowid)
+		return rowid;
+
+	ifxColumnValueByAttNum(state, IFX_PGATTRCOUNT(state) - 1, &isnull);
+
+	if (isnull)
+		elog(ERROR, "unexpected NULL value for Informix ROWID");
+
+	/*
+	 * ROWID is a 4 Byte Integer encoding the logical
+	 * page number within its first 3 bytes and the
+	 * tuple slot number within the last byte. We encode
+	 * this number into a CTID to transport the ROWID
+	 * down to the modify action.
+	 */
+
+	rowid = (ItemPointer) palloc0fast(SizeOfIptrData);
+	ItemPointerSet(rowid,
+				   DatumGetInt32(state->values[IFX_PGATTRCOUNT(state) - 1].val),
+				   0);
+	return rowid;
+}
+
+
+/*
  * Extra information for EXPLAIN on a modify action.
  */
 static void
@@ -424,6 +519,11 @@ static IfxFdwExecutionState *ifxCopyExecutionState(IfxFdwExecutionState *state)
 	memcpy(copy->stmt_info.conname, state->stmt_info.conname, IFX_CONNAME_LEN + 1);
 
 	/*
+	 * Copy ROWID usage indicator.
+	 */
+	copy->use_rowid = state->use_rowid;
+
+	/*
 	 * ...and we're done.
 	 */
 	return copy;
@@ -466,6 +566,7 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 		case INT2OID:
 		case INT4OID:
 		case INT8OID:
+		case TIDOID:
 		{
 			setIfxInteger(state, slot, attnum);
 			break;
@@ -614,9 +715,11 @@ char *dispatchColumnIdentifier(int varno, int varattno, PlannerInfo *root)
  *
  * Informix doesn't always provide a "rowid" column for all
  * table types. Fragmented tables doesn't have a "rowid" per
- * default, so any attempts to update them will fail. If
- * fragmented tables are used in DML statements in foreign tables,
- * a explicit "rowid" column must be added.
+ * default, so any attempts to update them will fail.
+ *
+ * We always append a ROWID resjunk column, however, if
+ * disable_rowid is specified to an Informix foreign table,
+ * we switch to an updatable cursor (which all its implications).
  */
 static void
 ifxAddForeignUpdateTargets(Query *parsetree,
@@ -628,6 +731,10 @@ ifxAddForeignUpdateTargets(Query *parsetree,
 
 	elog(DEBUG3, "informix_fdw: add foreign targets");
 
+	/*
+	 * Append the ROWID resjunk column of type INT8
+	 * to the target list.
+	 */
 	var = makeVar(parsetree->resultRelation,
 				  SelfItemPointerAttributeNumber,
 				  TIDOID,
@@ -883,6 +990,40 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 	rinfo->ri_FdwState = state;
 
 	/*
+	 * Mark usage of ROWID in this modify action.
+	 */
+	state->use_rowid = (coninfo->disable_rowid ? false : true);
+
+	if (state->use_rowid)
+	{
+		elog(DEBUG1, "informix_fdw: using ROWID based modify actions");
+
+		/*
+		 * We extract the attribute number of the ROWID resjunk
+		 * column to safe some cycles during the modify actions.
+		 */
+		if (mstate->operation == CMD_UPDATE
+			|| mstate->operation == CMD_DELETE)
+		{
+			Plan *subplan = mstate->mt_plans[subplan_index]->plan;
+
+			state->rowid_attno = ExecFindJunkAttributeInTlist(subplan->targetlist,
+															  "rowid");
+
+			if (!AttributeNumberIsValid(state->rowid_attno))
+				elog(ERROR, "informix_fdw: could not find junk rowid column");
+		}
+	}
+	else
+	{
+		/*
+		 * No further actions here when using updatable cursors,
+		 * but give a DEBUG message nevertheless...
+		 */
+		elog(DEBUG1, "informix_fdw: using cursor based modify actions");
+	}
+
+	/*
 	 * Deserialize plan data.
 	 */
 	ifxDeserializeFdwData(state, fdw_private);
@@ -909,7 +1050,8 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 	 * DELETE doesn't need any special actions here, all we need for
 	 * it is done in the planning phase (PREPARE).
 	 */
-	if (mstate->operation != CMD_DELETE)
+	if ((mstate->operation != CMD_DELETE) ||
+		((mstate->operation == CMD_DELETE) && state->use_rowid))
 	{
 		/*
 		 * Get column list for local table definition.
@@ -1070,24 +1212,51 @@ ifxExecForeignDelete(EState *estate,
 		 state->stmt_info.stmt_name);
 
 	/*
-	 * Execute the DELETE action on the remote table. We just
-	 * need to execute the prepared statement and we're done.
-	 *
-	 * The cursor should have already been positioned on the
-	 * right tuple, the generated SQL query attached to the
-	 * current execution state will just do a WHERE CURRENT OF
-	 * to delete it.
+	 * Execute the DELETE action on the remote table. In
+	 * case we have disable_rowid set, we just need to execute
+	 * the prepared query and we're done. If disable_rowid is
+	 * not set (which is the default), we need to extract the ROWID
+	 * from the current tuple and pass it via SQLDA structure to
+	 * the Informix API...
 	 */
-	ifxExecuteStmt(&state->stmt_info);
+	ExecClearTuple(slot);
 
-	/*
-	 * Check for errors.
-	 */
-	ifxCatchExceptions(&state->stmt_info, 0);
+	if (!state->use_rowid)
+	{
+		/*
+		 * The cursor should have already been positioned on the
+		 * right tuple, the generated SQL query attached to the
+		 * current execution state will just do a WHERE CURRENT OF
+		 * to delete it.
+		 */
+		ifxExecuteStmt(&state->stmt_info);
 
-	/*
-	 * And we're done.
-	 */
+		/*
+		 * Check for errors.
+		 */
+		ifxCatchExceptions(&state->stmt_info, 0);
+	}
+	else
+	{
+		/*
+		 * Assign the ROWID value to the SQLDA structure.
+		 */
+		ifxRowIdValueToSqlda(state,
+							 state->stmt_info.ifxAttrCount - 1,
+							 planSlot);
+
+		/*
+		 * Execute the DELETE statement by using the finalized
+		 * SQLDA descriptor area.
+		 */
+		ifxExecuteStmtSqlda(&state->stmt_info);
+
+		/*
+		 * Check for errors.
+		 */
+		ifxCatchExceptions(&state->stmt_info, 0);
+	}
+
 	return slot;
 }
 
@@ -1125,8 +1294,27 @@ ifxExecForeignUpdate(EState *estate,
 	}
 
 	/*
-	 * Execute the UPDATE.
+	 * For ROWIDs enabled (which is the default),
+	 * we need to get it back from the resjunk
+	 * column, pass it to the SQLDA structure and execute the
+	 * query. If we fall back to an updatable cursor,
+	 * it's enough to just execute the statement now, since
+	 * all columns values are already assigned to the SQLDA
+	 * structure above.
 	 */
+	if (state->use_rowid)
+	{
+		/*
+		 * Assign the ROWID to the SQLDA structure.
+		 * We know that the last parameter id is
+		 * used by the ROWID within the WHERE clause
+		 * of this UPDATE.
+		 */
+		ifxRowIdValueToSqlda(state,
+							 state->stmt_info.ifxAttrCount - 1,
+							 planSlot);
+	}
+
 	ifxExecuteStmtSqlda(&state->stmt_info);
 	ifxCatchExceptions(&state->stmt_info, 0);
 
@@ -1260,6 +1448,25 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 	heap_close(rel, NoLock);
 }
 
+static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
+								 Relation              rel,
+								 ItemPointer           encoded_rowid,
+								 TupleTableSlot       *slot)
+{
+	HeapTuple tuple;
+	TupleDesc tupDesc;
+
+	tupDesc  = RelationGetDescr(rel);
+	tuple    = heap_form_tuple(tupDesc, slot->tts_values, slot->tts_isnull);
+
+	if (state->use_rowid)
+	{
+		tuple->t_self = *encoded_rowid;
+	}
+
+	return tuple;
+}
+
 #endif
 
 /*
@@ -1271,16 +1478,13 @@ static void
 ifxSetupTupleTableSlot(IfxFdwExecutionState *state,
 					   TupleTableSlot *tupleSlot)
 {
-
 	Assert((tupleSlot != NULL) && (state != NULL));
 
-	tupleSlot->tts_isempty = false;
 	tupleSlot->tts_nvalid = state->pgAttrCount;
 	tupleSlot->tts_values = (Datum *) palloc(sizeof(Datum)
 											 * tupleSlot->tts_nvalid);
 	tupleSlot->tts_isnull = (bool *) palloc(sizeof(bool)
 											* tupleSlot->tts_nvalid);
-
 }
 
 /*
@@ -1290,7 +1494,7 @@ ifxSetupTupleTableSlot(IfxFdwExecutionState *state,
  */
 static void
 ifxGetValuesFromTuple(IfxFdwExecutionState *state,
-					  TupleTableSlot *tupleSlot)
+					  TupleTableSlot       *tupleSlot)
 {
 	int i;
 
@@ -1628,6 +1832,25 @@ static void ifxSetupFdwScan(IfxConnectionInfo **coninfo,
 	 * structure.
 	 */
 	*state = makeIfxFdwExecutionState(cached_handle->con.usage);
+
+	if ((*coninfo)->query)
+	{
+		/*
+		 * If we use a foreign table based on a query, disallow
+		 * ROWID retrieval.
+		 */
+		(*state)->use_rowid = 0;
+		elog(DEBUG5, "informix_fdw: disabling ROWID forced");
+	}
+	else
+	{
+		/*
+		 * If set by disable_rowid parameter, deactivate
+		 * ROWID
+		 */
+		(*state)->use_rowid = ((*coninfo)->disable_rowid) ? false : true;
+		elog(DEBUG5, "informix_fdw: using rowid %d", (*state)->use_rowid);
+	}
 }
 
 /*
@@ -1669,6 +1892,15 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 	state->values = NULL;
 	state->rescan = false;
 	state->affectedAttrNums = NIL;
+
+	/*
+	 * NOTE: This is set during preparing a modify action
+	 *       in ifxBeginForeignModify(). This must not be
+	 *       checked as long as ifxBeginForeignModify() has
+	 *       done its work!
+	 */
+	state->rowid_attno = InvalidAttrNumber;
+	state->use_rowid   = true;
 
 	return state;
 }
@@ -2585,7 +2817,11 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	festate->pgAttrCount = RelationGetNumberOfAttributes(foreignRel);
 	heap_close(foreignRel, NoLock);
 
-	festate->pgAttrDefs = palloc0fast(sizeof(PgAttrDef) * festate->pgAttrCount);
+	/*
+	 * Use IFX_PGATTRCOUNT to reflect extra space for retrieval of ROWID,
+	 * if necessary.
+	 */
+	festate->pgAttrDefs = palloc0fast(sizeof(PgAttrDef) * IFX_PGATTRCOUNT(festate));
 
 	/*
 	 * Get all attributes for the given foreign table.
@@ -2665,6 +2901,21 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		elog(DEBUG5, "mapped attnum PG/IFX %d => %d",
 			 festate->pgAttrDefs[pgAttrIndex - 1].attnum,
 			 PG_MAPPED_IFX_ATTNUM(festate, pgAttrIndex - 1));
+	}
+
+	/*
+	 * Request information for the resjunk ROWID column.
+	 */
+	if (festate->use_rowid)
+	{
+		Assert(IFX_PGATTRCOUNT(festate) > festate->pgAttrCount);
+
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].attnum = IFX_PGATTRCOUNT(festate);
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].ifx_attnum = IFX_PGATTRCOUNT(festate);
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].atttypid   = INT4OID;
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].atttypmod  = -1;
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].attname    = "rowid";
+		festate->pgAttrDefs[IFX_PGATTRCOUNT(festate) - 1].attnotnull = true;
 	}
 
 	/* finish */
@@ -3066,6 +3317,15 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 			coninfo->predicate_pushdown = 0;
 		}
 
+		if (strcmp(def->defname, "disable_rowid") == 0)
+		{
+			/*
+			 * We don't bother about the specified value, we just
+			 * honor if the setting was given.
+			 */
+			coninfo->disable_rowid = 1;
+		}
+
 		if (strcmp(def->defname, "enable_blobs") == 0)
 		{
 			/* we don't bother about the value passed
@@ -3165,9 +3425,18 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 									IfxConnectionInfo *coninfo)
 {
 	StringInfoData *buf;
+	char           *rowid_str;
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
+
+	/*
+	 * We depend on ROWID per default.
+	 */
+	if (state->use_rowid == 1)
+		rowid_str = ", rowid";
+	else
+		rowid_str = "";
 
 	/*
 	 * Record the given query and pass it over
@@ -3175,6 +3444,15 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 	 */
 	if (coninfo->query)
 	{
+		/*
+		 * IMPORTANT: When a query was specified, we don't
+		 *            retrieve the ROWID. This doesn't matter here,
+		 *            since we don't support modifying such
+		 *            a foreign table anyways. Force disabling rowid
+		 *            in this case to be consistent regardless.
+		 */
+		state->use_rowid = 0;
+
 		if ((state->stmt_info.predicate != NULL)
 			&& (strlen(state->stmt_info.predicate) > 0)
 			&& coninfo->predicate_pushdown)
@@ -3202,18 +3480,24 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 		 * We declare the Informix transaction with REPEATABLE READ
 		 * isolation level. Consider different modes here, e.g. FOR UPDATE
 		 * with READ COMMITTED...
+		 *
+		 * In case disable_rowid was specified, we cannot rely on the
+		 * ROWID (for example, if fragmented tables are used on the Informix
+		 * server).
 		 */
 		if ((state->stmt_info.predicate != NULL)
 			&& (strlen(state->stmt_info.predicate) > 0)
 			&& coninfo->predicate_pushdown)
 		{
-			appendStringInfo(buf, "SELECT * FROM %s WHERE %s",
+			appendStringInfo(buf, "SELECT *%s FROM %s WHERE %s",
+							 rowid_str,
 							 coninfo->tablename,
 							 state->stmt_info.predicate);
 		}
 		else
 		{
-			appendStringInfo(buf, "SELECT * FROM %s",
+			appendStringInfo(buf, "SELECT *%s FROM %s",
+							 rowid_str,
 							 coninfo->tablename);
 		}
 	}
@@ -3310,11 +3594,6 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 		 * by ifxPlanForeignScan().
 		 */
 		ifxDeserializeFdwData(festate, plan_values);
-	}
-	else
-	{
-		elog(DEBUG1, "informix_fdw no cached plan data");
-		ifxPrepareParamsForScan(festate, coninfo);
 	}
 
 	/*
@@ -3698,6 +3977,7 @@ static void ifxEndForeignScan(ForeignScanState *node)
 static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 {
 	TupleTableSlot       *tupleSlot = node->ss.ss_ScanTupleSlot;
+	Relation              rel       = node->ss.ss_currentRelation;
 	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *state;
 	IfxSqlStateClass      errclass;
@@ -3743,11 +4023,10 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 		elog(ERROR, "could not set requested informix connection");
 	}
 
-	tupleSlot->tts_mintuple      = NULL;
-	tupleSlot->tts_buffer        = InvalidBuffer;
-	tupleSlot->tts_tuple         = NULL;
-	tupleSlot->tts_shouldFree    = false;
-	tupleSlot->tts_shouldFreeMin = false;
+	/*
+	 * Prepare a virtual tuple.
+	 */
+	ExecClearTuple(tupleSlot);
 
 	/*
 	 * Catch any informix exception. We also need to
@@ -3766,8 +4045,6 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 			 */
 			elog(DEBUG2, "informix fdw scan end");
 
-			tupleSlot->tts_isempty = true;
-			tupleSlot->tts_nvalid  = 0;
 			/* XXX: not required here ifxRewindCallstack(&(state->stmt_info)); */
 			return tupleSlot;
 		}
@@ -3783,10 +4060,30 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 	/*
 	 * The cursor should now be positioned at the current row
 	 * we want to retrieve. Loop through the columns and retrieve
-	 * their values. Note: No conversion into a PostgreSQL specific
-	 * datatype is done yet.
+	 * their values.
 	 */
 	ifxGetValuesFromTuple(state, tupleSlot);
+
+	/*
+	 * Get the ROWID for the current value, if required.
+	 */
+	if (state->use_rowid)
+	{
+		ItemPointer iptr;
+		HeapTuple   tuple;
+
+		iptr = ifxGetRowIdForTuple(state);
+		tuple = ifxFdwMakeTuple(state, rel, iptr, tupleSlot);
+
+		tuple->t_self = *iptr;
+
+		ExecStoreTuple(tuple,
+					   tupleSlot,
+					   InvalidBuffer,
+					   false);
+	}
+	else
+		ExecStoreVirtualTuple(tupleSlot);
 
 	return tupleSlot;
 }
@@ -4086,6 +4383,11 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 
 	/* disable enable_blobs per default */
 	coninfo->enable_blobs = 0;
+
+	/*
+	 * Use rowid for DML per default.
+	 */
+	coninfo->disable_rowid = 0;
 
 	coninfo->gl_date       = IFX_ISO_DATE;
 	coninfo->gl_datetime   = IFX_ISO_TIMESTAMP;

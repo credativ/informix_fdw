@@ -359,6 +359,7 @@ typedef struct IfxConnectionInfo
 	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
 	short enable_blobs; /* 0 = no special BLOB support,
 						   1 = special BLOB support */
+	short disable_rowid; /* 1 = disable, 0 enable rowid (default) */
 
 	/* plan data */
 	IfxPlanData planData;
