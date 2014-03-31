@@ -188,6 +188,8 @@ static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
 								 ItemPointer           encoded_rowid,
 								 TupleTableSlot       *slot);
 
+static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state);
+
 #if PG_VERSION_NUM >= 90300
 
 static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
