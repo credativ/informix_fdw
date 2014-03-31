@@ -390,7 +390,7 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
  */
 Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 {
-	Datum result;
+	Datum result = PointerGetDatum(NULL);
 	PgAttrDef pg_def;
 
 	/*

@@ -183,16 +183,16 @@ static void
 ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 					  TupleTableSlot *tupleSlot);
 
+static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
+								 Relation              rel,
+								 ItemPointer           encoded_rowid,
+								 TupleTableSlot       *slot);
+
 #if PG_VERSION_NUM >= 90300
 
 static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
 								 int                   paramId,
 								 TupleTableSlot       *planSlot);
-
-static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
-								 Relation              rel,
-								 ItemPointer           encoded_rowid,
-								 TupleTableSlot       *slot);
 
 static void ifxPrepareModifyQuery(IfxStatementInfo  *info,
 								  IfxConnectionInfo *coninfo,
@@ -384,46 +384,6 @@ static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
 	 */
 	ifxSetInteger(&(state->stmt_info), paramId, rowid);
 }
-
-/*
- * Extract the Informix ROWID from the current
- * tuple. The ROWID is encoded within a PostgreSQL ItemPointer
- * and returned to the caller.
- *
- * Returns NULL in case no ROWID could be extracted.
- */
-static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state)
-{
-	ItemPointer rowid;
-	bool        isnull;
-
-	/* init */
-	rowid = NULL;
-
-	/* Requires disable_rowid == false! */
-	if (!state->use_rowid)
-		return rowid;
-
-	ifxColumnValueByAttNum(state, IFX_PGATTRCOUNT(state) - 1, &isnull);
-
-	if (isnull)
-		elog(ERROR, "unexpected NULL value for Informix ROWID");
-
-	/*
-	 * ROWID is a 4 Byte Integer encoding the logical
-	 * page number within its first 3 bytes and the
-	 * tuple slot number within the last byte. We encode
-	 * this number into a CTID to transport the ROWID
-	 * down to the modify action.
-	 */
-
-	rowid = (ItemPointer) palloc0fast(SizeOfIptrData);
-	ItemPointerSet(rowid,
-				   DatumGetInt32(state->values[IFX_PGATTRCOUNT(state) - 1].val),
-				   0);
-	return rowid;
-}
-
 
 /*
  * Extra information for EXPLAIN on a modify action.
@@ -1448,6 +1408,47 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 	heap_close(rel, NoLock);
 }
 
+#endif
+
+/*
+ * Extract the Informix ROWID from the current
+ * tuple. The ROWID is encoded within a PostgreSQL ItemPointer
+ * and returned to the caller.
+ *
+ * Returns NULL in case no ROWID could be extracted.
+ */
+static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state)
+{
+	ItemPointer rowid;
+	bool        isnull;
+
+	/* init */
+	rowid = NULL;
+
+	/* Requires disable_rowid == false! */
+	if (!state->use_rowid)
+		return rowid;
+
+	ifxColumnValueByAttNum(state, IFX_PGATTRCOUNT(state) - 1, &isnull);
+
+	if (isnull)
+		elog(ERROR, "unexpected NULL value for Informix ROWID");
+
+	/*
+	 * ROWID is a 4 Byte Integer encoding the logical
+	 * page number within its first 3 bytes and the
+	 * tuple slot number within the last byte. We encode
+	 * this number into a CTID to transport the ROWID
+	 * down to the modify action.
+	 */
+
+	rowid = (ItemPointer) palloc0fast(SizeOfIptrData);
+	ItemPointerSet(rowid,
+				   DatumGetInt32(state->values[IFX_PGATTRCOUNT(state) - 1].val),
+				   0);
+	return rowid;
+}
+
 static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
 								 Relation              rel,
 								 ItemPointer           encoded_rowid,
@@ -1466,8 +1467,6 @@ static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
 
 	return tuple;
 }
-
-#endif
 
 /*
  * Allocates memory for the specified structures to
