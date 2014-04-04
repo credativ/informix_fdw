@@ -103,8 +103,10 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
  */
 #if PG_VERSION_NUM < 90300
 #define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_COMMIT_SUB
+#define IFX_SYSTABLE_SCAN_SNAPSHOT SnapshotNow
 #else
 #define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_PRE_COMMIT_SUB
+#define IFX_SYSTABLE_SCAN_SNAPSHOT NULL
 #endif
 
 /*******************************************************************************
@@ -2835,7 +2837,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 				BTGreaterStrategyNumber, F_INT2GT,
 				Int16GetDatum((int16)0));
 	scan = systable_beginscan(attrRel, AttributeRelidNumIndexId, true,
-							  SnapshotNow, 2, key);
+							  IFX_SYSTABLE_SCAN_SNAPSHOT, 2, key);
 
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
