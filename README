@@ -6,8 +6,8 @@ PostgreSQL databases. Foreign Tables are transparently accessed
 as normal PostgreSQL tables, they can be used to join remote data
 against real PostgreSQL tables, import remote data and more. The FDW
 interface implemented in PostgreSQL starting with version 9.1
-supports the SQL/MED standard. Currently only read-only access
-to remote data is supported.
+supports the SQL/MED standard. Starting with PostgreSQL 9.3 this
+FDW also supports data modify actions on remote Informix tables.
 
 = Requirements =
 
@@ -278,10 +278,11 @@ the target interval range on the remote server.
         to some confusion to find the correct setting and might cause
         compatibility problems (incompatible string comparisons et al.). The
         FDW for example currently allows strings expressions embedded in
-        query predicates to be pushed down to the Informix server. Take care in this
-        case, since the mentioned incompatibilities could lead to wrong
-        results. I don't want to restrict this setting for now and leave it up
-        to the user to make sure, the settings actually work in their environment.
+        query predicates to be pushed down to the Informix server.
+        Take care in this case, since the mentioned incompatibilities could 
+        lead to wrong results. I don't want to restrict this setting for now
+        and leave it up to the user to make sure, the settings actually work
+        in their environment.
 
 * db_locale
 
@@ -328,6 +329,19 @@ the target interval range on the remote server.
   Informix server.
 
   NOTE: Either table or query is required for a foreign table.
+
+* disable_rowid
+
+  Normally the Informix FDW uses a ROWID to identify tuples on the remote
+  server when updating or deleting data. This doesn't work in Informix for
+  all tables, fragmented tables for example doesn't support ROWIDs per default.
+  If it's not possible to enforce the ROWID on the remote Informix server,
+  disable_rowid can be used to switch to an updatable cursor for UPDATE and
+  DELETE actions. However, this has the disadvantage that the foreign table
+  isn't not safe to be used in UPDATE...FROM and DELETE...USING statements
+  anymore, where the join is performed with a hash join for example
+  (see below for details). A normal DELETE or UPDATE without a join is
+  usable without any restrictions though.
 
 = Predicate Pushdown =
 
@@ -411,10 +425,10 @@ the remote Informix server.
 == Restrictions to DML ==
 
 - UPDATE and DELETE cannot be part of an UPDATE FROM or DELETE FROM clause
-  at the moment.
+  if the disable_rowid parameter is set.
 
-  Since the Informix FDW employs an updatable cursor which interacts with the
-  associated foreign scan, it can happen that the cursor gets out of sync when
+  In this case the Informix FDW employs an updatable cursor which interacts with the
+  associated foreign scan. It's possible that the cursor gets out of sync when
   the PostgreSQL planner decides to use some specific join strategies, based on
   the command (e.g. UPDATE remote_table SET ... FROM local_table WHERE ...
 
