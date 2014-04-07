@@ -101,7 +101,7 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
  * Thus we encapsulate them within macros, so we don't need to
  # #ifdef the function itself...
  */
-#if PG_VERSION_NUM < 90300
+#if PG_VERSION_NUM < 90400
 #define IFX_PGFDWAPI_SUBXACT_COMMIT SUBXACT_EVENT_COMMIT_SUB
 #define IFX_SYSTABLE_SCAN_SNAPSHOT SnapshotNow
 #else
