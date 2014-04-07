@@ -1,11 +1,5 @@
 = About this software =
 
-THIS CODE IS STILL ALPHA!
-
-Please note that this software is still under high development.
-There are likely still bugs and functional deficiencies in the code.
-You are encouraged to report any bugs to the author.
-
 The PostgreSQL Informix Foreign Datawrapper (FDW) module
 is a driver for accessing remote Informix table from within
 PostgreSQL databases. Foreign Tables are transparently accessed
