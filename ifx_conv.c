@@ -1186,9 +1186,8 @@ static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
 			 inputOid);
 	}
 
-	ReleaseSysCache(type_tuple);
-
 	result = ((Form_pg_type) GETSTRUCT(type_tuple))->typoutput;
+	ReleaseSysCache(type_tuple);
 	return result;
 }
 
@@ -1225,9 +1224,9 @@ static regproc getTypeInputFunction(IfxFdwExecutionState *state,
 			 inputOid);
 	}
 
+	result = ((Form_pg_type) GETSTRUCT(type_tuple))->typinput;
 	ReleaseSysCache(type_tuple);
 
-	result = ((Form_pg_type) GETSTRUCT(type_tuple))->typinput;
 	return result;
 }
 
