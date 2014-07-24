@@ -325,6 +325,8 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 
 	switch(PG_ATTRTYPE_P(state, attnum))
 	{
+		case TEXTOID:
+		case VARCHAROID:
 		case NUMERICOID:
 		{
 			inputOid = PG_ATTRTYPE_P(state, attnum);

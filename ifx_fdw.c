@@ -3924,6 +3924,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			IFX_SETVAL_P(state, attnum, dat);
 			break;
 		}
+		case IFX_MONEY:
 		case IFX_DECIMAL:
 		{
 			/* DECIMAL value */
