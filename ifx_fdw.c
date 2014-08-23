@@ -2588,7 +2588,19 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 	scan_relid = baserel->relid;
 	planState = (IfxFdwPlanState *) baserel->fdw_private;
 
-	scan_clauses = extract_actual_clauses(scan_clauses, false);
+	/*
+	 * In case we are allowed to push down query predicates, ifxFilterQuals()
+	 * would have filtered out all remote scan clauses and we need to
+	 * examine all excluded clauses only.
+	 *
+	 * NOTE: ifxFilterQuals() won't be called in case predicate_pushdown is
+	 *       disabled. In this case we don't filter at all so pass all
+	 *       scan claususes "as-is" but with all pseudoconstants filtered.
+	 */
+	if (planState->coninfo->predicate_pushdown)
+		scan_clauses = extract_actual_clauses(planState->excl_restrictInfo, false);
+	else
+		scan_clauses = extract_actual_clauses(scan_clauses, false);
 
 	/*
 	 * Serialize current plan data into a format suitable
@@ -4201,9 +4213,7 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid)
  * no predicates are found.
  *
  * NOTE: excl_restrictInfo is a List, holding all rejected RestrictInfo
- * structs found not able to be pushed down. This is currently only
- * used in PostgreSQL version starting with 9.2, 9.1 version always
- * returns an empty list!
+ * structs found not able to be pushed down.
  */
 static char * ifxFilterQuals(PlannerInfo *planInfo,
 							 RelOptInfo *baserel,
