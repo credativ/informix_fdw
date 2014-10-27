@@ -48,8 +48,10 @@ static regproc getTypeCastFunction(IfxFdwExecutionState *state,
 static regproc getTypeInputFunction(IfxFdwExecutionState *state,
 									Oid inputOid);
 static void
-deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
+deparse_predicate_node(IfxPushdownOprContext *context,
 					   IfxPushdownOprInfo *info);
+
+static char *getIfxOperatorIdent(IfxPushdownOprInfo *pushdownInfo);
 
 #if PG_VERSION_NUM >= 90300
 static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
@@ -1643,6 +1645,57 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
 	return result;
 }
 
+/*
+ * Returns a character string with the operator
+ * identifier used for Informix.
+ *
+ * If the specified operator is of type IFX_OPR_NOT_SUPPORTED
+ * getIfxOperatorIdent will return a NULL string.
+ *
+ * NOTE: If you are going to update mapPushdownOperator()
+ *       don't forget to keep getIfxOperatorIdent in sync!
+ */
+static char *getIfxOperatorIdent(IfxPushdownOprInfo *pushdownInfo)
+{
+	char *result;
+
+	switch(pushdownInfo->type)
+	{
+		case IFX_OPR_NOT_SUPPORTED:
+			result = NULL;
+			break;
+		case IFX_OPR_GE:
+			result = ">=";
+			break;
+		case IFX_OPR_LE:
+			result = "<=";
+			break;
+		case IFX_OPR_LT:
+			result = "<";
+			break;
+		case IFX_OPR_GT:
+			result = ">";
+			break;
+		case IFX_OPR_EQUAL:
+			result = "=";
+			break;
+		case IFX_OPR_NEQUAL:
+			result = "<>";
+			break;
+		case IFX_OPR_LIKE:
+			result = "LIKE";
+			break;
+		default:
+			/* should not happen */
+			elog(ERROR, "could not deparse operator type %d",
+				 pushdownInfo->type);
+			break;
+	}
+
+	return result;
+
+}
+
 IfxOprType mapPushdownOperator(Oid oprid, IfxPushdownOprInfo *pushdownInfo)
 {
 	char *oprname;
@@ -1763,6 +1816,229 @@ static inline bool isCompatibleForPushdown(Oid typeOid)
 	return true;
 }
 
+static void ifxMakeCookedOpExpr(IfxPushdownOprInfo *info,
+								Node               *old,
+								Node               *append)
+{
+	OpExpr *oldop = (OpExpr *)old;
+	OpExpr *newop;
+
+	/*
+	 * NOTE: We make a copy of this node to make it
+	 *       safe to fiddle with it later.
+	 */
+	newop = makeNode(OpExpr);
+
+	newop->opno         = oldop->opno;
+	newop->opfuncid     = oldop->opfuncid;
+	newop->opresulttype = oldop->opresulttype;
+	newop->opretset     = oldop->opretset;
+	newop->opcollid     = oldop->opcollid;
+	newop->inputcollid  = oldop->inputcollid;
+	newop->location     = oldop->location;
+
+	/*
+	 * If we already have analyzed some of the operands
+	 * copy them over.
+	 */
+	if (info->arg_idx < info->num_args)
+	{
+		int i = 0;
+		for (i = 0; i < info->arg_idx; i++)
+		{
+			newop->args = lappend(newop->args,
+								  copyObject(list_nth(oldop->args, i)));
+		}
+	}
+
+	/*
+	 * Append the current operand.
+	 */
+	newop->args = lappend(newop->args, append);
+	info->arg_idx++;
+
+	/*
+	 * Mark this new operator as finished or currently in progress
+	 * according if there are any remaining operands.
+	 */
+	info->deparsetype
+		= (info->num_args > info->arg_idx) ? IFX_MAKE_COOKED_EXPR : IFX_COOKED_EXPR;
+	info->expr          = (Expr *)newop;
+}
+
+static void ifxMakeCookedExpr(IfxPushdownOprInfo *info,
+							  Node               *old,
+							  Node               *append)
+{
+	/*
+	 * Dispatch into the appropiate cooking recipe...
+	 */
+	switch(old->type)
+	{
+		case T_OpExpr:
+			ifxMakeCookedOpExpr(info, old, append);
+			break;
+		default:
+			/* exit silently */
+			break;
+	}
+}
+
+static void ifxAppendCookedOpExpr(IfxPushdownOprInfo *info,
+								  Node               *node)
+{
+	Assert(info->num_args >= info->arg_idx);
+	Assert(info->expr != NULL);
+
+	/*
+	 * Check wether we are currently creating a new
+	 * cooked operator expression or just need to deparse
+	 * this one. If true, we need to make sure to append
+	 * this expression properly to the current operator.
+	 */
+	if (info->deparsetype == IFX_MAKE_COOKED_EXPR)
+	{
+		Node *ncopy = copyObject(node);
+
+		/*
+		 * If this Const has a type which requires
+		 * special handling, act on it respectively.
+		 */
+		((OpExpr *)info->expr)->args
+			= lappend(((OpExpr *)info->expr)->args,
+					  ncopy);
+
+		/*
+		 * Increase the index of the currently cooked
+		 * expression argument. This is required so that we
+		 * can mark this operator as finalized.
+		 */
+		info->arg_idx++;
+
+		info->deparsetype = (info->num_args == info->arg_idx) ? IFX_COOKED_EXPR
+			: info->deparsetype;
+	}
+	else
+		info->arg_idx++;
+}
+
+/*
+ * Handle a cooked expression.
+ */
+static void ifxAppendCookedExpr(IfxPushdownOprInfo *info,
+								Node               *node)
+{
+	Assert(node != NULL);
+	Assert(info != NULL);
+
+	/*
+	 * Dispatch the appropiate cooking recipe...
+	 */
+	switch(info->expr->type)
+	{
+		case T_OpExpr:
+			ifxAppendCookedOpExpr(info, node);
+			break;
+		default:
+			/* exit silently */
+			break;
+	}
+}
+
+/*
+ * Analysis the specified node wether there's
+ * required work before being deparsed properly.
+ */
+static Const *ifxConvertNodeConst(Const *oldNode, bool *converted,
+								  bool *supported)
+{
+	Const *result = oldNode;
+
+	/* Initialize */
+	*converted = false;
+
+	/*
+	 * We act on certain datatypes which cannot
+	 * pushed down to informix without conversion.
+	 */
+	switch(oldNode->consttype)
+	{
+		case TEXTOID:
+		{
+			/*
+			 * Rewrite a text datum into a varchar. This way
+			 * the ruleutils machinery will do the right thing(tm)
+			 * to spill out a deparsed expression suitable for
+			 * Informix.
+			 */
+			Const *newNode;
+			Datum  datVal;
+			int    newtypmod;
+
+			if (oldNode->constisnull)
+				datVal = PointerGetDatum(NULL);
+			else
+				datVal = DirectFunctionCall2(varcharin,
+											 CStringGetDatum(text_to_cstring(DatumGetTextP(oldNode->constvalue))),
+											 oldNode->consttypmod);
+
+			if (oldNode->consttypmod == -1)
+			{
+				if (VARSIZE(DatumGetVarCharP(datVal)) <= IFX_MAX_VARCHAR_LEN)
+					newtypmod = IFX_MAX_VARCHAR_LEN + VARHDRSZ;
+				else
+				{
+					*supported = false;
+					break;
+				}
+			}
+			else
+				newtypmod = oldNode->consttypmod;
+
+			newNode = makeConst(VARCHAROID,
+								newtypmod,
+								oldNode->constcollid,
+								oldNode->constlen,
+								datVal,
+								oldNode->constisnull,
+								false);
+			result = newNode;
+			*converted = true;
+			break;
+		}
+		default:
+			/* nothing to do */
+			result = oldNode;
+			break;
+	}
+
+	return result;
+}
+
+/*
+ * Handle a cooked or deparse expression according
+ * to the current state of the specified IfxPushdownOprInfo
+ * structure.
+ */
+static void ifxCookExpr(IfxPushdownOprInfo *info,
+						Node               *operexpr,
+						Node               *operandexpr)
+{
+	switch(info->deparsetype)
+	{
+		case IFX_DEPARSED_EXPR:
+			ifxMakeCookedExpr(info, operexpr, operandexpr);
+			break;
+		case IFX_MAKE_COOKED_EXPR:
+			ifxAppendCookedExpr(info, operandexpr);
+			break;
+		case IFX_COOKED_EXPR:
+			break;
+		default:
+			break;
+	}
+}
+
 /*
  * ifx_predicate_tree_walker()
  *
@@ -1782,6 +2058,9 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 
 	if (node == NULL)
 		return false;
+
+	/* Check for overly complicated expressions */
+	check_stack_depth();
 
 	/*
 	 * Handle BoolExpr. Recurse into its arguments
@@ -1818,7 +2097,10 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 				 * Save boolean expression type.
 				 */
 				info = palloc(sizeof(IfxPushdownOprInfo));
-				info->expr = NULL;
+				info->expr        = NULL;
+				info->num_args    = 0;
+				info->arg_idx     = 0;
+				info->deparsetype = IFX_DEPARSED_EXPR;
 
 				switch (boolexpr->boolop)
 				{
@@ -1857,10 +2139,13 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		NullTest *ntest;
 		bool      operand_supported;
 
+		ntest = (NullTest *)node;
 		info = palloc(sizeof(IfxPushdownOprInfo));
 		info->expr = (Expr *)node;
 		info->expr_string = NULL;
-		ntest = (NullTest *)node;
+		info->deparsetype = IFX_DEPARSED_EXPR;
+		info->num_args    = 1;
+		info->arg_idx     = 0;
 
 		/*
 		 * NullTest on composite types can be thrown away immediately.
@@ -1926,7 +2211,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 		/*
 		 * Deparse the expression node...
 		 */
-		deparse_predicate_node(node, context, info);
+		deparse_predicate_node(context, info);
 	}
 
 	/*
@@ -1937,9 +2222,12 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	{
 		OpExpr *opr;
 
-		info = palloc(sizeof(IfxPushdownOprInfo));
-		info->expr = (Expr *)node;
-		opr  = (OpExpr *)node;
+		opr               = (OpExpr *)node;
+		info              = palloc(sizeof(IfxPushdownOprInfo));
+		info->expr        = (Expr *)node;
+		info->deparsetype = IFX_DEPARSED_EXPR;
+		info->num_args    = list_length(opr->args);
+		info->arg_idx     = 0;
 		info->expr_string = NULL;
 
 		if (mapPushdownOperator(opr->opno, info) != IFX_OPR_NOT_SUPPORTED)
@@ -1951,6 +2239,9 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			 * Examine the operands of this operator expression. Please
 			 * note that we don't get further here, we stop at the first
 			 * layer even when there are more nested expressions.
+			 *
+			 * NOTE: during analysis the IfxPushdownOprInfo might get rewritten
+			 *       into an IFX_COOKED_EXPR expression.
 			 */
 			operand_supported = true;
 			foreach(cell, opr->args)
@@ -1970,17 +2261,82 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 							var->varlevelsup != 0)
 							operand_supported = false;
 
+						ifxCookExpr(info, node, oprarg);
 						break;
 					}
 					case T_Const:
 					{
 						Const *const_val = (Const *) oprarg;
+						bool   converted = false;
+						Const *converted_const;
 
 						/*
 						 * Check wether this constant value has a datatype
 						 * which cannot be safely pushed down.
 						 */
 						if (!isCompatibleForPushdown(const_val->consttype))
+						{
+							operand_supported = false;
+							break;
+						}
+
+						/*
+						 * We might need to rewrite the Datum if it's not already
+						 * in a format we need so we can it safely push down
+						 * to the Informix server.
+						 *
+						 * NOTE: We cook a new operator expression iff any conversion
+						 *       on the given Const value was done. converted_const might
+						 *       the same pointer to const_val, in case no conversion
+						 *       is done!
+						 *
+						 *       ifxConvertNodeConst() might also set operand_supported
+						 *       to false in case it discovers that the specified
+						 *       constant cannot be parsed into an Informix compatible
+						 *       expression.
+						 */
+						converted_const = ifxConvertNodeConst(const_val, &converted,
+															  &operand_supported);
+
+						if (!operand_supported)
+							break;
+
+						ifxCookExpr(info, node, (Node *)converted_const);
+
+						break;
+					}
+					case T_RelabelType:
+					{
+						RelabelType *r = (RelabelType *) oprarg;
+
+						/*
+						 * Type coercion between binary compatible datatypes.
+						 * Try to extract the interesting part for us.
+						 *
+						 * XXX: This might not be really safe collation-wise, but
+						 *      make it possible right now...
+						 */
+						elog(DEBUG2, "relabel type detected");
+
+						if (IsA(r->arg, Var))
+						{
+							/*
+							 * We need to try harder here, since we only want to extract
+							 * a Var and Const expression out of a relabel operation.
+							 *
+							 * The idea here is to construct a PostgreSQL/Informix
+							 * compatible operator expression, suitable to be deparsed
+							 * below. We do this in the hope to reuse all the parsing
+							 * infrastructure PostgreSQL gives us, and, since Informix
+							 * has its syntax very close to Postgres, also may pushdown
+							 * some "special" expressions.
+							 *
+							 * So copy over and rewrite this operator into an expression
+							 * suitable for our needs.
+							 */
+							ifxCookExpr(info, node, (Node *)r->arg);
+						}
+						else
 							operand_supported = false;
 
 						break;
@@ -2017,7 +2373,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			/*
 			 * Deparse the expression node...
 			 */
-			deparse_predicate_node(node, context, info);
+			deparse_predicate_node(context, info);
 		}
 		else
 		{
@@ -2034,20 +2390,34 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 /*
  * Deparse the given Node into a string assigned
  * to the specified IfxPushdownOprInfo pointer.
+ *
+ * Caller should defend against IFX_OPR_NOT_SUPPORTED!
  */
 static void
-deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
+deparse_predicate_node(IfxPushdownOprContext *context,
 					   IfxPushdownOprInfo *info)
 {
-	List *dpc; /* deparse context */
-	Node *copy_obj;
+	List     *dpc; /* deparse context */
+	Node     *copy_obj;
+	StringInfoData predstr; /* buffer for deparsing */
+
+	/*
+	 * Sanity check against non supported expressions.
+	 */
+	Assert(info->type != IFX_OPR_NOT_SUPPORTED);
 
 	/*
 	 * Copy the expression node. We don't want to allow
 	 * ChangeVarNodes() to fiddle directly on the baserestrictinfo
 	 * nodes.
+	 *
+	 * We don't need this to do in case this is a cooked
+	 * expression created for pushdown only.
 	 */
-	copy_obj = copyObject(node);
+	if (info->deparsetype != IFX_COOKED_EXPR)
+		copy_obj = copyObject((Node *)info->expr);
+	else
+		copy_obj = (Node *)info->expr;
 
 	/*
 	 * Adjust varno. The RTE currently present aren't adjusted according
@@ -2057,8 +2427,46 @@ deparse_predicate_node(Node *node, IfxPushdownOprContext *context,
 	 */
 	ChangeVarNodes(copy_obj, context->foreign_rtid, 1, 0);
 	dpc = make_deparse_context(context->foreign_relid);
-	info->expr_string = cstring_to_text(deparse_expression(copy_obj, dpc, false, false));
 
+	/* Buffer to hold deparsed predicate string. */
+	initStringInfo(&predstr);
+
+	/*
+	 * Given a unary or binary operator, deparse
+	 * the arguments accordingly.
+	 *
+	 * The only unary operator supported so far is the
+	 * NullTest expression, see ifx_predicate_walker() for
+	 * details;
+	 */
+	if (info->num_args == 1)
+	{
+		appendStringInfoString(&predstr, deparse_expression(copy_obj, dpc, false, false));
+	}
+	else if (info->num_args > 1)
+	{
+		Node *oprarg_left;
+		Node *oprarg_right;
+		char *oprstr; /* deparsed operator identifier */
+
+		/*
+		 * At this point we *know* that we can receive operator
+		 * expressions via IfxPushdownOprInfo only (otherwise something
+		 * else went utterly wrong before).
+		 */
+		oprstr       = getIfxOperatorIdent(info);
+		Assert(oprstr != NULL); /* should not happen */
+
+		oprarg_left  = (Node *)linitial(((OpExpr *)info->expr)->args);
+		oprarg_right = (Node *)lsecond(((OpExpr *)info->expr)->args);
+
+		appendStringInfo(&predstr, "%s %s %s",
+						 deparse_expression(oprarg_left, dpc, false, false),
+						 oprstr,
+						 deparse_expression(oprarg_right, dpc, false, false));
+	}
+
+	info->expr_string = cstring_to_text(predstr.data);
 	elog(DEBUG1, "deparsed pushdown predicate %d, %s",
 		 context->count - 1,
 		 text_to_cstring(info->expr_string));

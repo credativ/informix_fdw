@@ -223,13 +223,31 @@ typedef enum IfxOprType
 } IfxOprType;
 
 /*
+ * Type of deparsed predicate.
+ *
+ * Currently we distinguish between deparsed predicate expression
+ * directly derived from deparse_expression() and cooked expression
+ * which are rewritten to match the expectation from Informix.
+ */
+typedef enum IfxDeparseType
+{
+	IFX_DEPARSED_EXPR,    /* compatible expression */
+	IFX_MAKE_COOKED_EXPR, /* expression cooking not yet completed */
+	IFX_COOKED_EXPR       /* generated expression to match Informix */
+} IfxDeparseType;
+
+/*
  * Info structure for pushdown operators.
  */
 typedef struct IfxPushdownOprInfo
 {
-	IfxOprType type;
-	Expr      *expr;          /* pointer to operator expression */
-	text      *expr_string;   /* decoded string representation of expr */
+	IfxOprType     type;
+	IfxDeparseType deparsetype;   /* type of deparsed expressions */
+	int16          num_args;      /* total number of operands (we support
+									 binary operators currently only) */
+	int16          arg_idx;       /* current index number of operand */
+	Expr          *expr;          /* pointer to operator expression */
+	text          *expr_string;   /* decoded string representation of expr */
 } IfxPushdownOprInfo;
 
 /*

@@ -92,6 +92,21 @@
 #define IFX_DATETIME_BUFFER_LEN 30
 
 /*
+ * Maximum length of an Informix lvarchar type
+ */
+#define IFX_MAX_LVARCHAR_LEN 32739
+
+/*
+ * Maximum length of an Informix varchar type
+ */
+#define IFX_MAX_VARCHAR_LEN 255
+
+/*
+ * Maximum length of CHAR and NCHAR types
+ */
+#define IFX_MAX_NCHAR_LEN 32767
+
+/*
  * Which kind of CURSOR to use.
  */
 typedef enum IfxCursorUsage
