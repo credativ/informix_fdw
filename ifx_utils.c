@@ -94,6 +94,13 @@ void ifxDeserializeFdwData(IfxFdwExecutionState *state,
 															   SERIALIZED_REFID);
 	state->use_rowid              = ifxGetSerializedInt16Field(params,
 															   SERIALIZED_USE_ROWID);
+	state->has_after_row_triggers = ifxGetSerializedInt16Field(params,
+															   SERIALIZED_HAS_AFTER_TRIGGERS);
+
+	/*
+	 * This has to be the last entry, see ifxSerializedPlanData()
+	 * for details!
+	 */
 	state->affectedAttrNums       = list_nth(params, AFFECTED_ATTR_NUMS_IDX);
 }
 
@@ -186,6 +193,9 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
 
 	const_vals[SERIALIZED_USE_ROWID]
 		= makeFdwInt16Const(state->use_rowid);
+
+	const_vals[SERIALIZED_HAS_AFTER_TRIGGERS]
+		= makeFdwInt16Const(state->has_after_row_triggers);
 }
 
 /*
@@ -200,9 +210,10 @@ static void ifxFdwExecutionStateToList(Const *const_vals[],
  *
  * 1. Const with a bytea value, holding the binary representation
  *    of IfxPlanData struct
- * 2. - 4. String fields of IfxFdwExecutionState, that are:
- *         query, stmt_name, cursor_name
- * 5. short int value saving the state of call_stack
+ * 2. - 10. String or int fields of IfxFdwExecutionState, that are:
+ *         query, stmt_name, cursor_name, ...
+ * 11. The last member is always the affectedAttrNums list from the
+ *     state structure.
  *
  */
 List * ifxSerializePlanData(IfxConnectionInfo *coninfo,

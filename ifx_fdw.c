@@ -198,6 +198,10 @@ static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state);
 
 #if PG_VERSION_NUM >= 90300
 
+bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
+								 IfxFdwExecutionState *state,
+								 CmdType cmd);
+
 static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
 								 int                   paramId,
 								 TupleTableSlot       *planSlot);
@@ -347,6 +351,45 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
  */
 
 #if PG_VERSION_NUM >= 90300
+
+/*
+ * Check the specified foreign table OID if it has
+ * AFTER EACH ROW triggers attached. ifxCheckForAfterRowTriggers()
+ * assumes, that the caller already locked foreignTableOid for
+ * inspection.
+ */
+bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
+								 IfxFdwExecutionState *state,
+								 CmdType cmd)
+{
+	Relation rel    = heap_open(foreignTableOid, NoLock);
+	bool     result = false;
+
+	/*
+	 * We are interested in after triggers only.
+	 */
+	if (rel->trigdesc)
+	{
+		switch (cmd) {
+			case CMD_INSERT:
+				result = (rel->trigdesc->trig_insert_after_row);
+				break;
+			case CMD_DELETE:
+				result = (rel->trigdesc->trig_delete_after_row);
+				break;
+			case CMD_UPDATE:
+				result = (rel->trigdesc->trig_update_after_row);
+				break;
+			default:
+				result = false;
+				break;
+		}
+	}
+
+	heap_close(rel, NoLock);
+
+	return result;
+}
 
 /*
  * Set the given ROWID into the Informix
@@ -1364,6 +1407,9 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			 */
 			state->stmt_info.cursorUsage = IFX_INSERT_CURSOR;
 
+			/*
+			 * We need all columns for CMD_INSERT.
+			 */
 			for (attnum = 1; attnum <= tupdesc->natts; attnum++)
 			{
 				Form_pg_attribute pgattr = tupdesc->attrs[attnum - 1];
@@ -1909,6 +1955,15 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 	state->rowid_attno = InvalidAttrNumber;
 	state->use_rowid   = true;
 
+	/*
+	 * NOTE:
+	 *
+	 * Only PostgreSQL >= 9.4 will set and use has_after_trigger
+	 * in case it detects AFTER EACH ROW triggers during the
+	 * planning phase. Older version simply leave this to FALSE.
+	 */
+	state->has_after_row_triggers = false;
+
 	return state;
 }
 
@@ -2401,6 +2456,16 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 */
 	ifxSetupFdwScan(&coninfo, &state, &plan_values,
 					foreignTableId, IFX_PLAN_SCAN);
+
+	/*
+	 * Check wether this foreign table has AFTER EACH ROW
+	 * triggers attached. Currently this information is just
+	 * for completeness, since we always include all columns
+	 * in a foreign scan.
+	 */
+	ifxCheckForAfterRowTriggers(foreignTableId,
+								state,
+								planInfo->parse->commandType);
 
 	/*
 	 * Check for predicates that can be pushed down

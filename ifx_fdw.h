@@ -171,6 +171,13 @@ typedef struct IfxFdwExecutionState
 	 */
 	List *affectedAttrNums;
 
+	/*
+	 * AFTER EACH ROW triggers present. This will always be false
+	 * on PostgreSQL versions <= 9.3, but i think it's
+	 * okay to waste some bytes in this case.
+	 */
+	bool has_after_row_triggers;
+
 } IfxFdwExecutionState;
 
 #if PG_VERSION_NUM >= 90200
