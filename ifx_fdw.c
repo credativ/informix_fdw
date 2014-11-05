@@ -196,11 +196,11 @@ static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
 
 static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state);
 
-#if PG_VERSION_NUM >= 90300
+static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
+										IfxFdwExecutionState *state,
+										CmdType cmd);
 
-bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
-								 IfxFdwExecutionState *state,
-								 CmdType cmd);
+#if PG_VERSION_NUM >= 90300
 
 static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
 								 int                   paramId,
@@ -351,45 +351,6 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
  */
 
 #if PG_VERSION_NUM >= 90300
-
-/*
- * Check the specified foreign table OID if it has
- * AFTER EACH ROW triggers attached. ifxCheckForAfterRowTriggers()
- * assumes, that the caller already locked foreignTableOid for
- * inspection.
- */
-bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
-								 IfxFdwExecutionState *state,
-								 CmdType cmd)
-{
-	Relation rel    = heap_open(foreignTableOid, NoLock);
-	bool     result = false;
-
-	/*
-	 * We are interested in after triggers only.
-	 */
-	if (rel->trigdesc)
-	{
-		switch (cmd) {
-			case CMD_INSERT:
-				result = (rel->trigdesc->trig_insert_after_row);
-				break;
-			case CMD_DELETE:
-				result = (rel->trigdesc->trig_delete_after_row);
-				break;
-			case CMD_UPDATE:
-				result = (rel->trigdesc->trig_update_after_row);
-				break;
-			default:
-				result = false;
-				break;
-		}
-	}
-
-	heap_close(rel, NoLock);
-
-	return result;
-}
 
 /*
  * Set the given ROWID into the Informix
@@ -1463,6 +1424,45 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 }
 
 #endif
+
+/*
+ * Check the specified foreign table OID if it has
+ * AFTER EACH ROW triggers attached. ifxCheckForAfterRowTriggers()
+ * assumes, that the caller already locked foreignTableOid for
+ * inspection.
+ */
+static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
+										IfxFdwExecutionState *state,
+										CmdType cmd)
+{
+	Relation rel    = heap_open(foreignTableOid, NoLock);
+	bool     result = false;
+
+	/*
+	 * We are interested in after triggers only.
+	 */
+	if (rel->trigdesc)
+	{
+		switch (cmd) {
+			case CMD_INSERT:
+				result = (rel->trigdesc->trig_insert_after_row);
+				break;
+			case CMD_DELETE:
+				result = (rel->trigdesc->trig_delete_after_row);
+				break;
+			case CMD_UPDATE:
+				result = (rel->trigdesc->trig_update_after_row);
+				break;
+			default:
+				result = false;
+				break;
+		}
+	}
+
+	heap_close(rel, NoLock);
+
+	return result;
+}
 
 /*
  * Extract the Informix ROWID from the current
