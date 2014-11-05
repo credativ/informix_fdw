@@ -330,6 +330,7 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 		case TEXTOID:
 		case VARCHAROID:
 		case NUMERICOID:
+		case CASHOID:
 		{
 			inputOid = PG_ATTRTYPE_P(state, attnum);
 			break;
@@ -689,20 +690,41 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 	{
 
 		/*
-		 * In any case we expect the source datum to be converted
-		 * into a character string. Call the datum output function to
-		 * get it's text representation.
-		 */
-		typout = getTypeOutputFunction(state,
-									   PG_ATTRTYPE_P(state, attnum));
-
-		/*
 		 * Take care of a possible failure during conversion.
 		 */
 		PG_TRY();
 		{
-			strval = DatumGetCString(OidFunctionCall1(typout,
-													  slot->tts_values[attnum]));
+			/*
+			 * We need to take care wether we deal with a CASHOID datum
+			 * or any other NUMERICOID datum. If the former occurs, we
+			 * first cast to a decimal value, since Informix can't deal
+			 * with a locale aware representation of a MONEY value (that's why
+			 * we can't use the type output function for a CASHOID datum
+			 * directly).
+			 *
+			 * In any case we expect the source datum to be converted
+			 * into a character string. Call the datum output function to
+			 * get it's text representation.
+			 */
+			if (PG_ATTRTYPE_P(state, attnum) == CASHOID)
+			{
+				regproc castfunc = getTypeCastFunction(state, CASHOID, NUMERICOID);
+				Datum   castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+
+				typout = getTypeOutputFunction(state,
+											   NUMERICOID);
+
+				strval = DatumGetCString(OidFunctionCall1(typout,
+														  castval));
+			}
+			else
+			{
+				typout = getTypeOutputFunction(state,
+											   PG_ATTRTYPE_P(state, attnum));
+
+				strval = DatumGetCString(OidFunctionCall1(typout,
+														  slot->tts_values[attnum]));
+			}
 		}
 		PG_CATCH();
 		{
@@ -710,6 +732,7 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
+
 
 		/*
 		 * strval must be a valid character string at this point.
@@ -730,6 +753,7 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 	 */
 	switch(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 	{
+		case IFX_MONEY:
 		case IFX_DECIMAL:
 		{
 			ifxSetDecimal(&(state->stmt_info),

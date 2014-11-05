@@ -368,6 +368,7 @@ typedef struct IfxConnectionInfo
 	char *gl_datetime;
 	char *client_locale;
 	char *db_locale;
+	char *db_monetary;
 	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
 	int   xact_level; /* current nest level of transactions */
 	short db_ansi; /* 0 = non-ANSI database, 1 = ANSI-enabled database */

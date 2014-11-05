@@ -57,6 +57,7 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "gl_date",          ForeignTableRelationId },
 	{ "client_locale",    ForeignTableRelationId },
 	{ "db_locale",        ForeignTableRelationId },
+	{ "db_monetary",      ForeignTableRelationId },
 	{ "disable_predicate_pushdown", ForeignTableRelationId },
 	{ "disable_rowid",              ForeignTableRelationId },
 	{ "enable_blobs",               ForeignTableRelationId },
@@ -544,6 +545,7 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			break;
 		}
 		case NUMERICOID:
+		case CASHOID:
 		{
 			setIfxDecimal(state, slot, attnum);
 			break;
@@ -3039,6 +3041,16 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 		coninfo->gl_date = defGetString(def);
 	}
 
+	if (strcmp(def->defname, "db_monetary") == 0)
+	{
+		if (coninfo->db_monetary)
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
+							errmsg("conflicting or redundant options: db_monetary(%s)",
+								   defGetString(def))));
+
+		coninfo->db_monetary = defGetString(def);
+	}
+
 	if (strcmp(def->defname, "db_locale") == 0)
 	{
 		if (coninfo->db_locale)
@@ -3384,6 +3396,11 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 		{
 			coninfo->client_locale = pstrdup(defGetString(def));
 			mandatory[2] = true;
+		}
+
+		if(strcmp(def->defname, "db_monetary") == 0)
+		{
+			coninfo->db_monetary = pstrdup(defGetString(def));
 		}
 
 		if (strcmp(def->defname, "db_locale") == 0)
@@ -4475,6 +4492,7 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->gl_date       = IFX_ISO_DATE;
 	coninfo->gl_datetime   = IFX_ISO_TIMESTAMP;
 	coninfo->db_locale     = NULL;
+	coninfo->db_monetary   = NULL;
 	coninfo->client_locale = NULL;
 	coninfo->query         = NULL;
 	coninfo->tablename     = NULL;

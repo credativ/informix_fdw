@@ -182,6 +182,7 @@ NVARCHAR
 BYTE
 TEXT
 NUMERIC
+MONEY
 
 The following types are currently supported for DML:
 
@@ -192,6 +193,7 @@ TEXT, BYTEA            => TEXT, BYTE (LO)
 VARCHAR, TEXT          => LVARCHAR, VARCHAR, NVARCHAR, TEXT
 TIMESTAMPTZ, TIMESTAMP => DATETIME
 DATE                   => DATE
+MONEY, NUMERIC         => NUMERIC, MONEY
 
 Note that Informix doesn't support time zones, thus all TIMESTAMPTZ values will
 be converted into a timestamp without time zone.
@@ -421,6 +423,15 @@ the remote Informix server.
 
   This could lead to problems in case of incompatible locale and|or collation
   definitions on the PostgreSQL and Informix side.
+
+- Take care if you are using the MONEY type locally in a PostgreSQL server
+  and map them to MONEY on the Informix server. Since this type is locale
+  dependent, you should configure at least LC_MONETARY to match the locale
+  setting on the Informix server. Otherwise you might get confusing results.
+
+  It is possible to specify the DBMONEY environment variable through the Informix
+  FDW options, however, since the MONEY value is read in through its type input
+  function locally it still evaluates always against the local currency settings.
 
 == Restrictions to DML ==
 
