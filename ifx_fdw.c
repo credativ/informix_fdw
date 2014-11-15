@@ -197,9 +197,9 @@ static HeapTuple ifxFdwMakeTuple(IfxFdwExecutionState *state,
 
 static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state);
 
-static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
-										IfxFdwExecutionState *state,
-										CmdType cmd);
+__attribute__((unused)) static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
+															   IfxFdwExecutionState *state,
+															   CmdType cmd);
 
 #if PG_VERSION_NUM >= 90300
 
@@ -3632,7 +3632,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 {
 	IfxConnectionInfo    *coninfo;
 	IfxFdwExecutionState *festate;
-	IfxCachedConnection  *cached;
+	__attribute__((unused)) IfxCachedConnection  *cached;
 	Oid                   foreignTableOid;
 	bool                  conn_cached;
 	List                 *plan_values;

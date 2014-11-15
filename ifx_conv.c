@@ -1686,7 +1686,7 @@ Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum)
  */
 static char *getIfxOperatorIdent(IfxPushdownOprInfo *pushdownInfo)
 {
-	char *result;
+	char *result = NULL;
 
 	switch(pushdownInfo->type)
 	{
