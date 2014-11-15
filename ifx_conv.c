@@ -35,6 +35,11 @@
 #include "utils/formatting.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
+
+#if PG_VERSION_NUM > 90400
+#include "utils/ruleutils.h"
+#endif
+
 #include "utils/syscache.h"
 
 #include "ifx_fdw.h"
