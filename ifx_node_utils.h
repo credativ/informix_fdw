@@ -91,4 +91,22 @@ void ifxGenerateInsertSql(IfxFdwExecutionState *state,
 						  PlannerInfo *root,
 						  Index        rtindex);
 char *ifxGetIntervalFormatString(IfxTemporalRange range, IfxFormatMode mode);
+char *ifxQuoteIdent(IfxConnectionInfo *coninfo, char *ident);
+
+#if PG_VERSION_NUM >= 90500
+
+char *ifxGetTableImportListSQL(IfxConnectionInfo *coninfo,
+							   ImportForeignSchemaStmt *stmt);
+char *ifxGetTableListAsStringConn(IfxConnectionInfo *coninfo,
+								  List *table_list);
+char *ifxGetTableDetailsSQL(IfxSourceType tabid);
+List *ifxCreateImportScript(IfxConnectionInfo *coninfo,
+							ImportForeignSchemaStmt *stmt,
+							List *candidates,
+							Oid serverOid);
+Oid ifxTypeidToPg(IfxSourceType typid, IfxExtendedType extended_id);
+char *ifxMakeColTypeDeclaration(IfxAttrDef *colDef);
+
+#endif
+
 #endif

@@ -14,6 +14,12 @@
 #include "ifx_fdw.h"
 #include "ifx_node_utils.h"
 
+#if PG_VERSION_NUM >= 90500
+#include <access/htup_details.h>
+#endif
+
+#include <utils/syscache.h>
+
 static void ifxFdwExecutionStateToList(Const *const_vals[],
 									   IfxFdwExecutionState *state);
 static Datum
@@ -597,6 +603,422 @@ void ifxGenerateInsertSql(IfxFdwExecutionState *state,
 
 	appendStringInfoString(&sql, ")");
 	state->stmt_info.query = sql.data;
+}
+
+#endif
+
+/*
+ * If the specified connection handle was initialized
+ * with DELIMIDENT, ifxQuoteIdent() will return a quoted
+ * identifier.
+ *
+ * NOTE: if DELIMIDENT is *not* set, ifxQuoteIdent() will
+ *       return the same unmodified pointer for ident!
+ */
+char *ifxQuoteIdent(IfxConnectionInfo *coninfo, char *ident)
+{
+	if (coninfo->delimident == 0)
+		return ident;
+	else
+	{
+		StringInfoData buf;
+
+		initStringInfo(&buf);
+		appendStringInfo(&buf, "\"%s\"", ident);
+		return buf.data;
+	}
+}
+
+#if PG_VERSION_NUM >= 90500
+
+char *ifxMakeColTypeDeclaration(IfxAttrDef *colDef)
+{
+	HeapTuple ht;
+	Oid       targetTypeId;
+	StringInfoData buf;
+
+	/*
+	 * Lookup the matching PostgreSQL TYPEOID.
+	 */
+	targetTypeId = ifxTypeidToPg(ifxMaskTypeId(colDef->type),
+								 colDef->extended_id);
+
+	if (targetTypeId == InvalidOid)
+		elog(ERROR, "could not convert informix type \"%d\"",
+			 ifxMaskTypeId(colDef->type));
+
+	initStringInfo(&buf);
+
+	ht = SearchSysCache1(TYPEOID, ObjectIdGetDatum(targetTypeId));
+	if (HeapTupleIsValid(ht))
+	{
+		Form_pg_type typetup = (Form_pg_type) GETSTRUCT(ht);
+		char *typname;
+		short min_len; /* min_len is not used in PostgreSQL column declarations */
+		short max_len;
+
+		/*
+		 * Copy the typename.
+		 */
+		typname = pstrdup(NameStr(typetup->typname));
+
+		/*
+		 * Lookup typmods, but don't encode them.
+		 */
+		ifxDecodeColumnLength(colDef->type,
+							  colDef->len,
+							  &min_len,
+							  &max_len);
+
+		if ((min_len > 0) && (max_len > 0))
+		{
+			/* Probably an encoded VARCHAR type ? */
+			if (ifxCharColumnLen(colDef->type, colDef->len) > 0)
+				appendStringInfo(&buf, "%s(%d)", typname, max_len);
+			else
+				appendStringInfo(&buf, "%s(%d, %d)",
+								 typname, min_len, max_len);
+		}
+		else if ((min_len = 0) && (max_len > 0))
+		{
+			appendStringInfo(&buf, "%s(%d)",
+							 typname, max_len);
+		}
+		else
+		{
+			appendStringInfoString(&buf, typname);
+		}
+
+		/*
+		 * Define a NOT NULL constraint if required.
+		 */
+		if (colDef->indicator == INDICATOR_NOT_NULL)
+			appendStringInfoString(&buf, " NOT NULL");
+
+		/* ...and we're done */
+		ReleaseSysCache(ht);
+	}
+
+	return buf.data;
+}
+
+/*
+ * Map Informix type ids to PostgreSQL OID types.
+ *
+ * This merely is a suggestion what we think an Informix type
+ * maps at its best to a builtin PostgreSQL type.
+ */
+Oid ifxTypeidToPg(IfxSourceType typid, IfxExtendedType extended_id)
+{
+	Oid mappedOid = InvalidOid;
+
+	switch (typid)
+	{
+		case IFX_TEXT:
+		case IFX_CHARACTER:
+			mappedOid = TEXTOID;
+			break;
+		case IFX_SMALLINT:
+			mappedOid = INT2OID;
+			break;
+		case IFX_SERIAL:
+		case IFX_INTEGER:
+			mappedOid = INT4OID;
+			break;
+		case IFX_FLOAT:
+			mappedOid = FLOAT8OID;
+			break;
+		case IFX_SMFLOAT:
+			mappedOid = FLOAT4OID;
+			break;
+		case IFX_MONEY:
+		case IFX_DECIMAL:
+			mappedOid = NUMERICOID;
+			break;
+		case IFX_DATE:
+			mappedOid = DATEOID;
+			break;
+		case IFX_DTIME:
+			mappedOid = TIMESTAMPOID;
+			break;
+		case IFX_BYTES:
+			mappedOid = BYTEAOID;
+			break;
+		case IFX_VCHAR:
+			mappedOid = VARCHAROID;
+			break;
+		case IFX_INTERVAL:
+			mappedOid = INTERVALOID;
+			break;
+		case IFX_NCHAR:
+		case IFX_NVCHAR:
+		case IFX_LVARCHAR:
+			mappedOid = TEXTOID;
+			break;
+		case IFX_INT8:
+		case IFX_SERIAL8:
+		case IFX_INFX_INT8:
+			mappedOid = INT8OID;
+			break;
+		case IFX_BOOLEAN:
+			mappedOid = BOOLOID;
+			break;
+
+		case IFX_UDTVAR:
+			/*
+			 * This is only a BE visible opaque type id
+			 * indicating a variable length user defined (built-in)
+			 * data type, like LVARCHAR. The conversion routines
+			 * usually won't see this typeid, since ESQL/C would
+			 * have transferred a defined FE typeid for this (like
+			 * SQLLVARCHAR). Assume a TEXTOID column as the right target
+			 * for this.
+			 *
+			 * This might not work for all cases, but for now and according
+			 * to
+			 *
+			 * http://www-01.ibm.com/support/knowledgecenter/SSGU8G_12.1.0/com.ibm.sqlr.doc/ids_sqr_026.htm
+			 *
+			 * LVARCHAR is the only pre-defined candidate so far (IFX_XTD_LVARCHAR).
+			 * The external representation of a variable length type is a character
+			 * string anyways, so always convert them to TEXT (others won't likely
+			 * be suitable anyways).
+			 */
+			mappedOid = TEXTOID;
+			break;
+		case IFX_UDTFIXED:
+			/*
+			 * FIXED user-defined types are special, since we have multiple types
+			 * fitting this category according to $INFORMIXDIR/incl/esql/sqltypes.h.
+			 * These are
+			 *
+			 * BOOLEAN, BLOB and CLOB.
+			 *
+			 * Those are distinguished by the sysxtdtypes system catalog via referencing
+			 * them by syscolumns.extended_id.
+			 */
+			switch (extended_id)
+			{
+				case IFX_XTD_BOOLEAN:
+					mappedOid = BOOLOID;
+					break;
+				case IFX_XTD_BLOB:
+				case IFX_XTD_CLOB:
+					mappedOid = BYTEAOID;
+					break;
+				default:
+					break;
+			}
+			break;
+
+		/*
+		 * The following types aren't handled right now.
+		 * Return InvalidOid in this case.
+		 */
+		case IFX_NULL:
+		case IFX_SET:
+		case IFX_MULTISET:
+		case IFX_LIST:
+		case IFX_ROW:
+		case IFX_COLLECTION:
+		case IFX_ROWREF:
+			/* not handled */
+			break;
+
+		default:
+			/* return InvalidOid in this case */
+			break;
+	}
+
+	return mappedOid;
+}
+
+/*
+ * ifxGetTableDetailsSQL
+ *
+ * Returns an SQL string allowing to retrieve table column definitions
+ * suitable to be used by ifxGetForeignTableDetails().
+ */
+char *ifxGetTableDetailsSQL(IfxSourceType tabid)
+{
+	StringInfoData buf;
+	char *get_column_info = "SELECT tabname, colno, colname, coltype, collength, extended_id"
+		"  FROM systables a, syscolumns b"
+		" WHERE a.tabid = b.tabid AND a.tabid = %d"
+		" ORDER BY colno;";
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, get_column_info, (int) tabid);
+
+	return buf.data;
+}
+
+/*
+ * ifxGetTableImportListSQL
+ *
+ * Returns a SQL statement suitable to be passed to Informix
+ * to retrieve a list of table names, owner and tabid matching
+ * the definitions specified by an IMPORT FOREIGN SCHEMA statement.
+ */
+char *ifxGetTableImportListSQL(IfxConnectionInfo *coninfo,
+							   ImportForeignSchemaStmt *stmt)
+{
+	char *get_table_info = "SELECT tabid, trim(owner), tabname FROM systables WHERE tabid >= 100 AND owner = '%s'";
+	StringInfoData buf;
+	char *table_list;
+
+	table_list = ifxGetTableListAsStringConn(coninfo, stmt->table_list);
+	initStringInfo(&buf);
+	appendStringInfo(&buf, get_table_info, stmt->remote_schema);
+
+	switch (stmt->list_type)
+	{
+		case FDW_IMPORT_SCHEMA_LIMIT_TO:
+		{
+			appendStringInfo(&buf, "%s%s%s", " AND tabname IN (", table_list, ")");
+			break;
+		}
+		case FDW_IMPORT_SCHEMA_EXCEPT:
+		{
+			appendStringInfo(&buf, "%s%s%s", " AND tabname NOT IN (", table_list, ")");
+			break;
+		}
+		default:
+			/* FDW_IMPORT_SCHEMA_ALL, nothing needs to be done */
+			break;
+	}
+
+	appendStringInfoString(&buf, " ORDER BY tabname DESC");
+	return buf.data;
+}
+
+/*
+ * Generate a list of tables as a comma-separated list and
+ * returns it as a character string.
+ *
+ * Will return a NULL pointer as a result if table_list is NIL or empty.
+ */
+char *ifxGetTableListAsStringConn(IfxConnectionInfo *coninfo, List *table_list)
+{
+	StringInfoData buf;
+	ListCell *cell;
+	bool      first_item;
+
+	/* short cut if list is NIL or empty */
+	if ((table_list != NIL) && (list_length(table_list) <= 0))
+		return NULL;
+
+
+	initStringInfo(&buf);
+
+	first_item = true;
+	foreach(cell, table_list)
+	{
+		RangeVar *rv = (RangeVar *) lfirst(cell);
+
+		if (first_item)
+			first_item = false;
+		else
+			appendStringInfoString(&buf, ", ");
+
+		appendStringInfo(&buf, "'%s'", rv->relname);
+	}
+
+	return buf.data;
+}
+
+/*
+ * Gets a list of pointers to IfxImportTableDef structures
+ * and generates a script with CREATE FOREIGN TABLE statements
+ * from it. The script finally is returned as a list of C strings,
+ * each being a CREATE FOREIGN TABLE statement.
+ */
+List *ifxCreateImportScript(IfxConnectionInfo *coninfo,
+							ImportForeignSchemaStmt *stmt,
+							List *candidates,
+							Oid serverOid)
+{
+	List *result = NIL;
+	ListCell *cell;
+	ForeignServer     *server;
+
+	if ((candidates == NIL) || (list_length(candidates) <= 0))
+		return result;
+
+	/* initialization stuff */
+	server = GetForeignServer(serverOid);
+
+	foreach(cell, candidates)
+	{
+		StringInfoData     buf;
+		ListCell          *cell_cols;
+		IfxImportTableDef *tableDef;
+		bool               firstCol = true;
+
+		initStringInfo(&buf);
+		tableDef = (IfxImportTableDef *) lfirst(cell);
+
+		elog(DEBUG1, "generate SQL script for foreign table %s",
+			 quote_identifier(tableDef->tablename));
+
+		appendStringInfo(&buf, "CREATE FOREIGN TABLE %s (\n",
+						 quote_identifier(tableDef->tablename));
+
+		foreach(cell_cols, tableDef->columnDef)
+		{
+			IfxAttrDef *colDef = (IfxAttrDef *) lfirst(cell_cols);
+			char       *dtbuf;
+
+			dtbuf = ifxMakeColTypeDeclaration(colDef);
+
+			if (firstCol)
+				appendStringInfo(&buf,
+								 "%s %s",
+								 quote_identifier(colDef->name),
+								 dtbuf);
+			else
+				appendStringInfo(&buf,
+								 ",\n%s %s",
+								 quote_identifier(colDef->name),
+								 dtbuf);
+
+			firstCol = false;
+		}
+
+
+		/*
+		 * Make SERVER and OPTIONS clause.
+		 */
+		appendStringInfo(&buf, ") SERVER %s OPTIONS(",
+						 quote_identifier(server->servername));
+		appendStringInfo(&buf, "%s '%s'",
+						 quote_identifier("table"),
+						 tableDef->tablename);
+		appendStringInfo(&buf, ", %s '%s'",
+						 "client_locale",
+						 coninfo->client_locale);
+
+		/*
+		 * DB_LOCALE is optional but although not required
+		 * we attach it to the table declaration if set.
+		 */
+		if (coninfo->db_locale != NULL)
+			appendStringInfo(&buf, ", %s '%s'",
+							 "db_locale",
+							 coninfo->db_locale);
+
+		appendStringInfo(&buf, ", %s '%s'",
+						 "database",
+						 coninfo->database);
+		appendStringInfoString(&buf, ");");
+
+		elog(DEBUG3, "informix_fdw script: %s", buf.data);
+
+		/* store the script entry */
+		result = lappend(result, buf.data);
+	}
+
+	return result;
 }
 
 #endif

@@ -48,6 +48,7 @@ static struct IfxFdwOption ifx_valid_options[] =
 {
 	{ "informixserver",   ForeignServerRelationId },
 	{ "informixdir",      ForeignServerRelationId },
+	{ "delimident",       ForeignServerRelationId },
 	{ "user",             UserMappingRelationId },
 	{ "password",         UserMappingRelationId },
 	{ "database",         ForeignTableRelationId },
@@ -139,6 +140,10 @@ ifxIsValidOption(const char *option, Oid context);
 static void
 ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo);
 
+static void ifxAssignOptions(IfxConnectionInfo *coninfo,
+							 List *options,
+							 bool mandatory[IFX_REQUIRED_CONN_KEYWORDS]);
+
 static StringInfoData *
 ifxGetDatabaseString(IfxConnectionInfo *coninfo);
 
@@ -155,6 +160,9 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def);
 static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo);
 
 static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid);
+
+static void ifxStatementInfoInit(IfxStatementInfo *info,
+								 int refid);
 
 static char *ifxGenCursorName(IfxConnectionInfo *coninfo, int curid);
 
@@ -245,6 +253,27 @@ static void ifx_fdw_subxact_callback(SubXactEvent event,
 									 SubTransactionId parentId,
 									 void *arg);
 
+#if PG_VERSION_NUM >= 90500
+
+static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
+									   ImportForeignSchemaStmt *stmt,
+									   int    refid,
+									   int    tabid);
+
+static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
+									 IfxConnectionInfo       *coninfo,
+									 Oid                      serverOid,
+	                                 int                      refid);
+
+static void ifxPrepareImport(ImportForeignSchemaStmt *stmt,
+							 IfxConnectionInfo **coninfo,
+							 Oid serveroid);
+
+static void ifxGetImportOptions(ImportForeignSchemaStmt *stmt,
+								IfxConnectionInfo       *coninfo,
+								Oid                      serveroid);
+
+#endif
 /*
  * Shared Library initialization.
  */
@@ -253,6 +282,16 @@ void _PG_init(void);
 /*******************************************************************************
  * FDW callback routines.
  */
+
+/*
+ * IMPORT FOREIGN SCHEMA starting with PostgreSQL 9.5
+ */
+#if PG_VERSION_NUM >= 90500
+
+static List * ifxImportForeignSchema(ImportForeignSchemaStmt *stmt,
+									 Oid serverOid);
+
+#endif
 
 /*
  * Modifyable FDW API (Starting with PostgreSQL 9.3).
@@ -350,6 +389,368 @@ ifxCloseConnection(PG_FUNCTION_ARGS);
 /*******************************************************************************
  * Implementation starts here
  */
+
+#if PG_VERSION_NUM >= 90500
+
+/*
+ * Prepare IMPORT FOREIGN SCHEMA command...
+ */
+static void ifxPrepareImport(ImportForeignSchemaStmt *stmt,
+							 IfxConnectionInfo **coninfo,
+							 Oid serveroid)
+{
+	StringInfoData *buf;
+
+	/*
+	 * Prepare the database connection. We can't use
+	 * ifxMakeConnectionInfo(), since it makes all option
+	 * parsing itself and requires a foreign table OID.
+	 */
+	*coninfo = (IfxConnectionInfo *) palloc(sizeof(IfxConnectionInfo));
+	bzero((*coninfo)->conname, IFX_CONNAME_LEN + 1);
+	ifxConnInfoSetDefaults(*coninfo);
+
+	/*
+	 * Read all options
+	 */
+	ifxGetImportOptions(stmt,
+						*coninfo,
+						serveroid);
+
+	/*
+	 * Generate connection identifier.
+	 */
+	buf = ifxGenerateConnName(*coninfo);
+	StrNCpy((*coninfo)->conname, buf->data, IFX_CONNAME_LEN);
+
+	/*
+	 * Generate connection DSN.
+	 */
+	buf = ifxGetDatabaseString(*coninfo);
+	(*coninfo)->dsn = pstrdup(buf->data);
+}
+
+/*
+ * Retrieve options for IMPORT FOREIGN SCHEMA
+ */
+static void ifxGetImportOptions(ImportForeignSchemaStmt *stmt,
+								IfxConnectionInfo       *coninfo,
+								Oid                      serveroid)
+{
+	ForeignServer *foreignServer;
+	UserMapping   *userMap;
+	List          *options;
+	int            i;
+	bool           mandatory[IFX_REQUIRED_CONN_KEYWORDS] = { false, false, false, false };
+
+	Assert(serveroid != InvalidOid);
+
+	foreignServer = GetForeignServer(serveroid);
+	userMap       = GetUserMapping(GetUserId(), serveroid);
+	options       = NIL;
+	options       = list_concat(options, foreignServer->options);
+	options       = list_concat(options, userMap->options);
+	options       = list_concat(options, stmt->options);
+
+	ifxAssignOptions(coninfo, options, mandatory);
+
+	/*
+	 * Check for all other mandatory options
+	 */
+	for (i = 0; i < IFX_REQUIRED_CONN_KEYWORDS; i++)
+	{
+		if (!mandatory[i])
+			ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+							errmsg("missing required FDW options (informixserver, informixdir, client_locale, database)")));
+	}
+}
+
+/*
+ * Create an adhoc IfxStatementInfo structure with
+ * the given query. Describes, plans and executes the
+ * query with a cursor and returns a pointer to it.
+ */
+static IfxStatementInfo *ifxExecStmt(IfxConnectionInfo *coninfo,
+									 int   refid,
+									 char *query)
+{
+	IfxStatementInfo *stmtinfo = NULL;
+
+	/*
+	 * No-op if query is not defined.
+	 */
+	if (query == NULL)
+		return stmtinfo;
+
+	/*
+	 * Initialize a new statement info structure.
+	 */
+	stmtinfo = (IfxStatementInfo *) palloc(sizeof(IfxStatementInfo));
+	ifxStatementInfoInit(stmtinfo, refid);
+
+	/*
+	 * Set query string and object idenfifiers required
+	 * for preparing, describing and executing the query with
+	 * a SCROLL cursor.
+	 */
+	stmtinfo->query = query;
+	ifxPrepareCursorForScan(stmtinfo, coninfo);
+
+	/*
+	 * Populate the DESCRIPTOR area.
+	 */
+	ifxDescribeAllocatorByName(stmtinfo);
+	ifxCatchExceptions(stmtinfo, IFX_STACK_ALLOCATE | IFX_STACK_DESCRIBE);
+
+	/* Number of columns in the result set */
+	stmtinfo->ifxAttrCount = ifxDescriptorColumnCount(stmtinfo);
+	ifxCatchExceptions(stmtinfo, 0);
+
+	stmtinfo->ifxAttrDefs = palloc0fast(stmtinfo->ifxAttrCount
+										* sizeof(IfxAttrDef));
+
+	/* Populate result set column info array */
+	if ((stmtinfo->row_size = ifxGetColumnAttributes(stmtinfo)) == 0)
+	{
+		/* oops, no memory to allocate? Something surely went wrong,
+		 * so abort */
+		ifxRewindCallstack(stmtinfo);
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("could not initialize informix column properties")));
+	}
+
+	/*
+	 * Allocate memory for SQLVAR result array.
+	 */
+	stmtinfo->data = (char *) palloc0fast(stmtinfo->row_size);
+	stmtinfo->indicator = (short *) palloc0fast(sizeof(short)
+												* stmtinfo->ifxAttrCount);
+
+	/* Allocate memory within SQLDA structure */
+	ifxSetupDataBufferAligned(stmtinfo);
+
+	/* Finally open the cursor and we're done */
+	ifxOpenCursorForPrepared(stmtinfo);
+	ifxCatchExceptions(stmtinfo, IFX_STACK_OPEN);
+
+	return stmtinfo;
+}
+
+/*
+ * Get details for the given foreign table from the
+ * foreign server. Currently we retrieve column names,
+ * column types and NOT NULL constraints.
+ */
+static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
+									   ImportForeignSchemaStmt *stmt,
+									   int    refid,
+									   int    tabid)
+{
+	List               *collist = NIL;
+	IfxStatementInfo   *stmtinfo;
+
+	stmtinfo = ifxExecStmt(coninfo, refid, ifxGetTableDetailsSQL(tabid));
+
+	if (stmtinfo != NULL)
+	{
+		IfxSqlStateClass errclass;
+
+		/*
+		 * Iterate through column list
+		 */
+		ifxFetchRowFromCursor(stmtinfo);
+
+		/* obtain error class to enter result set loop */
+		errclass = ifxCatchExceptions(stmtinfo, 0);
+
+		while (errclass == IFX_SUCCESS)
+		{
+			IfxAttrDef *colDef;
+
+			/*
+			 * Get column information...
+			 */
+			colDef = (IfxAttrDef *) palloc0(sizeof(IfxAttrDef));
+			colDef->type = (IfxSourceType) ifxGetInt2(stmtinfo, 3);
+			colDef->len  = (int) ifxGetInt2(stmtinfo, 4);
+			colDef->extended_id = (IfxExtendedType) ifxGetInt4(stmtinfo, 5);
+
+			/*
+			 * Set the indicator value, this will
+			 * define wether we need to create a NOT NULL constraint.
+			 */
+			if (ifxIsColumnNullable(colDef->type))
+				colDef->indicator = INDICATOR_NULL;
+			else
+				colDef->indicator = INDICATOR_NOT_NULL;
+
+			/*
+			 * We need this identifier value to be persistent, so
+			 * copy it. The cursor will move forward and reuse
+			 * the column slot.
+			 */
+			colDef->name = pstrdup((char *) ifxGetText(stmtinfo, 2));
+
+			elog(DEBUG3, "column list for tabid \"%d\", name = \"%s\", type = \"%d\", null = \"%d\"",
+				 tabid, colDef->name,
+				 ifxSQLType(colDef->type),
+				 ifxIsColumnNullable(colDef->type));
+
+			/* ...and add 'em to the column list */
+			collist = lappend(collist, colDef);
+
+			/* next one and/or set loop abort condition */
+			ifxFetchRowFromCursor(stmtinfo);
+			errclass = ifxCatchExceptions(stmtinfo, 0);
+		}
+
+		/* ...and we're done. */
+		ifxRewindCallstack(stmtinfo);
+	}
+
+	return collist;
+}
+
+/*
+ * Prepare a list of tables matching the import criteria.
+ *
+ * The returned List is either NIL if no import candidates
+ * are found or contains a list of pointers to
+ * IfxImportTableDef structures describing the table candidate.
+ */
+static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
+									 IfxConnectionInfo       *coninfo,
+									 Oid                      serverOid,
+	                                 int                      refid)
+{
+	List         *result = NIL;
+	char         *get_table_info;
+	IfxStatementInfo *stmtinfo;
+
+	Assert(coninfo != NULL);
+
+	get_table_info = ifxGetTableImportListSQL(coninfo, stmt);
+	stmtinfo       = ifxExecStmt(coninfo, refid, get_table_info);
+
+	if (stmtinfo != NULL)
+	{
+		IfxSqlStateClass errclass;
+
+		/* Iterate through table list */
+		ifxFetchRowFromCursor(stmtinfo);
+		errclass = ifxCatchExceptions(stmtinfo, 0);
+
+		while (errclass == IFX_SUCCESS)
+		{
+			/*
+			 * Extract tabid, table owner and table name from result set.
+			 */
+			IfxImportTableDef *tableDef;
+
+			/*
+			 * Initialize an IfxImportTableDef structure.
+			 */
+			tableDef = (IfxImportTableDef *) palloc0(sizeof(IfxImportTableDef));
+			tableDef->tabid     = ifxGetInt4(stmtinfo, 0);
+
+			/*
+			 * Since we need those identifier persistent, we must
+			 * copy them, otherwise the cursor machinery will reuse
+			 * them under us when moving the cursor forward.
+			 */
+			tableDef->tablename = pstrdup(ifxGetText(stmtinfo, 2));
+			tableDef->owner     = pstrdup(ifxGetText(stmtinfo, 1));
+
+			elog(DEBUG3, "import candidates: tabid %d, table owner %s, table name %s",
+				 tableDef->tabid,
+				 ifxQuoteIdent(coninfo, tableDef->owner),
+				 ifxQuoteIdent(coninfo, tableDef->tablename));
+
+			/*
+			 * Retrieve table column list...
+			 */
+			tableDef->columnDef = ifxGetForeignTableDetails(coninfo,
+															stmt,
+															++refid,
+															tableDef->tabid);
+
+			/*
+			 * Push the new candidate relation to the list.
+			 */
+			result = lappend(result, tableDef);
+
+			/* next one */
+			ifxFetchRowFromCursor(stmtinfo);
+			errclass = ifxCatchExceptions(stmtinfo, 0);
+		}
+
+		/* ...we're done */
+		ifxRewindCallstack(stmtinfo);
+	}
+
+	return result;
+}
+
+/*
+ * Callback for IMPORT FOREIGN SCHEMA statement
+ */
+static List * ifxImportForeignSchema(ImportForeignSchemaStmt *stmt,
+									 Oid serverOid)
+{
+	List                *result = NIL;
+	IfxConnectionInfo   *coninfo = NULL;
+	IfxCachedConnection *cached;
+
+	/*
+	 * Prepare connection for IMPORT FOREIGN SCHEMA.
+	 */
+	ifxPrepareImport(stmt, &coninfo, serverOid);
+
+	if ((cached = ifxSetupConnection(&coninfo,
+									 InvalidOid,
+									 IFX_IMPORT_SCHEMA,
+									 true)) != NULL)
+	{
+		List *table_candidates = NIL;
+		ListCell *cell;
+
+		/*
+		 * List of IfxImportTableDef definitions.
+		 */
+		table_candidates = ifxGetImportCandidates(stmt,
+												  coninfo,
+												  serverOid,
+												  cached->con.usage);
+
+		foreach(cell, table_candidates)
+		{
+			IfxImportTableDef *def = (IfxImportTableDef *) lfirst(cell);
+			elog(DEBUG1, "extracted candidate: tabid = %d, tabname = %s",
+				 def->tabid, def->tablename);
+		}
+
+		/*
+		 * Generate the SQL script from candidates list.
+		 */
+		result = ifxCreateImportScript(coninfo, stmt, table_candidates, serverOid);
+	}
+	else
+	{
+		/*
+		 * ifxSetupConnection() returned a NULL cache handle
+		 * which shouldn't happen. Guard against this case and exit
+		 * immediately.
+		 */
+		ereport(ERROR, (errcode(ERRCODE_FDW_UNABLE_TO_ESTABLISH_CONNECTION),
+						errmsg("could not establish remote connection for server OID \"%u\"",
+							   serverOid)));
+	}
+
+	return result;
+}
+
+#endif
+
 
 #if PG_VERSION_NUM >= 90300
 
@@ -1428,6 +1829,169 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 #endif
 
 /*
+ * Initializes the given IfxStatementInfo structure with
+ * reasonable default values. Assigns a valid connection
+ * identifier and refid from the given IfxConnectionInfo
+ * structure and refid.
+ *
+ * The cursorUsage is set to IFX_SCROLL_CURSOR by default
+ * and no special columns are assigned (IFX_NO_SPECIAL_COLS).
+ */
+static void ifxStatementInfoInit(IfxStatementInfo *info,
+								 int refid)
+{
+	/* Assign the specified reference id. */
+	info->refid = refid;
+
+	bzero(info->conname, IFX_CONNAME_LEN + 1);
+	info->cursorUsage = IFX_SCROLL_CURSOR;
+
+	info->query        = NULL;
+	info->predicate    = NULL;
+	info->cursor_name  = NULL;
+	info->stmt_name    = NULL;
+	info->descr_name   = NULL;
+	info->sqlda        = NULL;
+	info->ifxAttrCount = 0;
+	info->ifxAttrDefs  = NULL;
+	info->call_stack   = IFX_STACK_EMPTY;
+	info->row_size     = 0;
+	info->special_cols = IFX_NO_SPECIAL_COLS;
+
+	bzero(info->sqlstate, 6);
+	info->exception_count = 0;
+}
+
+/*
+ * Check and assign requested FDW options
+ * to an IfxConnectionInfo structure.
+ */
+static void ifxAssignOptions(IfxConnectionInfo *coninfo,
+							 List *options,
+							 bool mandatory[IFX_REQUIRED_CONN_KEYWORDS])
+{
+	ListCell *elem;
+
+	/* shortcut, nothing to do? */
+	if (list_length(options) <= 0)
+		return;
+
+	foreach(elem, options)
+	{
+		DefElem *def = (DefElem *) lfirst(elem);
+
+		elog(DEBUG5, "ifx_fdw set param %s=%s",
+			 def->defname, defGetString(def));
+
+		/*
+		 * "informixserver" defines the INFORMIXSERVER to connect to
+		 */
+		if (strcmp(def->defname, "informixserver") == 0)
+		{
+			coninfo->servername = pstrdup(defGetString(def));
+			mandatory[0] = true;
+		}
+
+		/*
+		 * "informixdir" defines the INFORMIXDIR environment
+		 * variable.
+		 */
+		if (strcmp(def->defname, "informixdir") == 0)
+		{
+			coninfo->informixdir = pstrdup(defGetString(def));
+			mandatory[1] = true;
+		}
+
+		if (strcmp(def->defname, "database") == 0)
+		{
+			coninfo->database = pstrdup(defGetString(def));
+			mandatory[3] = true;
+		}
+
+		if (strcmp(def->defname, "username") == 0)
+		{
+			coninfo->username = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "password") == 0)
+		{
+			coninfo->password = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "table") == 0)
+		{
+			coninfo->tablename = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "query") == 0)
+		{
+			coninfo->query = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "gl_date") == 0)
+		{
+			coninfo->gl_date = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "gl_datetime") == 0)
+		{
+			coninfo->gl_datetime = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "client_locale") == 0)
+		{
+			coninfo->client_locale = pstrdup(defGetString(def));
+			mandatory[2] = true;
+		}
+
+		if(strcmp(def->defname, "db_monetary") == 0)
+		{
+			coninfo->db_monetary = pstrdup(defGetString(def));
+		}
+
+		if (strcmp(def->defname, "db_locale") == 0)
+		{
+			coninfo->db_locale = pstrdup(defGetString(def));
+			mandatory[2] = true;
+		}
+
+		if (strcmp(def->defname, "disable_predicate_pushdown") == 0)
+		{
+			/* we don't bother about the value passed to
+			 * this argument, treat its existence to disable
+			 * predicate pushdown.
+			 */
+			coninfo->predicate_pushdown = 0;
+		}
+
+		if (strcmp(def->defname, "disable_rowid") == 0)
+		{
+			/*
+			 * We don't bother about the specified value, we just
+			 * honor if the setting was given.
+			 */
+			coninfo->disable_rowid = 1;
+		}
+
+		if (strcmp(def->defname, "enable_blobs") == 0)
+		{
+			/* we don't bother about the value passed
+			 * to enable_blobs atm.
+			 */
+			coninfo->enable_blobs = 1;
+		}
+
+		if (strcmp(def->defname, "delimident") == 0)
+		{
+			/* we don't bother about the value
+			 * passed to delimident.
+			 */
+			coninfo->delimident = 1;
+		}
+	}
+}
+
+/*
  * Check the specified foreign table OID if it has
  * AFTER EACH ROW triggers attached. ifxCheckForAfterRowTriggers()
  * assumes, that the caller already locked foreignTableOid for
@@ -1720,9 +2284,16 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 
 	/*
 	 * Initialize connection structures and retrieve FDW options
+	 *
+	 * NOTE: IFX_IMPORT_SCHEMA requires a special case here, since
+	 *       this operation is *not* based on a foreign table and does
+	 *       setup its options itself. Thus we aren't allowed to process
+	 *       FDW options here, too.
 	 */
 
-	*coninfo = ifxMakeConnectionInfo(foreignTableOid);
+	if (mode != IFX_IMPORT_SCHEMA)
+		*coninfo = ifxMakeConnectionInfo(foreignTableOid);
+
 	elog(DEBUG1, "informix connection dsn \"%s\"", (*coninfo)->dsn);
 
 	/*
@@ -1920,27 +2491,7 @@ static IfxFdwExecutionState *makeIfxFdwExecutionState(int refid)
 {
 	IfxFdwExecutionState *state = palloc(sizeof(IfxFdwExecutionState));
 
-	/* Assign the specified reference id. */
-	state->stmt_info.refid = refid;
-
-	bzero(state->stmt_info.conname, IFX_CONNAME_LEN + 1);
-	state->stmt_info.cursorUsage = IFX_SCROLL_CURSOR;
-
-	state->stmt_info.query        = NULL;
-	state->stmt_info.predicate    = NULL;
-	state->stmt_info.cursor_name  = NULL;
-	state->stmt_info.stmt_name    = NULL;
-	state->stmt_info.descr_name   = NULL;
-	state->stmt_info.sqlda        = NULL;
-	state->stmt_info.ifxAttrCount = 0;
-	state->stmt_info.ifxAttrDefs  = NULL;
-	state->stmt_info.call_stack   = IFX_STACK_EMPTY;
-	state->stmt_info.row_size     = 0;
-	state->stmt_info.special_cols = IFX_NO_SPECIAL_COLS;
-	state->stmt_info.predicate    = NULL;
-
-	bzero(state->stmt_info.sqlstate, 6);
-	state->stmt_info.exception_count = 0;
+	ifxStatementInfoInit(&(state->stmt_info), refid);
 
 	state->pgAttrCount = 0;
 	state->pgAttrDefs  = NULL;
@@ -3232,6 +3783,12 @@ ifx_fdw_handler(PG_FUNCTION_ARGS)
 
 	#endif
 
+    #if PG_VERSION_NUM >= 90500
+
+	fdwRoutine->ImportForeignSchema = ifxImportForeignSchema;
+
+    #endif
+
 	PG_RETURN_POINTER(fdwRoutine);
 }
 
@@ -3312,7 +3869,6 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	ForeignServer *foreignServer;
 	UserMapping   *userMap;
 	List          *options;
-	ListCell      *elem;
 	bool           mandatory[IFX_REQUIRED_CONN_KEYWORDS] = { false, false, false, false };
 	int            i;
 
@@ -3330,111 +3886,7 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 	/*
 	 * Retrieve required arguments.
 	 */
-	foreach(elem, options)
-	{
-		DefElem *def = (DefElem *) lfirst(elem);
-
-		elog(DEBUG5, "ifx_fdw set param %s=%s",
-			 def->defname, defGetString(def));
-
-		/*
-		 * "informixserver" defines the INFORMIXSERVER to connect to
-		 */
-		if (strcmp(def->defname, "informixserver") == 0)
-		{
-			coninfo->servername = pstrdup(defGetString(def));
-			mandatory[0] = true;
-		}
-
-		/*
-		 * "informixdir" defines the INFORMIXDIR environment
-		 * variable.
-		 */
-		if (strcmp(def->defname, "informixdir") == 0)
-		{
-			coninfo->informixdir = pstrdup(defGetString(def));
-			mandatory[1] = true;
-		}
-
-		if (strcmp(def->defname, "database") == 0)
-		{
-			coninfo->database = pstrdup(defGetString(def));
-			mandatory[3] = true;
-		}
-
-		if (strcmp(def->defname, "username") == 0)
-		{
-			coninfo->username = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "password") == 0)
-		{
-			coninfo->password = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "table") == 0)
-		{
-			coninfo->tablename = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "query") == 0)
-		{
-			coninfo->query = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "gl_date") == 0)
-		{
-			coninfo->gl_date = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "gl_datetime") == 0)
-		{
-			coninfo->gl_datetime = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "client_locale") == 0)
-		{
-			coninfo->client_locale = pstrdup(defGetString(def));
-			mandatory[2] = true;
-		}
-
-		if(strcmp(def->defname, "db_monetary") == 0)
-		{
-			coninfo->db_monetary = pstrdup(defGetString(def));
-		}
-
-		if (strcmp(def->defname, "db_locale") == 0)
-		{
-			coninfo->db_locale = pstrdup(defGetString(def));
-			mandatory[2] = true;
-		}
-
-		if (strcmp(def->defname, "disable_predicate_pushdown") == 0)
-		{
-			/* we don't bother about the value passed to
-			 * this argument, treat its existence to disable
-			 * predicate pushdown.
-			 */
-			coninfo->predicate_pushdown = 0;
-		}
-
-		if (strcmp(def->defname, "disable_rowid") == 0)
-		{
-			/*
-			 * We don't bother about the specified value, we just
-			 * honor if the setting was given.
-			 */
-			coninfo->disable_rowid = 1;
-		}
-
-		if (strcmp(def->defname, "enable_blobs") == 0)
-		{
-			/* we don't bother about the value passed
-			 * to enable_blobs atm.
-			 */
-			coninfo->enable_blobs = 1;
-		}
-	}
+	ifxAssignOptions(coninfo, options, mandatory);
 
 	if ((coninfo->query == NULL)
 		 && (coninfo->tablename == NULL))
@@ -3592,14 +4044,14 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 		{
 			appendStringInfo(buf, "SELECT *%s FROM %s WHERE %s",
 							 rowid_str,
-							 coninfo->tablename,
+							 ifxQuoteIdent(coninfo, coninfo->tablename),
 							 state->stmt_info.predicate);
 		}
 		else
 		{
 			appendStringInfo(buf, "SELECT *%s FROM %s",
 							 rowid_str,
-							 coninfo->tablename);
+							 ifxQuoteIdent(coninfo, coninfo->tablename));
 		}
 	}
 
@@ -4483,6 +4935,9 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 
 	/* disable enable_blobs per default */
 	coninfo->enable_blobs = 0;
+
+	/* default is no DELIMIDENT set */
+	coninfo->delimident = 0;
 
 	/*
 	 * Use rowid for DML per default.
