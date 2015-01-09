@@ -265,6 +265,19 @@ typedef struct IfxPushdownOprContext
 	bool  has_or_expr;
 } IfxPushdownOprContext;
 
+#if PG_VERSION_NUM >= 90500
+
+typedef struct IfxImportTableDef
+{
+	int   tabid; /* unique id of the table */
+	char *owner; /* schema name */
+	char *tablename; /* name of the table, unquoted but maybe case sensitive */
+	List *columnDef; /* List of IfxAttrDef structures describing the
+						foreign table columns */
+} IfxImportTableDef;
+
+#endif
+
 /*
  * Number of required connection parameters
  */

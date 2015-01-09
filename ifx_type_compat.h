@@ -197,6 +197,15 @@ typedef enum IfxSourceType
 	IFX_ROWREF     = 24,
 
 	/*
+	 * User defined opaque types
+	 *
+	 * Might also reference built-in opaque types.
+	 */
+	IFX_UDTVAR    = 40,
+	IFX_UDTFIXED  = 41,
+	IFX_REFSER8   = 42,
+
+	/*
 	 * Special ESQL/C types.
 	 */
 	IFX_LVARCHAR  = 43,
@@ -204,6 +213,42 @@ typedef enum IfxSourceType
 	IFX_INFX_INT8 = 52
 
 } IfxSourceType;
+
+/*
+ * Defines extended Informix types.
+ *
+ * According to $INFORMIXDIR/incl/esql/sqltypes.h, those
+ * are encoding in the sysxtdtypes system catalog. Usually the
+ * ESQL/C API won't get in touch with them, but when querying the
+ * system catalogs directly, conversion routines might have to
+ * deal with them.
+ */
+typedef enum IfxExtendedType
+{
+	IFX_XTD_LVARCHAR  = 1,
+	IFX_XTD_SENDRECV  = 2,
+	IFX_XTD_IMPEXP    = 3,
+	IFX_XTD_IMPEXPBIN = 4,
+	IFX_XTD_BOOLEAN   = 5,
+	IFX_XTD_POINTER   = 6,
+	IFX_XTD_INDEXKEYARRAY = 7,
+	IFX_XTD_RTNPARAMTYPES = 8,
+	IFX_XTD_SELFUNCARGS   = 9,
+	IFX_XTD_BLOB          = 10,
+	IFX_XTD_CLOB          = 11,
+	IFX_XTD_LOLIST        = 12,
+	IFX_XTD_IFX_LO_SPEC	  = 13,
+	IFX_XTD_IFX_LO_STAT	  = 14,
+	IFX_XTD_STAT          = 15,
+	IFX_XTD_CLIENTBINVAL  = 16,
+	IFX_XTD_UDTMODIFIERS  = 17,
+	IFX_XTD_AGGMODIFIERS  = 18,
+	IFX_XTD_UDRMODIFIERS  = 19,
+	IFX_XTD_GUID          = 20,
+	IFX_XTD_DBSENDRECV    = 21,
+	IFX_XTD_SRVSENDRECV   = 22,
+	IFX_XTD_FUNCARG       = 23
+} IfxExtendedType;
 
 /*
  * Defines Informix qualifier identifier
@@ -274,6 +319,7 @@ typedef enum IfxIndicatorValue
 typedef struct IfxAttrDef
 {
 	IfxSourceType  type;
+	IfxExtendedType extended_id;
 	int            len;
 	char          *name;
 	IfxIndicatorValue indicator;
@@ -322,7 +368,8 @@ typedef enum
 	IFX_PLAN_SCAN,    /* plan a new foreign scan, generate new refid for scan */
 	IFX_BEGIN_SCAN,   /* start/preparing foreign scan */
 	IFX_ITERATE_SCAN, /* foreign scan iteration step */
-	IFX_END_SCAN      /* end foreign scan */
+	IFX_END_SCAN,     /* end foreign scan */
+	IFX_IMPORT_SCHEMA /* Scan mode for IMPORT FOREIGN SCHEMA */
 } IfxForeignScanMode;
 
 /*
@@ -376,6 +423,7 @@ typedef struct IfxConnectionInfo
 	short enable_blobs; /* 0 = no special BLOB support,
 						   1 = special BLOB support */
 	short disable_rowid; /* 1 = disable, 0 enable rowid (default) */
+	short delimident; /* 1 = DELIMIDENT set, 0 = disabled */
 
 	/* plan data */
 	IfxPlanData planData;
@@ -634,6 +682,18 @@ void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
 void ifxSetIntervalFromString(IfxStatementInfo *info, int ifx_attnum,
 							  char *format,
 							  char *instring);
+
+/*
+ * Helper functions, basically wrap esql/c API functions
+ * into accessible wrapper functions without the need
+ * to include incl/esql/sqltypes.h...
+ */
+short ifxIsColumnNullable(short typeid);
+short ifxSQLType(short typeid);
+void ifxDecodeColumnLength(short typeid, short collength,
+						   short *min, short *max);
+short ifxCharColumnLen(short typeid, short collength);
+short ifxMaskTypeId(short typeid);
 
 /*
  * Helper macros.

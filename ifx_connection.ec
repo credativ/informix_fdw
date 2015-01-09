@@ -37,6 +37,7 @@ EXEC SQL include sqltypes;
 EXEC SQL include sqlda;
 EXEC SQL include "int8.h";
 EXEC SQL include "decimal.h";
+EXEC SQL include "varchar.h";
 
 /* Don't trap errors. Default, but force it explicitely */
 EXEC SQL WHENEVER SQLERROR CONTINUE;
@@ -437,6 +438,16 @@ void ifxSetEnv(IfxConnectionInfo *coninfo)
 	 */
 	if (coninfo->db_monetary != NULL)
 		setenv("DB_MONEY", coninfo->db_monetary, 1);
+
+	/*
+	 * Set DELIMIDENT accordingly. This will determine
+	 * wether we use quoted identifier for tables names or not.
+	 */
+	if (coninfo->delimident)
+		setenv("DELIMIDENT", "1", 1);
+	else
+		/* will probably set errno to EINVAL in case not set */
+		unsetenv("DELIMIDENT");
 }
 
 /*
@@ -2326,5 +2337,122 @@ void ifxSetupDataBufferAligned(IfxStatementInfo *state)
 		 */
 		column_data++;
 	}
+}
+
+/*
+ * Returns the masked typeid. This function is intended
+ * to decode a typeid directly returned from Informix
+ * system catalogs, e.g. syscolumns.
+ */
+short ifxMaskTypeId(short typeid)
+{
+	return MASKNONULL(typeid);
+}
+
+short ifxCharColumnLen(short typeid, short collength)
+{
+	if (ISVCTYPE(typeid))
+		return VCMAX(collength);
+
+	if (ISCHARTYPE(typeid))
+		return collength;
+
+	/* other types, probably encoded */
+	return -1;
+}
+
+/*
+ * Decodes the given collength for the specified typeid
+ * into min and max values.
+ *
+ * The values returned within min and max might differ
+ * in their meaning, depending on the specified typeid.
+ * E.g., for any DECIMAL type, min will contain the total
+ * precision, while max will have the decimal precision.
+ *
+ * For DATETIME, min will have the value for TU_START, while
+ * max will return TU_END.
+ *
+ * Keep this in mind when interpreting the results after
+ * calling ifxDecodeColumnLength().
+ */
+void ifxDecodeColumnLength(short typeid, short collength,
+						   short *min, short *max)
+{
+
+	if ((min == NULL) || (max == NULL))
+		return;
+
+	*min = -1;
+	*max = -1;
+
+	switch(typeid)
+	{
+		case SQLNCHAR:
+		case SQLLVARCHAR:
+		case SQLCHAR:
+		case SQLSMINT:
+		case SQLSERIAL:
+		case SQLINT:
+		case SQLFLOAT:
+		case SQLINFXBIGINT:
+		case SQLINT8:
+		case SQLSERIAL8:
+		case SQLBIGSERIAL:
+		case SQLSMFLOAT:
+			*min = 0;
+			*max = collength;
+			break;
+		case SQLDECIMAL:
+		case SQLMONEY:
+			break;
+			*min = PRECTOT(collength);
+			*max = PRECDEC(collength);
+			break;
+		case SQLDATE:
+		case SQLDTIME:
+		case SQLINTERVAL:
+			*min = TU_START(collength);
+			*max = TU_END(collength);
+			break;
+		case SQLNULL:
+			/* XXX: How is this going to be used ??? */
+			break;
+		case SQLBYTES:
+		case SQLTEXT:
+		{
+			/* BLOB datatypes. These are handled via loc_t
+			 * locator descriptor and require special handling
+			 */
+			break;
+		}
+		case SQLVCHAR:
+		case SQLNVCHAR:
+			*min = VCMIN(collength);
+			*max = VCMAX(collength);
+			break;
+		case SQLSET:
+		case SQLMULTISET:
+		case SQLLIST:
+		case SQLROW:
+		case SQLCOLLECTION:
+		case SQLROWREF:
+		case SQLBOOL:
+		default:
+			/* nothing to do */
+			break;
+	}
+
+	return;
+}
+
+short ifxIsColumnNullable(short typeid)
+{
+	return (ISCOLUMNULLABLE(typeid));
+}
+
+short ifxSQLType(short typeid)
+{
+	return (typeid & SQLTYPE);
 }
 
