@@ -22,6 +22,7 @@
 
 static void ifxFdwExecutionStateToList(Const *const_vals[],
 									   IfxFdwExecutionState *state);
+static char *ifxPgIntervalQualifierString(IfxTemporalRange range);
 static Datum
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);
 
@@ -60,6 +61,26 @@ static ifxTemporalFormatIdent ifxTemporalFormat[] =
 	{ "%4F", "US" },
 	{ "%5F", "US" }
 };
+
+/*
+ * Maps DATETIME and INTERVAL qualifiers to
+ * PostgreSQL modifiers. The array index have to
+ * match the IFX_TU_* macros in ifx_type_compat.h.
+ */
+char *ifxPgTemporalQualifier[]
+	= {
+	"YEAR",
+	NULL,
+	"MONTH",
+	NULL,
+	"DAY",
+	NULL,
+	"HOUR",
+	NULL,
+	"MINUTE",
+	NULL,
+	"SECOND",
+	};
 
 #define IFX_PG_INTRVL_FORMAT(ident, mode) \
 	(((mode) == FMT_PG) ? ifxTemporalFormat[(ident)]._PG \
@@ -631,6 +652,86 @@ char *ifxQuoteIdent(IfxConnectionInfo *coninfo, char *ident)
 
 #if PG_VERSION_NUM >= 90500
 
+/*
+ * Given an informix INTERVAL range definition, return
+ * a possible matching declaration for PostgreSQL.
+ *
+ * Not all declarations from Informix do have a matching
+ * declaration in PostgreSQL. If an INTERVAL range in Informix
+ * doesn't correspond to a compatible declaration in PostgreSQL,
+ * we just return an empty string, which indicates that the given
+ * temporal range doesn't have an equivalent.
+ */
+static char *ifxPgIntervalQualifierString(IfxTemporalRange range)
+{
+	int i_start = range.start;
+	int i_end   = -1; /* indicates empty qualifier string! */
+	StringInfoData buf;
+
+	/*
+	 * Check if the specified range is valid and supported.
+	 *
+	 * Currently supported *ranges* in PostgreSQL are
+	 *
+	 * YEAR TO MONTH
+	 *
+	 * DAY TO HOUR
+	 * DAY TO MINUTE
+	 * DAY TO SECOND
+	 *
+	 * HOUR TO MINUTE
+	 * HOUR TO SECOND
+	 *
+	 * MINUTE TO SECOND
+	 *
+	 * So it's enough to look at YEAR, DAY, HOUR and MINUTE to
+	 * determine any possible range declarations. If start and end define
+	 * just a single entity, we return that instead.
+	 */
+	if (((range.start % 2) > 0)
+		|| ((range.end %2) > 0))
+		return "";
+
+	if (range.start == range.end)
+		return ifxPgTemporalQualifier[range.start];
+
+	initStringInfo(&buf);
+
+	switch(range.start)
+	{
+		case IFX_TU_YEAR:
+			i_end = (range.end == IFX_TU_MONTH) ? range.end : -1;
+			break;
+
+		case IFX_TU_DAY:
+			if (((range.end - (range.end % IFX_TU_SECOND)) <= IFX_TU_SECOND)
+				&& (range.end > IFX_TU_DAY))
+				i_end = (range.end - (range.end % IFX_TU_SECOND));
+			break;
+
+		case IFX_TU_HOUR:
+			if (((range.end - (range.end % IFX_TU_SECOND)) <= IFX_TU_SECOND)
+				&& (range.end > IFX_TU_HOUR))
+				i_end = (range.end - (range.end % IFX_TU_SECOND));
+			break;
+
+		case IFX_TU_MINUTE:
+			/* only remaining range is MINUTE TO SECOND */
+			i_end = ((range.end - (range.end % IFX_TU_SECOND)) == IFX_TU_SECOND)
+				? range.end : -1;
+			break;
+		default:
+			i_end = -1;
+	}
+
+	if (i_end != -1)
+		appendStringInfo(&buf, "%s TO %s",
+						 ifxPgTemporalQualifier[i_start],
+						 ifxPgTemporalQualifier[i_end]);
+
+	return buf.data;
+}
+
 char *ifxMakeColTypeDeclaration(IfxAttrDef *colDef)
 {
 	HeapTuple ht;
@@ -670,19 +771,90 @@ char *ifxMakeColTypeDeclaration(IfxAttrDef *colDef)
 							  &min_len,
 							  &max_len);
 
-		if ((min_len > 0) && (max_len > 0))
+		elog(DEBUG5, "typename=%s, min=%d, max=%d",
+			 typname, min_len, max_len);
+
+		if (((min_len > 0) && (max_len > 0))
+			 || ((colDef->type == IFX_DTIME)
+				 || (colDef->type == IFX_INTERVAL)))
 		{
-			/* Probably an encoded VARCHAR type ? */
+			/* Probably an encoded VARCHAR type with
+			 * minimum and maximum length ? */
+
 			if (ifxCharColumnLen(colDef->type, colDef->len) > 0)
 				appendStringInfo(&buf, "%s(%d)", typname, max_len);
 			else
-				appendStringInfo(&buf, "%s(%d, %d)",
-								 typname, min_len, max_len);
+			{
+				/*
+				 * We must handle DATETIME and INTERVAL in case
+				 * they have special qualifiers.
+				 */
+				switch (colDef->type)
+				{
+					case IFX_DTIME:
+					{
+						/*
+						 * In case there's a FRACTION attached to the Informix
+						 * DATETIME value, we try to match it to the PostgreSQL
+						 * timestamp as well.
+						 */
+						if ((max_len - (max_len % IFX_TU_SECOND)) >= IFX_TU_SECOND)
+						{
+							appendStringInfo(&buf, "%s(%d)",
+											 typname,
+											 max_len - IFX_TU_SECOND);
+						}
+						else
+						{
+							appendStringInfo(&buf, "%s",
+											 typname);
+						}
+						break;
+					}
+					case IFX_INTERVAL:
+					{
+						IfxTemporalRange range;
+						char *intv_qual;
+
+						range.start = min_len;
+						range.end  = max_len;
+						range.precision = IFX_TU_SECOND;
+
+						intv_qual = ifxPgIntervalQualifierString(range);
+
+						if (range.end >= IFX_TU_SECOND)
+						{
+							/*
+							 * This INTERVAL has a fraction value assigned.
+							 */
+							appendStringInfo(&buf, "%s %s(%d)",
+											 typname, intv_qual,
+											 range.end - IFX_TU_SECOND);
+						}
+						else
+						{
+							appendStringInfo(&buf, "%s %s",
+											 typname, intv_qual);
+						}
+						break;
+					}
+					default:
+						appendStringInfoString(&buf, typname);
+						break;
+				}
+			}
 		}
-		else if ((min_len = 0) && (max_len > 0))
+		else if ((min_len == 0) && (max_len > 0))
 		{
-			appendStringInfo(&buf, "%s(%d)",
-							 typname, max_len);
+			/*
+			 * Probably a character string column type with
+			 * an upper limit?
+			 */
+			if (ifxCharColumnLen(colDef->type, colDef->len) > 0)
+				appendStringInfo(&buf, "%s(%d)",
+								 typname, max_len);
+			else
+				appendStringInfoString(&buf, typname);
 		}
 		else
 		{

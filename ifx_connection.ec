@@ -2370,7 +2370,7 @@ short ifxCharColumnLen(short typeid, short collength)
  * E.g., for any DECIMAL type, min will contain the total
  * precision, while max will have the decimal precision.
  *
- * For DATETIME, min will have the value for TU_START, while
+ * For DATETIME and INTERVAL, min will have the value for TU_START, while
  * max will return TU_END.
  *
  * Keep this in mind when interpreting the results after
@@ -2455,4 +2455,5 @@ short ifxSQLType(short typeid)
 {
 	return (typeid & SQLTYPE);
 }
+
 
