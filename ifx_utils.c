@@ -704,15 +704,12 @@ static char *ifxPgIntervalQualifierString(IfxTemporalRange range)
 			break;
 
 		case IFX_TU_DAY:
-			if (((range.end - (range.end % IFX_TU_SECOND)) <= IFX_TU_SECOND)
-				&& (range.end > IFX_TU_DAY))
-				i_end = (range.end - (range.end % IFX_TU_SECOND));
-			break;
-
 		case IFX_TU_HOUR:
-			if (((range.end - (range.end % IFX_TU_SECOND)) <= IFX_TU_SECOND)
-				&& (range.end > IFX_TU_HOUR))
+			if (range.end >= IFX_TU_SECOND)
 				i_end = (range.end - (range.end % IFX_TU_SECOND));
+			else
+				i_end = range.end;
+
 			break;
 
 		case IFX_TU_MINUTE:
