@@ -36,7 +36,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 
-#if PG_VERSION_NUM > 90400
+#if PG_VERSION_NUM >= 90500
 #include "utils/ruleutils.h"
 #endif
 
