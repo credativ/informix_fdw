@@ -6,7 +6,7 @@
 --       might cause installcheck errors because of
 --       varying settings (e.g. database name).
 --
-\set ECHO off
+\set ECHO none
 \set ON_ERROR_STOP 1
 \i ./sql/regression_variables
 \unset ON_ERROR_STOP
