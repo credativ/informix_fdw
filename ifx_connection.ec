@@ -2174,6 +2174,26 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				break;
 			}
 			case SQLVCHAR:
+				/*
+				 * Be careful with VARCHAR, we need to decode the correct
+				 * memory size. VCLENGTH() overflows in case we get a VARCHAR(255),
+				 * so leave sqllen size at its maximum length for VARCHAR.
+				 * rtypmsize() already did the wrong assignment above in this case, so
+				 * we just revert this and stick the maxvalue to the IfxAttrDef struct
+				 * derived by DESCRIBE via sqllen. I don't want to change the call to
+				 * rtypmsize() atm, since this is the only caveat i've encountered
+				 * so far.
+				 *
+				 * XXX: I didn't find this behavior of rtypmsize() anywhere in the
+				 *      documentation, so this workaround might just fight against a bug
+				 *      in the current CSDK.
+				 */
+				if (column_data->sqllen >= MAXVCLEN)
+					state->ifxAttrDefs[ifx_attnum].mem_allocated = column_data->sqllen;
+				else
+					column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
+				column_data->sqltype = CSTRINGTYPE;
+				break;
 			case SQLNCHAR:
 			case SQLNVCHAR:
 				column_data->sqltype = CSTRINGTYPE;
