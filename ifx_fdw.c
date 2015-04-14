@@ -3667,9 +3667,9 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 	if (strcmp(def->defname, "password") == 0)
 	{
 		if (coninfo->password)
+			/* Don't leak the password into log messages */
 			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
-							errmsg("conflicting or redundant options: password(%s)",
-								   defGetString(def))));
+							errmsg("conflicting or redundant options: password")));
 
 		coninfo->password = defGetString(def);
 	}
@@ -3678,13 +3678,13 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 	{
 		if (coninfo->tablename)
 			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
+					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
 					 errmsg("conflicting options: query cannot be used with table")
 						));
 
 		if (coninfo->query)
 			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
+					(errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
 					 errmsg("conflicting or redundant options: query (%s)", defGetString(def))
 						));
 
@@ -3694,7 +3694,7 @@ ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def)
 	if (strcmp(def->defname, "table") == 0)
 	{
 		if (coninfo->query)
-			ereport(ERROR, (errcode(ERRCODE_SYNTAX_ERROR),
+			ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_OPTION_NAME),
 							errmsg("conflicting options: query cannot be used with query")));
 
 		if (coninfo->tablename)
