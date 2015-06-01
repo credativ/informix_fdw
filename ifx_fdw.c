@@ -1173,6 +1173,18 @@ ifxPlanForeignModify(PlannerInfo *root,
 							   get_rel_name(rte->relid))));
 	}
 
+#if PG_VERSION_NUM >= 90500
+	/*
+	 * Don't support INSERT ... ON CONFLICT.
+	 */
+
+	if (plan->onConflictAction != ONCONFLICT_NONE)
+	{
+		ereport(ERROR, (errcode(ERRCODE_FDW_UNABLE_TO_CREATE_EXECUTION),
+						errmsg("INSERT with ON CONFLICT clause is not supported")));
+	}
+#endif
+
 	/*
 	 * In case we have an UPDATE or DELETE action, retrieve the foreign scan state
 	 * data belonging to the ForeignScan, initiated by the earlier scan node.
