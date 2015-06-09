@@ -16,7 +16,7 @@
 --       might cause installcheck errors because of
 --       varying settings (e.g. database name).
 --
-\set ECHO off
+\set ECHO none
 --
 -- Suppress WARNINGs during regression test. This will
 -- cause errors in case someone uses a database with logging.
