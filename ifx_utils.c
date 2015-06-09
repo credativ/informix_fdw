@@ -22,9 +22,12 @@
 
 static void ifxFdwExecutionStateToList(Const *const_vals[],
 									   IfxFdwExecutionState *state);
-static char *ifxPgIntervalQualifierString(IfxTemporalRange range);
 static Datum
 ifxFdwPlanDataAsBytea(IfxConnectionInfo *coninfo);
+
+#if PG_VERSION_NUM >= 90500
+static char *ifxPgIntervalQualifierString(IfxTemporalRange range);
+#endif
 
 typedef struct ifxTemporalFormatIdent
 {
