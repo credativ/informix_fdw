@@ -4964,6 +4964,7 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->query         = NULL;
 	coninfo->tablename     = NULL;
 	coninfo->username      = "\0";
+	coninfo->password      = "\0";
 
 	/* default scan mode */
 	coninfo->scan_mode     = IFX_PLAN_SCAN;
