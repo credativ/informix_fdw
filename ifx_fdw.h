@@ -354,6 +354,7 @@ typedef struct IfxImportTableDef
 /*
  * Datatype conversion routines.
  */
+Datum convertIfxFloat(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxTimestamp(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxInt(IfxFdwExecutionState *state, int attnum);
 Datum convertIfxCharacterString(IfxFdwExecutionState *state, int attnum);
@@ -384,6 +385,9 @@ void setIfxInterval(IfxFdwExecutionState *state,
 void setIfxDecimal(IfxFdwExecutionState *state,
 				   TupleTableSlot       *slot,
 				   int attnum);
+void setIfxFloat(IfxFdwExecutionState *state,
+				 TupleTableSlot       *slot,
+				 int                   attnum);
 
 /*
  * Internal API for PostgreSQL 9.3 and above.

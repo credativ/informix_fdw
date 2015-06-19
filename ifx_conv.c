@@ -308,6 +308,83 @@ Datum convertIfxTimestampString(IfxFdwExecutionState *state, int attnum)
  }
 
 /*
+ * convertIfxFloat()
+ *
+ * Converts a float value into a PostgreSQL numeric or float value.
+ */
+Datum convertIfxFloat(IfxFdwExecutionState *state, int attnum)
+{
+	Datum result;
+	regproc typinputfunc;
+
+	result = PointerGetDatum(NULL);
+
+	switch(PG_ATTRTYPE_P(state, attnum))
+	{
+		case FLOAT4OID:
+		case FLOAT8OID:
+		case NUMERICOID:
+		{
+			char *val;
+
+			val = (char *) palloc0(IFX_MAX_FLOAT_DIGITS + 1);
+
+			/*
+			 * Call must handle NULL column value or invalid data conversion.
+			 */
+			if (ifxGetFloatAsString(&state->stmt_info,
+									PG_MAPPED_IFX_ATTNUM(state, attnum),
+									val) == NULL)
+			{
+				/* caller should handle indicator */
+				break;
+			}
+
+			PG_TRY();
+			{
+				typinputfunc = getTypeInputFunction(state,
+													PG_ATTRTYPE_P(state, attnum));
+
+				/*
+				 * Convert float text representation into target type.
+				 *
+				 * If the source type is a NUMERICOID datum, we have to
+				 * take care to apply its typmods...
+				 */
+				if (PG_ATTRTYPE_P(state, attnum) != NUMERICOID)
+				{
+					result = OidFunctionCall2(typinputfunc,
+											  CStringGetDatum(val),
+											  ObjectIdGetDatum(InvalidOid));
+				}
+				else
+				{
+					result = OidFunctionCall3(typinputfunc,
+											  CStringGetDatum(val),
+											  ObjectIdGetDatum(InvalidOid),
+											  PG_ATTRTYPEMOD_P(state, attnum));
+				}
+			}
+			PG_CATCH();
+			{
+				ifxRewindCallstack(&(state->stmt_info));
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			break;
+		}
+		default:
+		{
+			IFX_ATTR_SETNOTVALID_P(state, attnum);
+			break;
+		}
+	}
+
+	return result;
+}
+
+/*
  * convertIfxDecimal()
  *
  * Converts a decimal value into a PostgreSQL numeric datum.
@@ -353,7 +430,8 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 	 * Get the value from the informix column and check wether
 	 * the character string is valid. Don't go further, if not...
 	 */
-	if (ifxGetDecimal(&state->stmt_info, PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
+	if (ifxGetDecimal(&state->stmt_info,
+					  PG_MAPPED_IFX_ATTNUM(state, attnum), val) == NULL)
 	{
 		/* caller should handle indicator */
 		return result;
@@ -663,6 +741,110 @@ void setIfxText(IfxFdwExecutionState *state,
 		default:
 			break;
 	}
+}
+
+/*
+ * setIfxFloat()
+ *
+ * Converts a float datum into a character string
+ * suitable to be converted into a compatible
+ * Informix datatype.
+ *
+ * All float data conversion to informix are required
+ * to happen as a valid float value in its character representation,
+ * ifxSetupDataBufferAligned() strictly employs CSTRINGTYPE for
+ * this type conversion.
+ */
+void setIfxFloat(IfxFdwExecutionState *state,
+				 TupleTableSlot       *slot,
+				 int attnum)
+{
+	regproc  typout;
+	char    *strval;
+	IfxAttrDef ifxval;
+
+	/* Sanity check, SQLDA available? */
+	Assert(state->stmt_info.sqlda != NULL);
+
+	strval = NULL;
+
+	/*
+	 * Take care for NULL values.
+	 */
+	if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	{
+		/*
+		 * We must carefully check for any conversion errors to do
+		 * the cleanup right away.
+		 *
+		 * We just call the type output function to get the
+		 * character representation for the current source value.
+		 */
+		PG_TRY();
+		{
+			typout = getTypeOutputFunction(state,
+										   PG_ATTRTYPE_P(state, attnum));
+			strval = DatumGetCString(OidFunctionCall1(typout,
+													  slot->tts_values[attnum]));
+		}
+		PG_CATCH();
+		{
+			ifxRewindCallstack(&(state->stmt_info));
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+
+	/*
+	 * If the typ output function succeed, we have a
+	 * valid buffer, pass it down to try to store them
+	 * as a FLOAT value.
+	 */
+	if (strval == NULL)
+	{
+		ifxRewindCallstack(&(state->stmt_info));
+		ereport(ERROR,
+				(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+				 errmsg("informix_fdw: unexpected NULL value for attribute \"%d\" in float string representation",
+						attnum)));
+	}
+
+	/*
+	 * Assign the value to the Informix SQLDA structure.
+	 * ifxSetFloat() takes enough care for NULL values, but be sure
+	 * to trap any conversion errors.
+	 */
+	Assert(strlen(strval) <= IFX_MAX_FLOAT_DIGITS);
+	ifxSetFloat(&(state->stmt_info),
+				IFX_ATTR_PARAM_ID(state, attnum),
+				strval);
+
+	/* Check... */
+
+	ifxval = state->stmt_info.ifxAttrDefs[IFX_ATTR_PARAM_ID(state, attnum)];
+
+	if ( (ifxval.indicator == INDICATOR_NOT_VALID)
+		 && (ifxval.converrcode != 0) )
+	{
+		switch (ifxval.converrcode)
+		{
+			case IFX_CONVERSION_OVERFLOW:
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_STRING_LENGTH_OR_BUFFER_LENGTH),
+						 errmsg("informix_fdw: overflow during float datatype conversion (attnum \"%d\")",
+								attnum)));
+				break;
+			default:
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_ATTRIBUTE_VALUE),
+						 errmsg("informix_fdw: conversion error \"%d\"(attnum \"%d\")",
+								ifxval.converrcode, attnum)));
+				break;
+		}
+	}
+
+	return;
 }
 
 /*

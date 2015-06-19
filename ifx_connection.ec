@@ -1030,7 +1030,8 @@ static inline IfxIndicatorValue ifxSetIndicator(IfxAttrDef *def,
 	return def->indicator;
 }
 
-IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum, IfxIndicatorValue value)
+IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum,
+										IfxIndicatorValue value)
 {
 	struct sqlvar_struct *ifx_value;
 
@@ -1050,6 +1051,54 @@ IfxIndicatorValue ifxSetSqlVarIndicator(IfxStatementInfo *info, int ifx_attnum, 
 	}
 
 	return value;
+}
+
+/*
+ * Copy the specified float character representation
+ * into the SQLDA structure for the given attribute number.
+ *
+ * ifxSetFloat() expects a float in its character representation
+ * and wants buf to be a fully allocated character buffer with
+ * up to IFX_MAX_FLOAT_DIGITS. If the buffer overflows, the function
+ * sets the indicator value of the given attribute to INDICATOR_NOT_VALID
+ * and its converrcode to IFX_CONVERSION_OVERFLOW. The caller is responsible
+ * to handle this condition properly.
+ */
+void ifxSetFloat(IfxStatementInfo *info,
+				 int ifx_attnum,
+				 char *buf)
+{
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	size_t buf_len;
+
+	ifx_sqlda = (struct sqlda *) info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * Set NULL indicator.
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+	{
+		return;
+	}
+
+	/*
+	 * Copy the value, but make sure we don't overflow.
+	 */
+	buf_len = strlen(buf);
+	if ( (strlen(buf) > IFX_MAX_FLOAT_DIGITS)
+		 || (info->ifxAttrDefs[ifx_attnum].mem_allocated > IFX_MAX_FLOAT_DIGITS) )
+	{
+		info->ifxAttrDefs[ifx_attnum].indicator     = INDICATOR_NOT_VALID;
+		info->ifxAttrDefs[ifx_attnum].converrcode   = IFX_CONVERSION_OVERFLOW;
+		return;
+	}
+
+	memcpy((char *) ifx_value->sqldata, buf, buf_len);
+	info->ifxAttrDefs[ifx_attnum].converrcode = IFX_CONVERSION_OK;
 }
 
 /*
@@ -1475,6 +1524,56 @@ char *ifxGetText(IfxStatementInfo *state, int ifx_attnum)
 	result = (char *) (ifx_value->sqldata);
 	return result;
 }
+
+/*
+ * Retrieve a FLOAT value from the specified
+ * attribute number.
+ *
+ * The FLOAT value is returned as a character string
+ * with up to IFX_MAX_FLOAT_DIGITS and a terminating null
+ * byte.
+ *
+ * The buffer to hold the character value must be properly
+ * initialized by the caller. If the buffer pointed to by
+ * buf is NULL, the function also returns with NULL without
+ * trying to do any retrieval or conversion. The indicator
+ * value for associated IfxValue value is set to INDICATOR_NOT_VALID
+ * in this case to distinguish a retrieved NULL value from
+ * the remote database.
+ */
+char *ifxGetFloatAsString(IfxStatementInfo *state, int ifx_attnum,
+						  char *buf)
+{
+	struct sqlda *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+
+	/*
+	 * Guard against an invalid allocated buffer. And we don't
+	 * want to overflow...
+	 */
+	if ( (buf == NULL)
+		 || (state->ifxAttrDefs[ifx_attnum].mem_allocated
+			 > IFX_MAX_FLOAT_DIGITS) )
+	{
+		state->ifxAttrDefs[ifx_attnum].indicator = INDICATOR_NOT_VALID;
+		return NULL;
+	}
+
+	/*
+	 * Init stuff.
+	 */
+	ifx_sqlda = (struct sqlda *) state->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	if (ifxSetIndicator(&state->ifxAttrDefs[ifx_attnum],
+						ifx_value) == INDICATOR_NULL)
+		return NULL;
+
+	memcpy(buf, (char *) ifx_value->sqldata,
+		   state->ifxAttrDefs[ifx_attnum].mem_allocated);
+	return buf;
+}
+
 
 /*
  * Retrieves a DATETIME value as a string
@@ -2127,7 +2226,7 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				break;
 			case SQLFLOAT:
 			case SQLSMFLOAT:
-				column_data->sqltype = CFLOATTYPE;
+				column_data->sqltype = CSTRINGTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
 			case SQLDECIMAL:

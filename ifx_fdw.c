@@ -937,6 +937,12 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 	 */
 	switch(PG_ATTRTYPE_P(state, attnum))
 	{
+		case FLOAT4OID:
+		case FLOAT8OID:
+		{
+			setIfxFloat(state, slot, attnum);
+			break;
+		}
 		case INT2OID:
 		case INT4OID:
 		case INT8OID:
@@ -948,7 +954,20 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 		case NUMERICOID:
 		case CASHOID:
 		{
-			setIfxDecimal(state, slot, attnum);
+			/*
+			 * We also support conversion from NUMERICOID to
+			 * Informix float values, so dispatch the target type
+			 * properly.
+			 */
+			if ( (IFX_ATTRTYPE_P(state, attnum) == IFX_FLOAT)
+				 || (IFX_ATTRTYPE_P(state, attnum) == IFX_SMFLOAT) )
+			{
+				setIfxFloat(state, slot, attnum);
+			}
+			else
+			{
+				setIfxDecimal(state, slot, attnum);
+			}
 			break;
 		}
 		case VARCHAROID:
@@ -4313,6 +4332,29 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 
 	switch (IFX_ATTRTYPE_P(state, attnum))
 	{
+		case IFX_FLOAT:
+		case IFX_SMFLOAT:
+		{
+			Datum dat;
+
+			dat = convertIfxFloat(state, attnum);
+
+			/*
+			 * Check for errors. convertIfxFloatAsString() might
+			 * return NULL in case of an error, so make sure we
+			 * catch conversion errors.
+			 */
+			if (! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "could not convert informix type id %d into pg type %u",
+					 IFX_ATTRTYPE_P(state, attnum),
+					 PG_ATTRTYPE_P(state, attnum));
+			}
+
+			IFX_SETVAL_P(state, attnum, dat);
+			break;
+		}
 		case IFX_SMALLINT:
 			/*
 			 * All int values are handled

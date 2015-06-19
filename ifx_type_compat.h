@@ -47,6 +47,19 @@
 #define IFX_DECIMAL_BUF_LEN 30
 
 /*
+ * Maximum number of FLOAT digits, excluding
+ * null byte.
+ */
+#define IFX_MAX_FLOAT_DIGITS 17
+
+/*
+ * Indicates special conversion codes
+ * during PostgreSQL -> Informix datatype conversion.
+ */
+#define	IFX_CONVERSION_OVERFLOW -255
+#define	IFX_CONVERSION_OK 0
+
+/*
  * Flags to identify current state
  * of informix calls.
  */
@@ -330,7 +343,10 @@ typedef struct IfxAttrDef
 	int               converrcode;   /* internal Informix conversion error code,
 									  * 0 if no conversion error set. This value
 									  * is only set during modify action when converting
-									  * column values to Informix */
+									  * column values to Informix.
+									  * -255 is set by the FDW in case of memory
+									  * overflow
+									  */
 } IfxAttrDef;
 
 /*
@@ -647,6 +663,7 @@ inline int ifxGetSqlCode(void);
  * Functions to access specific datatypes
  * within result sets
  */
+char *ifxGetFloatAsString(IfxStatementInfo *state, int attnum, char *buf);
 char *ifxGetInt8(IfxStatementInfo *state, int attnum, char *buf);
 char *ifxGetBigInt(IfxStatementInfo *state, int attnum, char *buf);
 char *ifxGetDateAsString(IfxStatementInfo *state, int ifx_attnum,
@@ -667,6 +684,9 @@ char *ifxGetIntervalAsString(IfxStatementInfo *state, int ifx_attnum,
 /*
  * Functions to copy values into an Informix SQLDA structure.
  */
+void ifxSetFloat(IfxStatementInfo *info,
+				 int ifx_attnum,
+				 char *buf);
 void ifxSetDecimal(IfxStatementInfo *state, int ifx_attnum, char *value);
 void ifxSetInteger(IfxStatementInfo *info, int ifx_attnum, int value);
 void ifxSetInt8(IfxStatementInfo *info, int ifx_attnum, char *value);
