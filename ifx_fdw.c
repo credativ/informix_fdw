@@ -859,6 +859,14 @@ ifxIsForeignRelUpdatable(Relation rel)
 		{
 			updatable = false;
 		}
+
+		/*
+		 * Don't allow DML on foreign tables defined with disable_rowid.
+		 */
+		if (strcmp(def->defname, "disable_rowid") == 0)
+		{
+			return (1 << CMD_INSERT) | (0 << CMD_UPDATE) | (0 << CMD_DELETE);
+		}
 	}
 
 	return updatable
