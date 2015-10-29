@@ -115,6 +115,12 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 #define IFX_SYSTABLE_SCAN_SNAPSHOT NULL
 #endif
 
+#if PG_VERSION_NUM >= 90500
+#define RTE_UPDATED_COLS(a) (a)->updatedCols
+#else
+#define RTE_UPDATED_COLS(a) (a)->modifiedCols
+#endif
+
 /*******************************************************************************
  * FDW helper functions.
  */
@@ -838,6 +844,11 @@ ifxExplainForeignModify(ModifyTableState *mstate,
  * Informix server, but we leave it up to the remote server
  * to give an appropiate error message, if that remote view
  * is not updatable.
+ *
+ * Additionally, we check wether the disable_rowid option was
+ * added to the foreign table, effectively disabling the property
+ * to uniquely identify a row required to do safe DML. Disallow
+ * UPDATE and DELETE in this case.
  */
 static int
 ifxIsForeignRelUpdatable(Relation rel)
@@ -1837,7 +1848,7 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			 * Shamelessly stolen from src/contrib/postgres_fdw.
 			 */
 			RangeTblEntry *rte = planner_rt_fetch(resultRelation, planInfo);
-			Bitmapset  *tmpset = bms_copy(rte->modifiedCols);
+			Bitmapset  *tmpset = bms_copy(RTE_UPDATED_COLS(rte));
 			AttrNumber	col;
 
 			while ((col = bms_first_member(tmpset)) >= 0)
@@ -3208,7 +3219,12 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 							scan_clauses,
 							scan_relid,
 							NIL,
-							plan_values);
+							plan_values
+#if PG_VERSION_NUM >= 90500
+							,NIL
+							,NIL
+#endif
+		);
 }
 
 #else
@@ -5429,6 +5445,9 @@ static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
 {
 	switch(event)
 	{
+#if PG_VERSION_NUM >= 90500
+		case XACT_EVENT_PARALLEL_PRE_COMMIT:
+#endif
 #if PG_VERSION_NUM >= 90300
 		case XACT_EVENT_PRE_COMMIT:
 		{
@@ -5451,6 +5470,9 @@ static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
 					 errmsg("informix_fdw: cannot prepare a transaction")));
 			break;
 		}
+#if PG_VERSION_NUM >= 90500
+		case XACT_EVENT_PARALLEL_COMMIT:
+#endif
 		case XACT_EVENT_COMMIT:
 #else
         case XACT_EVENT_COMMIT:
@@ -5463,6 +5485,9 @@ static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
 			/* Not reach, since pre-commit does everything required. */
 			elog(ERROR, "missed cleaning up connection during pre-commit");
 			break;
+#if PG_VERSION_NUM >= 90500
+		case XACT_EVENT_PARALLEL_ABORT:
+#endif
 		case XACT_EVENT_ABORT:
 		{
 			/*

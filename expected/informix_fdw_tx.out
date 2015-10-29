@@ -688,6 +688,10 @@ SELECT tx_in_progress FROM ifx_fdw_get_connections();
 
 --------------------------------------------------------------------------------
 -- Test CURSOR based DML
+-- Starting with commit 43c8afc we disallow UPDATE and DELETE in
+-- case we have an Informix foreign table with disable_rowid=1.
+-- This never really worked as intended for certain UPDATE and DELETE plans
+-- anyways.
 --------------------------------------------------------------------------------
 DROP FOREIGN TABLE inttest;
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
@@ -707,26 +711,30 @@ SELECT * FROM inttest ORDER BY f1 ASC;
  7007 | 8008 | 9009
 (3 rows)
 
+-- should fail
 UPDATE inttest SET f1 = -1 * 4004 WHERE f1 = 4004;
+ERROR:  foreign table "inttest" does not allow updates
+ROLLBACK;
+BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
-  f1   |  f2  |  f3  
--------+------+------
- -4004 | 5005 | 6006
-  1001 | 2002 | 3003
-  7007 | 8008 | 9009
-(3 rows)
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
+-- should fail
 DELETE FROM inttest WHERE f1 = 4004;
+ERROR:  foreign table "inttest" does not allow deletes
+ROLLBACK;
+BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
-  f1   |  f2  |  f3  
--------+------+------
- -4004 | 5005 | 6006
-  1001 | 2002 | 3003
-  7007 | 8008 | 9009
-(3 rows)
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
+-- should fail
 DELETE FROM inttest;
-COMMIT;
+ERROR:  foreign table "inttest" does not allow deletes
+ROLLBACK;
 --------------------------------------------------------------------------------
 -- Some more complicated DML statements, default behavior
 --------------------------------------------------------------------------------
@@ -805,11 +813,10 @@ SAVEPOINT A;
 --
 -- This should fail, since we don't support such updates (the cursor
 -- will be positioned on the wrong tuple, thus we encounter an invalid
--- state.
+-- state. Thus this UPDATE is rejected...
 --
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
-ERROR:  informix FDW error: "Invalid cursor state "
-DETAIL:  SQLSTATE 24000 (SQLCODE=-10)
+ERROR:  foreign table "inttest" does not allow updates
 ROLLBACK TO A;
 RELEASE SAVEPOINT A;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
@@ -828,8 +835,7 @@ SAVEPOINT B;
 -- above.
 --
 DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
-ERROR:  informix FDW error: "Invalid cursor state "
-DETAIL:  SQLSTATE 24000 (SQLCODE=-10)
+ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK TO B;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
  f1 | f2 | f3 
@@ -840,6 +846,7 @@ SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
 (3 rows)
 
 DELETE FROM inttest;
+ERROR:  foreign table "inttest" does not allow deletes
 COMMIT;
 --
 -- Change back to default behavior

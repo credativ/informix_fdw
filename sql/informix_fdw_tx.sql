@@ -547,6 +547,10 @@ SELECT tx_in_progress FROM ifx_fdw_get_connections();
 
 --------------------------------------------------------------------------------
 -- Test CURSOR based DML
+-- Starting with commit 43c8afc we disallow UPDATE and DELETE in
+-- case we have an Informix foreign table with disable_rowid=1.
+-- This never really worked as intended for certain UPDATE and DELETE plans
+-- anyways.
 --------------------------------------------------------------------------------
 
 DROP FOREIGN TABLE inttest;
@@ -565,17 +569,26 @@ INSERT INTO inttest(f1, f2, f3) VALUES(1001, 2002, 3003), (4004, 5005, 6006), (7
 
 SELECT * FROM inttest ORDER BY f1 ASC;
 
+-- should fail
 UPDATE inttest SET f1 = -1 * 4004 WHERE f1 = 4004;
 
+ROLLBACK;
+BEGIN;
+
 SELECT * FROM inttest ORDER BY f1 ASC;
 
+-- should fail
 DELETE FROM inttest WHERE f1 = 4004;
 
+ROLLBACK;
+BEGIN;
+
 SELECT * FROM inttest ORDER BY f1 ASC;
 
+-- should fail
 DELETE FROM inttest;
 
-COMMIT;
+ROLLBACK;
 
 --------------------------------------------------------------------------------
 -- Some more complicated DML statements, default behavior
@@ -650,7 +663,7 @@ SAVEPOINT A;
 --
 -- This should fail, since we don't support such updates (the cursor
 -- will be positioned on the wrong tuple, thus we encounter an invalid
--- state.
+-- state. Thus this UPDATE is rejected...
 --
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
 
