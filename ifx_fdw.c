@@ -261,9 +261,9 @@ static void ifx_fdw_subxact_callback(SubXactEvent event,
 
 #if PG_VERSION_NUM >= 90500
 
-static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
-									   IfxImportTableDef *tableDef,
-									   int    refid);
+static void ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
+									  IfxImportTableDef *tableDef,
+									  int    refid);
 
 static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
 									 IfxConnectionInfo       *coninfo,
@@ -546,11 +546,10 @@ static IfxStatementInfo *ifxExecStmt(IfxConnectionInfo *coninfo,
  * foreign server. Currently we retrieve column names,
  * column types and NOT NULL constraints.
  */
-static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
-									   IfxImportTableDef *tableDef,
-									   int    refid)
+static void ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
+									  IfxImportTableDef *tableDef,
+									  int    refid)
 {
-	List               *collist = NIL;
 	IfxStatementInfo   *stmtinfo;
 
 	stmtinfo = ifxExecStmt(coninfo, refid, ifxGetTableDetailsSQL(tableDef->tabid));
@@ -625,7 +624,7 @@ static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
 				 ifxIsColumnNullable(colDef->type));
 
 			/* ...and add 'em to the column list */
-			collist = lappend(collist, colDef);
+			tableDef->columnDef = lappend(tableDef->columnDef, colDef);
 
 			/* next one and/or set loop abort condition */
 			ifxFetchRowFromCursor(stmtinfo);
@@ -635,8 +634,6 @@ static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
 		/* ...and we're done. */
 		ifxRewindCallstack(stmtinfo);
 	}
-
-	return collist;
 }
 
 /*
@@ -680,6 +677,7 @@ static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
 			 */
 			tableDef = (IfxImportTableDef *) palloc0(sizeof(IfxImportTableDef));
 			tableDef->tabid     = ifxGetInt4(stmtinfo, 0);
+			tableDef->columnDef = NIL;
 
 			/*
 			 * Initialize the table definition to explicitely *not*
