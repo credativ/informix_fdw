@@ -887,8 +887,10 @@ Oid ifxTypeidToPg(IfxSourceType typid, IfxExtendedType extended_id)
 	switch (typid)
 	{
 		case IFX_TEXT:
-		case IFX_CHARACTER:
 			mappedOid = TEXTOID;
+			break;
+		case IFX_CHARACTER:
+			mappedOid = BPCHAROID;
 			break;
 		case IFX_SMALLINT:
 			mappedOid = INT2OID;
@@ -1169,6 +1171,14 @@ List *ifxCreateImportScript(IfxConnectionInfo *coninfo,
 		appendStringInfo(&buf, ", %s '%s'",
 						 "client_locale",
 						 coninfo->client_locale);
+
+		/*
+		 * If we encounter a foreign table which references
+		 * any BYTES or TEXT columns on the Informix side, we
+		 * should better set the enable_blobs option ...
+		 */
+		if (tableDef->special_cols & IFX_HAS_BLOBS)
+			appendStringInfoString(&buf, ",enable_blobs '1'");
 
 		/*
 		 * DB_LOCALE is optional but although not required

@@ -261,10 +261,9 @@ static void ifx_fdw_subxact_callback(SubXactEvent event,
 
 #if PG_VERSION_NUM >= 90500
 
-static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
-									   ImportForeignSchemaStmt *stmt,
-									   int    refid,
-									   int    tabid);
+static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
+									   IfxImportTableDef *tableDef,
+									   int    refid);
 
 static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
 									 IfxConnectionInfo       *coninfo,
@@ -547,15 +546,14 @@ static IfxStatementInfo *ifxExecStmt(IfxConnectionInfo *coninfo,
  * foreign server. Currently we retrieve column names,
  * column types and NOT NULL constraints.
  */
-static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
-									   ImportForeignSchemaStmt *stmt,
-									   int    refid,
-									   int    tabid)
+static List *ifxGetForeignTableDetails(IfxConnectionInfo *coninfo,
+									   IfxImportTableDef *tableDef,
+									   int    refid)
 {
 	List               *collist = NIL;
 	IfxStatementInfo   *stmtinfo;
 
-	stmtinfo = ifxExecStmt(coninfo, refid, ifxGetTableDetailsSQL(tabid));
+	stmtinfo = ifxExecStmt(coninfo, refid, ifxGetTableDetailsSQL(tableDef->tabid));
 
 	if (stmtinfo != NULL)
 	{
@@ -582,6 +580,30 @@ static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
 			colDef->extended_id = (IfxExtendedType) ifxGetInt4(stmtinfo, 5);
 
 			/*
+			 * We need to flag the import handler to remember
+			 * any special column here. This is required to set certain
+			 * options to the CREATE FOREIGN TABLE statement later, so
+			 * that the table gets the correct settings (e.g. enable_blobs).
+			 */
+			switch (colDef->type)
+			{
+				case IFX_TEXT:
+				case IFX_BYTES:
+					tableDef->special_cols |= IFX_HAS_BLOBS;
+					break;
+				case IFX_LVARCHAR:
+				case IFX_BOOLEAN:
+					/*
+					 * Not really used anywhere yet, but also remember
+					 * any OPAQUE datatypes.
+					 */
+					tableDef->special_cols |= IFX_HAS_OPAQUE;
+					break;
+				default:
+					break;
+			}
+
+			/*
 			 * Set the indicator value, this will
 			 * define wether we need to create a NOT NULL constraint.
 			 */
@@ -598,7 +620,7 @@ static List *ifxGetForeignTableDetails(IfxConnectionInfo       *coninfo,
 			colDef->name = pstrdup((char *) ifxGetText(stmtinfo, 2));
 
 			elog(DEBUG3, "column list for tabid \"%d\", name = \"%s\", type = \"%d\", null = \"%d\"",
-				 tabid, colDef->name,
+				 tableDef->tabid, colDef->name,
 				 ifxSQLType(colDef->type),
 				 ifxIsColumnNullable(colDef->type));
 
@@ -660,6 +682,13 @@ static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
 			tableDef->tabid     = ifxGetInt4(stmtinfo, 0);
 
 			/*
+			 * Initialize the table definition to explicitely *not*
+			 * having any special columns. IfxGetForeignTableDetails() will
+			 * set this property right away.
+			 */
+			tableDef->special_cols = IFX_NO_SPECIAL_COLS;
+
+			/*
 			 * Since we need those identifier persistent, we must
 			 * copy them, otherwise the cursor machinery will reuse
 			 * them under us when moving the cursor forward.
@@ -675,10 +704,9 @@ static List * ifxGetImportCandidates(ImportForeignSchemaStmt *stmt,
 			/*
 			 * Retrieve table column list...
 			 */
-			tableDef->columnDef = ifxGetForeignTableDetails(coninfo,
-															stmt,
-															++refid,
-															tableDef->tabid);
+			ifxGetForeignTableDetails(coninfo,
+									  tableDef,
+									  ++refid);
 
 			/*
 			 * Push the new candidate relation to the list.
@@ -4985,6 +5013,8 @@ ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	if (es->costs)
 	{
 		ExplainPropertyFloat("Informix costs", planData.costs, 2, es);
+
+		/* print planned foreign query */
 		ExplainPropertyText("Informix query", festate->stmt_info.query, es);
 	}
 }

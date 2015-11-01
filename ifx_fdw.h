@@ -269,11 +269,12 @@ typedef struct IfxPushdownOprContext
 
 typedef struct IfxImportTableDef
 {
-	int   tabid; /* unique id of the table */
-	char *owner; /* schema name */
-	char *tablename; /* name of the table, unquoted but maybe case sensitive */
-	List *columnDef; /* List of IfxAttrDef structures describing the
-						foreign table columns */
+	int   tabid;        /* unique id of the table */
+	char *owner;        /* schema name */
+	char *tablename;    /* name of the table, unquoted but maybe case sensitive */
+	short special_cols; /* Flags describing special column types */
+	List *columnDef;    /* List of IfxAttrDef structures describing the
+						   foreign table columns */
 } IfxImportTableDef;
 
 #endif
