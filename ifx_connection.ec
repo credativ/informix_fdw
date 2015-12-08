@@ -1420,6 +1420,50 @@ void ifxSetTimestampFromString(IfxStatementInfo *info, int ifx_attnum,
 }
 
 /*
+ * Converts a date string into a
+ * DATE value and stores them in the SQLDA structure.
+ *
+ * We use rstrdate() internally which relies on DBDATE
+ * format strings. Since we automatically set an explicit value
+ * here, we expect the input string always being in the format
+ * YYYY-MM-DD.
+ *
+ * datestr must be a valid null terminated C string referencing
+ * the date string.
+ */
+void ifxSetDateFromString(IfxStatementInfo *info,
+						  int ifx_attnum,
+						  char *datestr)
+{
+	struct sqlda         *ifx_sqlda;
+	struct sqlvar_struct *ifx_value;
+	mint                  converrcode;
+
+	/*
+	 * Set NULL indicator
+	 */
+	if (ifxSetSqlVarIndicator(info,
+							  ifx_attnum,
+							  info->ifxAttrDefs[ifx_attnum].indicator) != INDICATOR_NOT_NULL)
+		return;
+
+	ifx_sqlda = (struct sqlda *)info->sqlda;
+	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
+
+	/*
+	 * We get the DATE value as an ANSI string formatted value
+	 */
+	if ((converrcode = rstrdate(datestr,
+								(int *)ifx_value->sqldata)) < 0)
+	{
+		/* An error ocurred, tell the caller something went wrong
+		 * with this conversion */
+		info->ifxAttrDefs[ifx_attnum].indicator   = INDICATOR_NOT_VALID;
+		info->ifxAttrDefs[ifx_attnum].converrcode = converrcode;
+	}
+}
+
+/*
  * Convert a time string given in the format
  * hh24:mi:ss into an Informix DATETIME value.
  */

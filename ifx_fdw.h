@@ -380,6 +380,9 @@ void setIfxCharString(IfxFdwExecutionState *state,
 void setIfxDateTimestamp(IfxFdwExecutionState *state,
 						 TupleTableSlot       *slot,
 						 int                   attnum);
+void setIfxDate(IfxFdwExecutionState *state,
+				TupleTableSlot       *slot,
+				int                   attnum);
 void setIfxInterval(IfxFdwExecutionState *state,
 					TupleTableSlot       *slot,
 					int                   attnum);

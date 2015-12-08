@@ -696,6 +696,9 @@ void ifxSetTimestampFromString(IfxStatementInfo *info, int ifx_attnum,
 							   char *dtstring);
 void ifxSetTimeFromString(IfxStatementInfo *info, int ifx_attnum,
                           char *timestr);
+void ifxSetDateFromString(IfxStatementInfo *info,
+						  int ifx_attnum,
+						  char *datestr);
 void ifxSetText(IfxStatementInfo *info, int ifx_attnum, char *value);
 void ifxSetSimpleLO(IfxStatementInfo *info, int ifx_attnum, char *buf,
 					int buflen);

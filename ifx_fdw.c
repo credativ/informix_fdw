@@ -1064,11 +1064,44 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			setIfxCharString(state, attnum, buf, buflen);
 			break;
 		}
+		case DATEOID:
+			/*
+			 * We support conversion from a PostgreSQL DATE type either to
+			 * an Informix DATETIME or DATE data type. However, we have to take care
+			 * to choose the right conversion, since DATE and DATETIME aren't binary
+			 * compatible types in Informix and thus require special handling.
+			 *
+			 * So, depending on the target column, choose the right conversion routine.
+			 * We check specificially for DATE, all other DATETIME conversion could
+			 * be handled by setIfxDateTimestamp().
+			 */
+			if (IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DATE)
+			{
+				setIfxDate(state, slot, attnum);
+				break;
+			}
+
+			/* fall through in case target column is DTIME */
 		case TIMESTAMPTZOID:
 		case TIMESTAMPOID:
 		case TIMEOID:
-		case DATEOID:
-			setIfxDateTimestamp(state, slot, attnum);
+			/*
+			 * Be paranoid: DATE should already be handled above, but make
+			 * sure we have a compatible target type. DTIME is the only allowed
+			 * target type at this point.
+			 */
+			if (IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DTIME)
+			{
+				setIfxDateTimestamp(state, slot, attnum);
+			}
+			else
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				elog(ERROR, "informix_fdw: cannot convert type oid %u of attnum %d to informix type id %d",
+					 PG_ATTRTYPE_P(state, attnum),
+					 attnum,
+					 state->stmt_info.ifxAttrDefs[attnum].type);
+			}
 			break;
 		case INTERVALOID:
 			setIfxInterval(state, slot, attnum);

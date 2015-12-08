@@ -1066,6 +1066,103 @@ void setIfxInterval(IfxFdwExecutionState *state,
 }
 
 /*
+ * Assigns the specified Datum as an Informix DATE value
+ * to the current SQLDA structure provided by the given
+ * execution state handle.
+ *
+ * Conversion is supported from a PostgreSQL DATE source type
+ * to an Informix DATE type only.
+ */
+void setIfxDate(IfxFdwExecutionState *state,
+				TupleTableSlot       *slot,
+				int                   attnum)
+{
+	char  *strval = NULL;
+	Datum  datval;
+
+	/* Sanity check, SQLDA available? */
+	Assert(state->stmt_info.sqlda != NULL);
+	Assert(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DATE);
+
+	/*
+	 * Only IFX_DATE is supported here as a target type.
+	 */
+	if (IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DATE)
+	{
+		/*
+		 * Target type must be an Informix DATE type. However, we convert
+		 * the PostgreSQL datum into it's ANSI string representation first, which
+		 * makes it easier to pass them over to Informix. A date is always formatted
+		 * as yyyy-mm-dd, ifxSetDateFromString() will transfer it back into ESQL/C binary
+		 * representation.
+		 */
+
+		/*
+		 * Don't try to convert a NULL datum.
+		 */
+		if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+			&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+		{
+			PG_TRY();
+			{
+				text *format;
+
+				/*
+				 * Cast the DATE datum to a timestamp first and convert it
+				 * into a ISO8601 compatible string format. Inefficient, but we do
+				 * it this way to be independent from any locale and give a
+				 * static input format to our Informix conversion routines.
+				 */
+				format = cstring_to_text(
+					ifxGetIntervalFormatString(
+						ifxGetTemporalQualifier(&(state->stmt_info),
+												IFX_ATTR_PARAM_ID(state, attnum)),
+						FMT_PG));
+				datval = DirectFunctionCall2(timestamp_to_char,
+											 slot->tts_values[attnum],
+											 PointerGetDatum(format));
+
+				pfree(format);
+			}
+			PG_CATCH();
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+		}
+	}
+	else
+	{
+		/* unknown target type */
+		elog(ERROR, "informix_fdw could not convert local type %u to target type %d",
+			 PG_ATTRTYPE_P(state, attnum),
+			 IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)));
+	}
+
+	strval = text_to_cstring(DatumGetTextP(datval));
+
+	/*
+	 * Sanity check, C string has maximum allowed buffer length?
+	 */
+	Assert(strlen(strval) <= IFX_DATETIME_BUFFER_LEN);
+
+	elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
+		 attnum, strval);
+
+	/*
+	 * Put the converted DATE string into SQLDA
+	 */
+	ifxSetDateFromString(&state->stmt_info,
+						 IFX_ATTR_PARAM_ID(state, attnum),
+						 strval);
+
+	/* cleanup */
+	if (strval != NULL)
+		pfree(strval);
+}
+
+/*
  * Encapsulates assignment from a PostgreSQL
  * timestamp or date value into an informix DATETIME
  * or DATE value.
@@ -1079,158 +1176,166 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 	 */
 	Assert(state->stmt_info.sqlda != NULL);
 
-	switch(IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+	if (IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DTIME)
 	{
-		case IFX_DTIME:
-		case IFX_DATE:
+		Datum   datval;
+		char   *strval = NULL;
+
+		/*
+		 * Target type must be an Informix timestamp or date value.
+		 *
+		 * NOTE: Informix DATE and DATETIME value doesn't understand time zones, nor
+		 *       do they have the same precision. Because of this we always
+		 *       convert a TIMESTAMP or DATE value into its ANSI string format
+		 *       (that is yyyy-mm-dd hh24:mi:ss) first.
+		 */
+
+
+		/*
+		 * Don't try to convert a NULL timestamp value into a character string,
+		 * but step into the conversion routine to set all required
+		 * SQLDA info accordingly.
+		 */
+		if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		    && IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 		{
-			/*
-			 * Target type must be an Informix timestamp or date value.
-			 *
-			 * NOTE: Informix DATE and DATETIME value doesn't understand time zones, nor
-			 *       do they have the same precision. Because of this we always
-			 *       convert a TIMESTAMP or DATE value into its ANSI string format
-			 *       (that is yyyy-mm-dd hh24:mi:ss) first.
-			 */
-			Datum   datval;
-			char   *strval = NULL;
+			text *format;
 
-			/*
-			 * Don't try to convert a NULL timestamp value into a character string,
-			 * but step into the conversion routine to set all required
-			 * SQLDA info accordingly.
-			 */
-			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
-				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
+			PG_TRY();
 			{
-				text *format;
-
-				PG_TRY();
-				{
-					/*
-					 * Make a string from the given DATE or TIMESTAMP(TZ)
-					 * datum in ANSI format.
-					 */
-					switch(PG_ATTRTYPE_P(state, attnum))
-					{
-						case TIMESTAMPTZOID:
-						{
-							format = cstring_to_text("yyyy-mm-dd hh24:mi:ss");
-							datval = DirectFunctionCall2(timestamptz_to_char,
-														 slot->tts_values[attnum],
-														 PointerGetDatum(format));
-							break;
-						}
-						case TIMESTAMPOID:
-						{
-							format = cstring_to_text("yyyy-mm-dd hh24:mi:ss");
-							datval = DirectFunctionCall2(timestamp_to_char,
-														 slot->tts_values[attnum],
-														 PointerGetDatum(format));
-							break;
-						}
-						case DATEOID:
-						{
-							regproc castproc;
-							Datum   castval;
-
-							/*
-							 * Cast it to a timestamp without time zone value.
-							 */
-							castproc = getTypeCastFunction(state, DATEOID, TIMESTAMPOID);
-							castval  = OidFunctionCall1(castproc, slot->tts_values[attnum]);
-
-							/*
-							 * Now try to convert it into a valid string.
-							 */
-							format = cstring_to_text("yyyy-mm-dd");
-							datval = DirectFunctionCall2(timestamp_to_char,
-														 castval,
-														 PointerGetDatum(format));
-							break;
-						}
-						case TIMEOID:
-						{
-							regproc castproc;
-							Datum   castval;
-
-							/*
-							 * Cast the time value into an interval type,
-							 * which can then be converted into a valid text
-							 * string, suitable to be passed down to Informix.
-							 */
-							castproc = getTypeCastFunction(state, TIMEOID, INTERVALOID);
-							castval  = OidFunctionCall1(castproc, slot->tts_values[attnum]);
-
-							/*
-							 * Now try to convert the value
-							 */
-							format = cstring_to_text("hh24:mi:ss");
-							datval = DirectFunctionCall2(interval_to_char,
-														 castval,
-														 PointerGetDatum(format));
-							break;
-						}
-						default:
-							/* we shouldn't reach this, so error out hard */
-							ereport(ERROR,
-									(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
-									 errmsg("informix_fdw unsupported type OID \"%u\" for conversion",
-											PG_ATTRTYPE_P(state, attnum))));
-							break;
-					}
-
-					strval = text_to_cstring(DatumGetTextP(datval));
-				}
-				PG_CATCH();
-				{
-					ifxRewindCallstack(&state->stmt_info);
-					PG_RE_THROW();
-				}
-				PG_END_TRY();
-
 				/*
-				 * Sanity check, C string valid?
+				 * Make a string from the given DATE or TIMESTAMP(TZ)
+				 * datum in ANSI format.
 				 */
-				Assert(strval != NULL);
-				Assert(strlen(strval) <= IFX_DATETIME_BUFFER_LEN);
+				switch(PG_ATTRTYPE_P(state, attnum))
+				{
+					case TIMESTAMPTZOID:
+					{
+						format = cstring_to_text(ifxGetIntervalFormatString(
+													 ifxGetTemporalQualifier(&(state->stmt_info),
+																			 IFX_ATTR_PARAM_ID(state, attnum)),
+													 FMT_PG));
+						datval = DirectFunctionCall2(timestamptz_to_char,
+													 slot->tts_values[attnum],
+													 PointerGetDatum(format));
+						break;
+					}
+					case DATEOID:
+					{
+						/*
+						 * Cast any DATEOID datum to timestamp first, as we'd like to call
+						 * to_char directly which is only present for timestamp datums.
+						 *
+						 * This is what effectively also happens if you call to_char() on the SQL
+						 * level, too.
+						 */
+						Datum castval;
+						regproc castfunc;
 
-				/* cleanup */
-				pfree(format);
+						castfunc = getTypeCastFunction(state, DATEOID, TIMESTAMPOID);
+						castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+
+						format = cstring_to_text(ifxGetIntervalFormatString(
+													 ifxGetTemporalQualifier(&(state->stmt_info),
+																			 IFX_ATTR_PARAM_ID(state, attnum)),
+													 FMT_PG));
+
+						datval = DirectFunctionCall2(timestamp_to_char,
+													 castval,
+													 PointerGetDatum(format));
+
+						break;
+
+					}
+					case TIMESTAMPOID:
+					{
+						format = cstring_to_text(ifxGetIntervalFormatString(
+													 ifxGetTemporalQualifier(&(state->stmt_info),
+																			 IFX_ATTR_PARAM_ID(state, attnum)),
+													 FMT_PG));
+						datval = DirectFunctionCall2(timestamp_to_char,
+													 slot->tts_values[attnum],
+													 PointerGetDatum(format));
+						break;
+					}
+					case TIMEOID:
+					{
+						regproc castproc;
+						Datum   castval;
+
+						/*
+						 * Cast the time value into an interval type,
+						 * which can then be converted into a valid text
+						 * string, suitable to be passed down to Informix.
+						 */
+						castproc = getTypeCastFunction(state, TIMEOID, INTERVALOID);
+						castval  = OidFunctionCall1(castproc, slot->tts_values[attnum]);
+
+						/*
+						 * Now try to convert the value
+						 */
+						format = cstring_to_text("hh24:mi:ss");
+						datval = DirectFunctionCall2(interval_to_char,
+													 castval,
+													 PointerGetDatum(format));
+						break;
+					}
+					default:
+						/* we shouldn't reach this, so error out hard */
+						ereport(ERROR,
+								(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+								 errmsg("informix_fdw unsupported type OID \"%u\" for conversion",
+										PG_ATTRTYPE_P(state, attnum))));
+						break;
+				}
+
+				strval = text_to_cstring(DatumGetTextP(datval));
 			}
-
-			elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
-				 attnum, strval);
+			PG_CATCH();
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
 
 			/*
-			 * Okay, try to store the value into SQLDA
+			 * Sanity check, C string valid?
 			 */
-			if (PG_ATTRTYPE_P(state, attnum) != TIMEOID)
-			{
-				ifxSetTimestampFromString(&state->stmt_info,
-										  IFX_ATTR_PARAM_ID(state, attnum),
-										  strval);
-			}
-			else
-			{
-				ifxSetTimeFromString(&state->stmt_info,
-									 IFX_ATTR_PARAM_ID(state, attnum),
-									 strval);
-			}
+			Assert(strval != NULL);
+			Assert(strlen(strval) <= IFX_DATETIME_BUFFER_LEN);
 
-			/* ...and we're done */
-			if (strval != NULL)
-				pfree(strval);
-
-			break;
+			/* cleanup */
+			pfree(format);
 		}
-		default:
-			/* unknown target type */
-			elog(ERROR, "informix_fdw could not convert local type %u to target type %d",
-				 PG_ATTRTYPE_P(state, attnum),
-				 IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)));
-	}
 
+		elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
+			 attnum, strval);
+
+		if (PG_ATTRTYPE_P(state, attnum) == TIMEOID)
+		{
+			ifxSetTimeFromString(&state->stmt_info,
+								 IFX_ATTR_PARAM_ID(state, attnum),
+								 strval);
+		}
+		else
+		{
+			ifxSetTimestampFromString(&state->stmt_info,
+									  IFX_ATTR_PARAM_ID(state, attnum),
+									  strval);
+		}
+
+		/* ...and we're done */
+		if (strval != NULL)
+			pfree(strval);
+
+	}
+	else
+	{
+		/* unknown target type */
+		elog(ERROR, "informix_fdw could not convert local type %u to target type %d",
+			 PG_ATTRTYPE_P(state, attnum),
+			 IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)));
+	}
 }
 
 /*

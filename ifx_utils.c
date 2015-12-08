@@ -61,8 +61,8 @@ static ifxTemporalFormatIdent ifxTemporalFormat[] =
 	{ "%F", "MS" },
 	{ "%2F", "MS" },
 	{ "%3F", "MS" },
-	{ "%4F", "US" },
-	{ "%5F", "US" }
+	{ "%4F", "MS" },
+	{ "%5F", "MS" }
 };
 
 /*
@@ -425,7 +425,7 @@ char *ifxGetIntervalFormatString(IfxTemporalRange range, IfxFormatMode mode)
 					break;
 				case IFX_TU_SECOND:
 					/* must be fraction here */
-					//appendStringInfoString(&strbuf, ".");
+					appendStringInfoString(&strbuf, ".");
 				case IFX_TU_F1:
 				case IFX_TU_F2:
 				case IFX_TU_F3:
