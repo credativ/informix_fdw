@@ -186,14 +186,14 @@ MONEY
 
 The following types are currently supported for DML:
 
-SERIAL, SERIAL8        => SERIAL, SERIAL8
-INTEGER, BIGINT        => INT8, INTEGER
-INTERVAL               => INTERVAL
-TEXT, BYTEA            => TEXT, BYTE (LO)
-VARCHAR, TEXT          => LVARCHAR, VARCHAR, NVARCHAR, TEXT
-TIMESTAMPTZ, TIMESTAMP => DATETIME
-DATE                   => DATE
-MONEY, NUMERIC         => NUMERIC, MONEY
+SERIAL, SERIAL8             => SERIAL, SERIAL8
+INTEGER, BIGINT             => INT8, INTEGER
+INTERVAL                    => INTERVAL
+TEXT, BYTEA                 => TEXT, BYTE (LO)
+VARCHAR, TEXT               => LVARCHAR, VARCHAR, NVARCHAR, TEXT
+TIMESTAMPTZ, TIMESTAMP,DATE => DATETIME
+DATE                        => DATE
+MONEY, NUMERIC              => NUMERIC, MONEY
 
 Note that Informix doesn't support time zones, thus all TIMESTAMPTZ values will
 be converted into a timestamp without time zone.
