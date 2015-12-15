@@ -4421,6 +4421,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			Datum dat;
 
 			dat = convertIfxFloat(state, attnum);
+			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
 
 			/*
 			 * Check for errors. convertIfxFloatAsString() might

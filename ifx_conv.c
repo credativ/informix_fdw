@@ -787,6 +787,21 @@ void setIfxFloat(IfxFdwExecutionState *state,
 										   PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
 													  slot->tts_values[attnum]));
+
+			/*
+			 * If the typ output function succeed, we have a
+			 * valid buffer, pass it down to try to store them
+			 * as a FLOAT value.
+			 */
+			if (strval == NULL)
+			{
+				ifxRewindCallstack(&(state->stmt_info));
+				ereport(ERROR,
+						(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+						 errmsg("informix_fdw: unexpected NULL value for attribute \"%d\" in float string representation",
+								attnum)));
+			}
+
 		}
 		PG_CATCH();
 		{
@@ -797,25 +812,10 @@ void setIfxFloat(IfxFdwExecutionState *state,
 	}
 
 	/*
-	 * If the typ output function succeed, we have a
-	 * valid buffer, pass it down to try to store them
-	 * as a FLOAT value.
-	 */
-	if (strval == NULL)
-	{
-		ifxRewindCallstack(&(state->stmt_info));
-		ereport(ERROR,
-				(errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
-				 errmsg("informix_fdw: unexpected NULL value for attribute \"%d\" in float string representation",
-						attnum)));
-	}
-
-	/*
 	 * Assign the value to the Informix SQLDA structure.
 	 * ifxSetFloat() takes enough care for NULL values, but be sure
 	 * to trap any conversion errors.
 	 */
-	Assert(strlen(strval) <= IFX_MAX_FLOAT_DIGITS);
 	ifxSetFloat(&(state->stmt_info),
 				IFX_ATTR_PARAM_ID(state, attnum),
 				strval);

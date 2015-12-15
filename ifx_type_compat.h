@@ -49,14 +49,18 @@
 /*
  * Maximum number of FLOAT digits, excluding
  * null byte.
+ *
+ * NOTE: This should match MAXDOUBLEWIDTH in PostgreSQL.
+ *       See src/backend/utils/adt/float.c for details.
  */
-#define IFX_MAX_FLOAT_DIGITS 17
+#define IFX_MAX_FLOAT_DIGITS 128
 
 /*
  * Indicates special conversion codes
  * during PostgreSQL -> Informix datatype conversion.
  */
 #define	IFX_CONVERSION_OVERFLOW -255
+#define IFX_CONVERSION_UNDEFINED -254
 #define	IFX_CONVERSION_OK 0
 
 /*

@@ -148,6 +148,20 @@ OPTIONS ("table" 'decimal_test',
 );
 
 --
+-- Foreign table to test FLOAT/DOUBLE PRECISION and
+-- REAL values
+--
+CREATE FOREIGN TABLE float_test (
+       val1 double precision,
+       val2 real
+) SERVER test_server
+OPTIONS ("table" 'float_test',
+         client_locale :'CLIENT_LOCALE',
+         db_locale :'DB_LOCALE',
+         database :'INFORMIXDB'
+);
+
+--
 -- Start a transaction.
 --
 
@@ -489,6 +503,103 @@ INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 24 hours', '-24 
 COMMIT;
 
 --------------------------------------------------------------------------------
+-- DML for REAL, FLOAT/DOUBLE PRECISION data type
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+-- DBL_MAX and FLT_MAX
+INSERT INTO float_test(val1, val2)
+       VALUES(1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
+       340282346638528859811704183484516925440.000000);
+
+SELECT * FROM float_test ORDER BY val1 ASC;
+
+-- -1 * DBL_MIN and -1 * FLT_MIN
+INSERT INTO float_test(val1, val2)
+       VALUES(-1 * 1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
+       -1 * 340282346638528859811704183484516925440.000000);
+
+SELECT * FROM float_test ORDER BY val1 ASC;
+
+-- NULL values
+INSERT INTO float_test(val1, val2) VALUES(NULL, NULL);
+
+SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+
+DELETE FROM float_test WHERE val2 = 3.40282e+38;
+
+SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+
+-- delete NULLs
+DELETE FROM float_test WHERE val1 IS NULL;
+
+SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+
+DELETE FROM float_test;
+
+-- empty
+SELECT * FROM float_test;
+
+INSERT INTO float_test(val1, val2)
+VALUES
+(1, 0.2),
+(1.25, 0.250),
+(1.5, 0.300),
+(1.75, 0.350),
+(2, 0.400),
+(2.25, 0.450),
+(2.5, 0.500),
+(2.75, 0.550),
+(3, 0.600),
+(3.25, 0.650),
+(3.5, 0.700),
+(3.75, 0.750),
+(4, 0.800),
+(4.25, 0.850),
+(4.5, 0.900),
+(4.75, 0.950),
+(5, 1.000),
+(5.25, 1.050),
+(5.5, 1.100),
+(5.75, 1.150),
+(6, 1.200),
+(6.25, 1.250),
+(6.5, 1.300),
+(6.75, 1.350),
+(7, 1.400),
+(7.25, 1.450),
+(7.5, 1.500),
+(7.75, 1.550),
+(8, 1.600),
+(8.25, 1.650),
+(8.5, 1.700),
+(8.75, 1.750),
+(9, 1.800),
+(9.25, 1.850),
+(9.5, 1.900),
+(9.75, 1.950),
+(10, 2.000);
+
+SELECT COUNT(*) FROM float_test;
+
+-- delete specific range
+DELETE FROM float_test WHERE val1 BETWEEN 2.25 AND 3.75;
+
+SELECT COUNT(*) FROM float_test;
+
+-- delete specific range
+SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY val1 ASC;
+DELETE FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333;
+SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY val1 ASC;
+
+UPDATE float_test SET val2 = 0.333333333333 WHERE val1 BETWEEN 1.0 and 1.333333;
+
+SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
 -- Transaction/Savepoint tests
 --------------------------------------------------------------------------------
 
@@ -699,6 +810,7 @@ ALTER FOREIGN TABLE inttest OPTIONS(DROP disable_rowid);
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
 
+DROP FOREIGN TABLE float_test;
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
 DROP FOREIGN TABLE varchar_test;
