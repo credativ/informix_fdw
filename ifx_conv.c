@@ -1078,7 +1078,7 @@ void setIfxDate(IfxFdwExecutionState *state,
 				int                   attnum)
 {
 	char  *strval = NULL;
-	Datum  datval;
+	Datum  datval = PointerGetDatum(NULL);
 
 	/* Sanity check, SQLDA available? */
 	Assert(state->stmt_info.sqlda != NULL);
@@ -1121,6 +1121,13 @@ void setIfxDate(IfxFdwExecutionState *state,
 				datval = DirectFunctionCall2(timestamp_to_char,
 											 slot->tts_values[attnum],
 											 PointerGetDatum(format));
+				strval = text_to_cstring(DatumGetTextP(datval));
+
+				/*
+				 * Sanity check, C string has maximum allowed buffer length?
+				 */
+				Assert((strval != NULL)
+					   && (strlen(strval) <= IFX_DATETIME_BUFFER_LEN));
 
 				pfree(format);
 			}
@@ -1140,18 +1147,15 @@ void setIfxDate(IfxFdwExecutionState *state,
 			 IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)));
 	}
 
-	strval = text_to_cstring(DatumGetTextP(datval));
-
-	/*
-	 * Sanity check, C string has maximum allowed buffer length?
-	 */
-	Assert(strlen(strval) <= IFX_DATETIME_BUFFER_LEN);
 
 	elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
-		 attnum, strval);
+		 attnum, ((strval != NULL) ? strval : "NULL"));
 
 	/*
 	 * Put the converted DATE string into SQLDA
+	 *
+	 * NOTE: We already should have set the proper indicator for
+	 *       potential NULL values above...
 	 */
 	ifxSetDateFromString(&state->stmt_info,
 						 IFX_ATTR_PARAM_ID(state, attnum),
@@ -1309,7 +1313,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 		}
 
 		elog(DEBUG4, "informix_fdw: attnum %d, converted temporal value \"%s\"",
-			 attnum, strval);
+			 attnum, ((strval != NULL) ? strval : "NULL"));
 
 		if (PG_ATTRTYPE_P(state, attnum) == TIMEOID)
 		{
