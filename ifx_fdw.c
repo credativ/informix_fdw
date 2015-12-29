@@ -349,7 +349,11 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 									  Oid foreignTableId,
 									  ForeignPath *best_path,
 									  List *tlist,
-									  List *scan_clauses);
+									  List *scan_clauses
+#if PG_VERSION_NUM >= 90500
+									  , Plan *outer_plan
+#endif
+	);
 
 static int
 ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
@@ -3231,6 +3235,9 @@ static void ifxGetForeignPaths(PlannerInfo *root,
 									 planState->coninfo->planData.total_costs,
 									 NIL,
 									 NULL,
+#if PG_VERSION_NUM >= 90500
+									 NULL,
+#endif
 									 NIL));
 }
 
@@ -3239,7 +3246,11 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 									  Oid foreignTableId,
 									  ForeignPath *best_path,
 									  List *tlist,
-									  List *scan_clauses)
+									  List *scan_clauses
+#if PG_VERSION_NUM >= 90500
+									  , Plan *outer_plan
+#endif
+	)
 {
 	Index scan_relid;
 	IfxFdwPlanState  *planState;
@@ -3282,6 +3293,7 @@ static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
 #if PG_VERSION_NUM >= 90500
 							,NIL
 							,NIL
+							,outer_plan
 #endif
 		);
 }
