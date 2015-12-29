@@ -661,7 +661,7 @@ IfxSqlStateClass ifxConnectionStatus(void);
 IfxSqlStateClass ifxGetSqlStateClass(void);
 int ifxExceptionCount(void);
 void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message);
-inline int ifxGetSqlCode(void);
+int ifxGetSqlCode(void);
 
 /*
  * Functions to access specific datatypes

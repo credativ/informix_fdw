@@ -964,7 +964,7 @@ IfxSqlStateClass ifxConnectionStatus()
  * Return the SQLCODE identifier for
  * the last executed ESQL/C command.
  */
-inline int ifxGetSqlCode()
+int ifxGetSqlCode(void)
 {
 	return SQLCODE;
 }
