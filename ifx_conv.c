@@ -1045,7 +1045,7 @@ void setIfxInterval(IfxFdwExecutionState *state,
 			}
 
 			elog(DEBUG4, "informix_fdw: attnum %d, converted interval \"%s\"",
-				 attnum, strval);
+				 attnum, ((strval != NULL) ? strval : "NULL"));
 
 			/*
 			 * Copy the value into the Informix SQLDA structure. If successful, we're done.
