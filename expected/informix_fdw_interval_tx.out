@@ -105,36 +105,16 @@ FDW Options: ("table" 'weird_table', client_locale 'en_US.utf8', db_locale 'en_U
 --
 INSERT INTO weird_table (id, ival1) VALUES ('1', Interval '3 years');
 INSERT INTO weird_table (id, ival2) VALUES ('2', Interval '3 months');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival3) VALUES ('3', Interval '3 days');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival4) VALUES ('4', Interval '3 hours');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival5) VALUES ('5', Interval '3 minutes');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival6) VALUES ('6', Interval '3 seconds');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival7) VALUES ('7', Interval '3 years 3 months');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival8) VALUES ('8', Interval '3 days 3 hours');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival9) VALUES ('9', Interval '3 days 3 minutes');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival10) VALUES ('10', Interval '3 days 3 seconds');
 INSERT INTO weird_table (id, ival11) VALUES ('11', Interval '3 hours 3 minutes');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival12) VALUES ('12', Interval '3 hours 3 seconds');
-ERROR:  informix FDW error: "Integrity constraint violation "
-DETAIL:  SQLSTATE 23000 (SQLCODE=-12)
 INSERT INTO weird_table (id, ival13) VALUES ('13', Interval '3 minutes 3 seconds');
 --
 -- Verify output
@@ -185,6 +165,7 @@ SELECT * FROM weird_table ORDER BY id ASC;
 --------------------------------------------------------------------------------
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
+DELETE FROM weird_table;
 RESET search_path;
 DROP SCHEMA test CASCADE;
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;

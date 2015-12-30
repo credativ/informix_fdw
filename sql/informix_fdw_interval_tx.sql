@@ -30,7 +30,7 @@
 -- Suppress WARNINGs during regression test. This will
 -- cause errors in case someone uses a database with logging.
 --
-SET client_min_messages TO DEBUG5;
+SET client_min_messages TO ERROR;
 
 --
 -- Load extension
@@ -132,6 +132,8 @@ SELECT * FROM weird_table ORDER BY id ASC;
 --------------------------------------------------------------------------------
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
+
+DELETE FROM weird_table;
 
 RESET search_path;
 DROP SCHEMA test CASCADE;
