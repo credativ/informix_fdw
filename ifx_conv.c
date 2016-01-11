@@ -1106,6 +1106,8 @@ void setIfxDate(IfxFdwExecutionState *state,
 			PG_TRY();
 			{
 				text *format;
+				Datum castval;
+				regproc castfunc;
 
 				/*
 				 * Cast the DATE datum to a timestamp first and convert it
@@ -1113,13 +1115,16 @@ void setIfxDate(IfxFdwExecutionState *state,
 				 * it this way to be independent from any locale and give a
 				 * static input format to our Informix conversion routines.
 				 */
+				castfunc = getTypeCastFunction(state, DATEOID, TIMESTAMPOID);
+				castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+
 				format = cstring_to_text(
 					ifxGetIntervalFormatString(
 						ifxGetTemporalQualifier(&(state->stmt_info),
 												IFX_ATTR_PARAM_ID(state, attnum)),
 						FMT_PG));
 				datval = DirectFunctionCall2(timestamp_to_char,
-											 slot->tts_values[attnum],
+											 castval,
 											 PointerGetDatum(format));
 				strval = text_to_cstring(DatumGetTextP(datval));
 
