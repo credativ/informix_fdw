@@ -90,6 +90,9 @@ OPTIONS(table 'text_byte_test',
         database :'INFORMIXDB',
         enable_blobs '1');
 
+--
+-- Foreign tables to test DATETIME and DATE values.
+--
 CREATE FOREIGN TABLE datetime_test(id bigserial not null, v1 timestamp with time zone,
                                    v2 date, v3 time)
 SERVER test_server
@@ -97,6 +100,14 @@ OPTIONS(table 'datetime_test',
         client_locale :'CLIENT_LOCALE',
         db_locale :'DB_LOCALE',
         database :'INFORMIXDB');
+
+CREATE FOREIGN TABLE date_test(val date)
+SERVER test_server
+OPTIONS(table 'date_test',
+        client_locale :'CLIENT_LOCALE',
+        db_locale :'DB_LOCALE',
+        database :'INFORMIXDB');
+
 
 --
 -- Foreign table to test SERIAL values
@@ -374,6 +385,62 @@ DELETE FROM datetime_test;
 
 -- empty set expected
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
+
+-- empty set expected
+SELECT val FROM date_test ORDER BY val;
+
+-- INSERT, should succeed
+INSERT INTO date_test(val) VALUES('1941-08-19');
+INSERT INTO date_test(val) VALUES('0001-01-01');
+SELECT val FROM date_test ORDER BY val;
+
+SAVEPOINT _BEFORE_FAIL;
+
+-- INSERT, should fail
+INSERT INTO date_test(val) VALUES('0000-12-31');
+
+ROLLBACK TO _BEFORE_FAIL;
+
+SELECT val FROM date_test ORDER BY val;
+
+-- leap year
+INSERT INTO date_test(val) VALUES('2016-02-29');
+SELECT val FROM date_test ORDER BY val;
+
+-- DELETE, should succeed
+DELETE FROM date_test WHERE val = '2016-02-29';
+SELECT val FROM date_test ORDER BY val;
+
+-- UPDATE, should succeed
+UPDATE date_test SET val = '2016-02-29' WHERE val = '0001-01-01';
+SELECT val FROM date_test ORDER BY val;
+
+DELETE FROM date_test;
+
+SELECT val FROM date_test ORDER BY val;
+
+COMMIT;
+
+--
+-- We don't support PostgreSQL timestamp/timestamptz to Informix DATE conversions
+--
+BEGIN;
+
+ALTER FOREIGN TABLE date_test ALTER val TYPE timestamptz;
+
+SAVEPOINT _BEFORE_FAIL;
+
+-- should fail
+INSERT INTO date_test(val) VALUES('2016-10-10 15:25');
+
+ROLLBACK TO _BEFORE_FAIL;
+
+ALTER FOREIGN TABLE date_test ALTER val TYPE timestamp;
+
+-- should fail
+INSERT INTO date_test(val) VALUES('2016-10-10 15:25');
+
+ROLLBACK TO _BEFORE_FAIL;
 
 COMMIT;
 
@@ -818,6 +885,7 @@ DROP FOREIGN TABLE text_byte_test;
 DROP FOREIGN TABLE serial_test;
 DROP FOREIGN TABLE serial8_test;
 DROP FOREIGN TABLE datetime_test;
+DROP FOREIGN TABLE date_test;
 DROP FOREIGN TABLE interval_test;
 DROP FOREIGN TABLE decimal_test;
 
