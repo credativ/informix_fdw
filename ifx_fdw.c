@@ -1993,9 +1993,6 @@ static void ifxAssignOptions(IfxConnectionInfo *coninfo,
 	{
 		DefElem *def = (DefElem *) lfirst(elem);
 
-		elog(DEBUG5, "ifx_fdw set param %s=%s",
-			 def->defname, defGetString(def));
-
 		/*
 		 * "informixserver" defines the INFORMIXSERVER to connect to
 		 */
@@ -2101,6 +2098,7 @@ static void ifxAssignOptions(IfxConnectionInfo *coninfo,
 			 */
 			coninfo->delimident = 1;
 		}
+
 	}
 }
 
