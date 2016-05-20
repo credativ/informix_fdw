@@ -57,10 +57,10 @@ deparse_predicate_node(IfxPushdownOprContext *context,
 					   IfxPushdownOprInfo *info);
 
 static char *getIfxOperatorIdent(IfxPushdownOprInfo *pushdownInfo);
+static char * getConstValue(Const *constNode);
 
 #if PG_VERSION_NUM >= 90300
-static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
-									 Oid inputOid);
+static regproc getTypeOutputFunction(Oid inputOid);
 
 static inline char *interval_to_cstring(IfxFdwExecutionState *state,
 										TupleTableSlot       *slot,
@@ -783,8 +783,7 @@ void setIfxFloat(IfxFdwExecutionState *state,
 		 */
 		PG_TRY();
 		{
-			typout = getTypeOutputFunction(state,
-										   PG_ATTRTYPE_P(state, attnum));
+			typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
 													  slot->tts_values[attnum]));
 
@@ -898,16 +897,14 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 				regproc castfunc = getTypeCastFunction(state, CASHOID, NUMERICOID);
 				Datum   castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
 
-				typout = getTypeOutputFunction(state,
-											   NUMERICOID);
+				typout = getTypeOutputFunction(NUMERICOID);
 
 				strval = DatumGetCString(OidFunctionCall1(typout,
 														  castval));
 			}
 			else
 			{
-				typout = getTypeOutputFunction(state,
-											   PG_ATTRTYPE_P(state, attnum));
+				typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 
 				strval = DatumGetCString(OidFunctionCall1(typout,
 														  slot->tts_values[attnum]));
@@ -1457,8 +1454,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			/*
 			 * Convert the int8 value to its character representation.
 			 */
-			typout = getTypeOutputFunction(state,
-										   PG_ATTRTYPE_P(state, attnum));
+			typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
 													  DatumGetInt64(slot->tts_values[attnum])));
 			if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
@@ -1489,8 +1485,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 	}
 }
 
-static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
-									 Oid inputOid)
+static regproc getTypeOutputFunction(Oid inputOid)
 {
 	regproc result;
 	HeapTuple type_tuple;
@@ -1504,12 +1499,7 @@ static regproc getTypeOutputFunction(IfxFdwExecutionState *state,
 	{
 		/*
 		 * Oops, this is not expected...
-		 *
-		 * Don't throw an ERROR here immediately, but inform the caller
-		 * that something went wrong. We need to give the caller time
-		 * to cleanup itself...
 		 */
-		ifxRewindCallstack(&(state->stmt_info));
 		elog(ERROR,
 			 "cache lookup failed for output function for type %u",
 			 inputOid);
@@ -2288,6 +2278,35 @@ static Const *ifxConvertNodeConst(Const *oldNode, bool *converted,
 	 */
 	switch(oldNode->consttype)
 	{
+		case BPCHAROID:
+		{
+			Const *newNode;
+			Datum datVal;
+
+			/*
+			 * Rewrite the given BPCHAR datum into a varchar without
+			 * a typmod attached (-1 in this case).
+			 */
+			if (oldNode->constisnull)
+				datVal= PointerGetDatum(NULL);
+		else
+				datVal = DirectFunctionCall2(varcharin,
+											 CStringGetDatum(TextDatumGetCString(oldNode->constvalue)),
+											 oldNode->consttypmod);
+
+			newNode = makeConst(VARCHAROID,
+								-1,
+								oldNode->constcollid,
+								oldNode->constlen,
+								datVal,
+								oldNode->constisnull,
+								false);
+
+			result = newNode;
+			*converted = true;
+
+			break;
+		}
 		case TEXTOID:
 		{
 			/*
@@ -2731,6 +2750,9 @@ deparse_predicate_node(IfxPushdownOprContext *context,
 	 */
 	Assert(info->type != IFX_OPR_NOT_SUPPORTED);
 
+	if (info->deparsetype == IFX_COOKED_EXPR)
+		elog(DEBUG5, "deparsing a cooked epxression");
+
 	/*
 	 * Copy the expression node. We don't want to allow
 	 * ChangeVarNodes() to fiddle directly on the baserestrictinfo
@@ -2773,6 +2795,8 @@ deparse_predicate_node(IfxPushdownOprContext *context,
 		Node *oprarg_left;
 		Node *oprarg_right;
 		char *oprstr; /* deparsed operator identifier */
+		char *left;
+		char *right;
 
 		/*
 		 * At this point we *know* that we can receive operator
@@ -2785,14 +2809,45 @@ deparse_predicate_node(IfxPushdownOprContext *context,
 		oprarg_left  = (Node *)linitial(((OpExpr *)info->expr)->args);
 		oprarg_right = (Node *)lsecond(((OpExpr *)info->expr)->args);
 
+		if (IsA(oprarg_left, Const))
+			left = getConstValue((Const *)oprarg_left);
+		else
+			left = deparse_expression(oprarg_left, dpc, false, false);
+
+		if (IsA(oprarg_right, Const))
+			right = getConstValue((Const *) oprarg_right);
+		else
+			right = deparse_expression(oprarg_right, dpc, false, false);
+
 		appendStringInfo(&predstr, "%s %s %s",
-						 deparse_expression(oprarg_left, dpc, false, false),
+						 left,
 						 oprstr,
-						 deparse_expression(oprarg_right, dpc, false, false));
+						 right);
+
 	}
 
 	info->expr_string = cstring_to_text(predstr.data);
 	elog(DEBUG1, "deparsed pushdown predicate %d, %s",
 		 context->count - 1,
 		 text_to_cstring(info->expr_string));
+}
+
+static char * getConstValue(Const *constNode)
+{
+	regproc typout;
+	char   *result;
+	Assert(constNode != NULL);
+
+	if (constNode->constisnull)
+		return "NULL";
+
+	/*
+	 * Get the type datum text representation via its output function.
+	 */
+	typout = getTypeOutputFunction(constNode->consttype);
+	result = quote_literal_cstr(DatumGetCString(
+									OidFunctionCall1(typout,
+													 constNode->constvalue)));
+
+	return result;
 }
