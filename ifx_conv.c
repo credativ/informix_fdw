@@ -2476,6 +2476,25 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	}
 
 	/*
+	 * Check for <var> IN (...)
+	 */
+	else if (IsA(node, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *scalarOpr = (ScalarArrayOpExpr *) node;
+		ListCell *cell;
+
+		elog(DEBUG1, "detected IN() expression %s", nodeToString(scalarOpr));
+
+		/*
+		 * Analyze operands
+		 */
+		foreach(cell, scalarOpr->args)
+		{
+			Node *scalar_operand = (Node *) cell;
+		}
+	}
+
+	/*
 	 * Check for <var> IS NULL or <var> IS NOT NULL
 	 */
 	else if (IsA(node, NullTest))
