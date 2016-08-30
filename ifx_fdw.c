@@ -4494,6 +4494,18 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 			*isnull = (IFX_ATTR_ISNULL_P(state, attnum));
 
 			/*
+			 * Guard against invalid conversion
+			 * attempts.
+			 */
+			if (! IFX_ATTR_IS_VALID_P(state, attnum))
+			{
+				ifxRewindCallstack(&state->stmt_info);
+				ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DATA_TYPE),
+								errmsg("conversion in column \"%s\" with unsupported character type mapping",
+									   state->pgAttrDefs[attnum].attname)));
+			}
+
+			/*
 			 * At this point we never expect a NULL datum without
 			 * having retrieved NULL from informix. Check it.
 			 * If it's a validated NULL value from informix,
