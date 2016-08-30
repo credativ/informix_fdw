@@ -219,6 +219,7 @@ typedef enum IfxOprType
 	IFX_OPR_NOT_SUPPORTED,
 	IFX_IS_NULL,
 	IFX_IS_NOT_NULL,
+	IFX_OPR_IN,
 	IFX_OPR_UNKNOWN
 } IfxOprType;
 
@@ -249,6 +250,27 @@ typedef struct IfxPushdownOprInfo
 	Expr          *expr;          /* pointer to operator expression */
 	text          *expr_string;   /* decoded string representation of expr */
 } IfxPushdownOprInfo;
+
+/*
+ * Context to build IN() expressions out of an ScalarArrayOpExpr.
+ */
+typedef struct IfxPushdownInOprContext
+{
+	Var *colref; /* Column/Value referencing local relation */
+	/*
+	 * Rewritten column reference for pushdown,
+	 * might be just a reference for colref in case
+	 * no rewrite needs to be done
+	 */
+	Var *col_rewritten;
+	Oid target_type; /* Type OID, valid OID indicates that this Var needs
+						a RelabelType conversion */
+	int32 target_typmod;
+	Oid target_collid;
+	Oid opno;
+	Oid opfunc;
+	List *elements;  /* Elements of IN() expression */
+} IfxPushdownInOprContext;
 
 /*
  * Pushdown context structure for generating

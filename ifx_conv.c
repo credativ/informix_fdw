@@ -58,9 +58,14 @@ deparse_predicate_node(IfxPushdownOprContext *context,
 
 static char *getIfxOperatorIdent(IfxPushdownOprInfo *pushdownInfo);
 static char * getConstValue(Const *constNode);
+static void rewriteInExprContext(Const *arrayConst,
+								 IfxPushdownInOprContext *cxt);
+void deparse_node_list_for_InExpr(IfxPushdownOprContext *context,
+								  IfxPushdownInOprContext *in_cxt,
+								  IfxPushdownOprInfo *info);
+static regproc getTypeOutputFunction(Oid inputOid);
 
 #if PG_VERSION_NUM >= 90300
-static regproc getTypeOutputFunction(Oid inputOid);
 
 static inline char *interval_to_cstring(IfxFdwExecutionState *state,
 										TupleTableSlot       *slot,
@@ -1485,6 +1490,8 @@ void setIfxInteger(IfxFdwExecutionState *state,
 	}
 }
 
+#endif
+
 static regproc getTypeOutputFunction(Oid inputOid)
 {
 	regproc result;
@@ -1510,7 +1517,6 @@ static regproc getTypeOutputFunction(Oid inputOid)
 	return result;
 }
 
-#endif
 
 /*
  * Returns the type input function for the
@@ -2103,7 +2109,7 @@ static List *make_deparse_context(Oid foreignRelid)
 	return deparse_context_for(get_rel_name(foreignRelid), foreignRelid);
 }
 
-#define IFX_MARK_PREDICATE_NOT_SUPPORTED(a, b) \
+#define IFX_MARK_PREDICATE_NOT_SUPPORTED(a) \
 	(a)->type = IFX_OPR_NOT_SUPPORTED;
 
 #define IFX_MARK_PREDICATE_ELEM(a, b) \
@@ -2384,6 +2390,234 @@ static void ifxCookExpr(IfxPushdownOprInfo *info,
 }
 
 /*
+ * Makes a List of Const values with all
+ * extracted Datum from the given array type.
+ * arrayConst must be a Const * node referencing
+ * an ArrayType.
+ */
+static void rewriteInExprContext(Const *arrayConst,
+								 IfxPushdownInOprContext *cxt)
+{
+	Datum    *array_elem;
+	bool     *array_nulls;
+
+	int       element_num;
+	int16     element_len;
+
+	ArrayType *in_array;
+	int        i;
+
+	bool       element_byval;
+	char       element_align;
+
+	Const     *new_const;
+	Var       *ref_var;
+
+	Assert((arrayConst != NULL)
+		   && (arrayConst->consttype != InvalidOid)
+		   && (cxt != NULL)
+		   && (cxt->colref != NULL));
+
+	in_array = DatumGetArrayTypeP(arrayConst->constvalue);
+
+	/* deconstruct the array datum */
+	get_typlenbyvalalign(ARR_ELEMTYPE(in_array),
+						 &element_len,
+						 &element_byval,
+						 &element_align);
+	deconstruct_array(in_array,
+					  ARR_ELEMTYPE(in_array),
+					  element_len,
+					  element_byval,
+					  element_align,
+					  &array_elem,
+					  &array_nulls,
+					  &element_num);
+
+	/*
+	 * Build a new Var reference reflecting the
+	 * <VAR> = <CONST> operator expression...
+	 *
+	 */
+	if (cxt->target_type != InvalidOid)
+	{
+		ref_var = makeVar(cxt->colref->varno,
+						  cxt->colref->varattno,
+						  cxt->target_type,
+						  cxt->target_typmod,
+						  cxt->target_collid,
+						  cxt->colref->varlevelsup);
+
+		/*
+		 * This will replace the original Var expression
+		 * node retrieved from the foreign table, since we want
+		 * to have a compatible expression here for all rewritten
+		 * elements of the IN() expression.
+		 */
+		cxt->colref = ref_var;
+	}
+	else
+	{
+		ref_var = copyObject(cxt->colref);
+	}
+
+	/*
+	 *
+	 */
+
+	for (i = 0; i < element_num; i++)
+	{
+		if (array_nulls[i])
+			continue;
+
+		elog(DEBUG5, "deconstructed array element, type %u",
+			 ARR_ELEMTYPE(in_array));
+
+		/*
+		 * We might get a type coercion action by a RelabelType here
+		 * in this case the current rewrite context should have
+		 * a target_type OID set to a valid value.
+		 */
+		if (cxt->target_type != InvalidOid)
+		{
+			new_const = makeConst(cxt->target_type,
+								  cxt->target_typmod,
+								  cxt->target_collid,
+								  element_len,
+								  array_elem[i],
+								  array_nulls[i],
+								  element_byval);
+		}
+		else
+		{
+			/* A defined target type OID means that we are forced to
+			 * make a Const node based on the extracted Var node before.
+			 */
+			Var *exVar = cxt->colref;
+
+			new_const = makeConst(exVar->vartype,
+								  exVar->vartypmod,
+								  exVar->varcollid,
+								  element_len,
+								  array_elem[i],
+								  array_nulls[i],
+								  element_byval);
+		}
+
+		/*
+		 * The array datum is cooked into a Const expression
+		 * node now.
+		 */
+		cxt->elements = lappend(cxt->elements, new_const);
+	}
+
+}
+
+/*
+ * Gets a list of nodes and returns them
+ * as a formatted SQL IN() expression.
+ *
+ * We refuse to work on any IfxDeparseType != IFX_COOKED_EXPR. That's
+ * because we rely on OpExpr nodes to be cooked during
+ * deparse analysis in ifx_predicate_walker() earlier.
+ *
+ * The info structure passed to deparse_node_list_for_InExpr() gets rewritten
+ * during the parse analysis to create a compatible IfxPushdownOprInfo
+ * struct for ifxFilterQuals() in ifx_fdw.c. Please note that this
+ * works for a placeholder info struct marked with IFX_OPR_IN only
+ * at the moment.
+ */
+void deparse_node_list_for_InExpr(IfxPushdownOprContext *context,
+								  IfxPushdownInOprContext *in_cxt,
+								  IfxPushdownOprInfo *info)
+{
+	int visited = 0;
+	List           *dpc;
+	ListCell       *cell;
+	StringInfoData *buf;
+
+	Assert((context != NULL)
+		   && (info != NULL)
+		   && (in_cxt != NULL));
+
+	/*
+	 * Deparse analysis should call us only in case
+	 * we have a IFX_COOKED_EXPR. If not, just mark this as
+	 * unsupported...
+	 */
+	if ((info->deparsetype != IFX_COOKED_EXPR)
+		|| (info->type != IFX_OPR_IN))
+	{
+		IFX_MARK_PREDICATE_NOT_SUPPORTED(info);
+		return;
+	}
+
+	/*
+	 * Anything to do ?
+	 */
+	if (list_length(in_cxt->elements) <= 0)
+	{
+		/* Assume unsupported operator ... */
+		IFX_MARK_PREDICATE_NOT_SUPPORTED(info);
+		return;
+	}
+
+	/*
+	 * Adjust varno. The RTE currently present aren't adjusted according
+	 * to the FDW entries we get for the ForeignScan node. We call
+	 * ChangeVarNodes() to adjust them to make them usable by deparsing
+	 * later.
+	 */
+	ChangeVarNodes((Node *)in_cxt->colref, context->foreign_rtid, 1, 0);
+	dpc = make_deparse_context(context->foreign_relid);
+
+	/*
+	 * Begin of IN() expression ...
+	 */
+	buf = makeStringInfo();
+	initStringInfo(buf);
+
+	/*
+	 * Deparse column reference
+	 */
+	appendStringInfo(buf, "%s IN(",
+					 deparse_expression((Node *)in_cxt->colref,
+										dpc,
+										false, false));
+
+	foreach(cell, in_cxt->elements)
+	{
+		Node *node = (Node *)lfirst(cell);
+
+		/*
+		 * We expect certain kinds of Expr nodes here,
+		 * currently we support Const nodes only, but this might
+		 * change sometime in the future.
+		 */
+		switch(node->type)
+		{
+			case T_Const:
+			{
+				visited++;
+				appendStringInfo(buf, "%s", getConstValue((Const *) node));
+
+				if (visited < list_length(in_cxt->elements))
+					appendStringInfoString(buf, ", ");
+				break;
+			}
+			default:
+				IFX_MARK_PREDICATE_NOT_SUPPORTED(info);
+				break;
+		}
+	} /* foreach */
+
+	appendStringInfoString(buf, ")");
+	info->type = IFX_OPR_IN;
+	info->expr_string = cstring_to_text(buf->data);
+
+}
+
+/*
  * ifx_predicate_tree_walker()
  *
  * Examine the expression node. We expect a OPEXPR
@@ -2394,7 +2628,6 @@ static void ifxCookExpr(IfxPushdownOprInfo *info,
  * FDW col >(=) CONST
  * FDW col <(=) CONST
  *
- * Only CONST and VAR expressions are currently supported.
  */
 bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context)
 {
@@ -2481,17 +2714,135 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	else if (IsA(node, ScalarArrayOpExpr))
 	{
 		ScalarArrayOpExpr *scalarOpr = (ScalarArrayOpExpr *) node;
+		IfxPushdownInOprContext in_cxt;
 		ListCell *cell;
 
-		elog(DEBUG1, "detected IN() expression %s", nodeToString(scalarOpr));
+		info = palloc(sizeof(IfxPushdownOprInfo));
+		info->expr = (Expr *)node;
+		info->expr_string = NULL;
+		info->deparsetype = IFX_DEPARSED_EXPR;
+		info->num_args    = 1;
+		info->arg_idx     = 0;
 
 		/*
-		 * Analyze operands
+		 * Prepare the context to build a IN()
+		 * expression suitable for us...
+		 */
+		in_cxt.colref        = NULL;
+		in_cxt.target_type   = InvalidOid;
+		in_cxt.target_typmod = -1;
+		in_cxt.target_collid = InvalidOid;
+		in_cxt.elements      = NIL;
+
+		/* Safe operator OID and function OID */
+		in_cxt.opno          = scalarOpr->opno;
+		in_cxt.opfunc        = scalarOpr->opfuncid;
+
+		/*
+		 * Analyze operands. This is expected to be an array datum. The way
+		 * we deparse this is as follows:
+		 *
+		 * - Extract the Var expression from the argument (or RelabelType, if any)
+		 *   and assign their properties to the current IfxPushdownInOprContext
+		 *   structure. This structure will collect all necessary deparse
+		 *   information to make it easier to deparse the whole array expression
+		 *   back to SQL.
+		 * - Move the Datums of all array members into the element list of the
+		 *   new IfxPushdownInOprContext structure. See rewriteInExprContext()
+		 *   for more details.
 		 */
 		foreach(cell, scalarOpr->args)
 		{
-			Node *scalar_operand = (Node *) cell;
-		}
+			Node *scalar_operand = (Node *) lfirst(cell);
+
+			/*
+			 * Take care for a RelabelType here.
+			 * NOTE: Iff we don't find a Var type, we abort immediately
+			 */
+			if (IsA(scalar_operand, RelabelType))
+			{
+				RelabelType *relabelOpr = (RelabelType *) scalar_operand;
+
+				/*
+				 * Remember type coercion...
+				 */
+				in_cxt.target_type = relabelOpr->resulttype;
+				in_cxt.target_typmod = relabelOpr->resulttypmod;
+				in_cxt.target_collid = relabelOpr->resultcollid;
+
+				if (!IsA(relabelOpr->arg, Var))
+				{
+					/*
+					 * If no supported expression is found, return.
+					 */
+					context->count_removed++;
+					return true;
+				}
+				else
+				{
+					/*
+					 * Is a Var, we need this expression to cook
+					 * our own expression.
+					 */
+					elog(DEBUG5, "extracting column reference");
+					in_cxt.colref = (Var *)copyObject(relabelOpr->arg);
+				}
+			}
+			else if (IsA(scalar_operand, Var))
+			{
+				/*
+				 * Is a Var, we need this expression to cook
+				 * our own expression.
+				 */
+				in_cxt.colref = (Var *)copyObject(scalar_operand);
+			}
+			else if (IsA(scalar_operand, Const))
+			{
+				elog(DEBUG5, "extracting array elements");
+
+				/*
+				 * Rewrite the current IfxPushdownInOprContext
+				 * so that it can be passed to dpearse_node_list_for_InExpr().
+				 */
+				rewriteInExprContext((Const *) scalar_operand,
+									 &in_cxt);
+			}
+			else
+			{
+				/* Not a supported operand so far ... */
+				context->count_removed++;
+				return true;
+			}
+		} /* for i in scalarOpr->args */
+
+		/*
+		 * Prepare a placeholder pushdown info struct for
+		 * deparsing the cooked operator expressions. This info
+		 * struct gets rewritten during deparse_node_list_for_InExpr() and
+		 * and will carry a deparsed SQL string afterwards.
+		 */
+		info->deparsetype  = IFX_COOKED_EXPR;
+		info->type         = IFX_OPR_IN;
+		info->num_args     = 0; /* doesn't hold anything in expr */
+		info->arg_idx      = 0;
+		info->expr         = NULL;
+
+		/*
+		 * Mark this predicate for pushdown.
+		 */
+		IFX_MARK_PREDICATE_ELEM(info, context);
+
+		/*
+		 * Deparse the expression node...
+		 *
+		 * Since deparse_predicate_node() isn't designed to
+		 * deparse whole BoolExpr trees or complicater things, we
+		 * instrument deparse_node_list_InExpr(), which will return
+		 *
+		 */
+		deparse_node_list_for_InExpr(context,
+									 &in_cxt,
+									 info);
 	}
 
 	/*
@@ -2680,6 +3031,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 						 *      make it possible right now...
 						 */
 						elog(DEBUG2, "relabel type detected");
+						elog(DEBUG2, "relabel type is %s", nodeToString(r));
 
 						if (IsA(r->arg, Var))
 						{
@@ -2751,7 +3103,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 }
 
 /*
- * Deparse the given Node into a string assigned
+ * Deparse the given operator expression into a string assigned
  * to the specified IfxPushdownOprInfo pointer.
  *
  * Caller should defend against IFX_OPR_NOT_SUPPORTED!
