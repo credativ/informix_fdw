@@ -5297,8 +5297,6 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		else
 		{
 			fcontext->max_calls = hash_get_num_entries(ifxCache.connections);
-			elog(DEBUG2, "found %d entries in informix connection cache",
-				 fcontext->max_calls);
 
 			/*
 			 * Retain the status of the hash search and other info.
