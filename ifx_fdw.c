@@ -3228,6 +3228,9 @@ static void ifxGetForeignPaths(PlannerInfo *root,
 	 */
 	add_path(baserel, (Path *)
 			 create_foreignscan_path(root, baserel,
+#if PG_VERSION_NUM >= 90600
+									 NULL,
+#endif
 									 baserel->rows,
 									 planState->coninfo->planData.costs,
 									 planState->coninfo->planData.total_costs,
@@ -5272,7 +5275,7 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		fcontext = SRF_FIRSTCALL_INIT();
 		oldcontext = MemoryContextSwitchTo(fcontext->multi_call_memory_ctx);
 
-        /*
+                /*
 		 * Are we called in a context which accepts a record?
 		 */
 		if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
