@@ -260,6 +260,7 @@ INSERT INTO inttest VALUES(-1, -2, -3), (100, 200, 300), (400, 500, 600),
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
 
 -- DELETE values
+-- ... should also use IN() pushdown ;)
 DELETE FROM inttest WHERE f1 IN(100, -100);
 
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
@@ -278,6 +279,11 @@ SELECT f1, f2, f3 FROM inttest ORDER BY f1;
 UPDATE inttest SET f2 = -2, f1 = -1, f3 = -3 WHERE f1 IN (4004, 7007, -400);
 
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+
+--
+-- Test IN() expression
+--
+SELECT * FROM inttest WHERE f1 IN (-2, -1, -3) ORDER BY f1;
 
 -- DELETE everything
 DELETE FROM inttest;
@@ -309,12 +315,17 @@ INSERT INTO varchar_test VALUES(DEFAULT, 'abc', 'def', 'ghi');
 
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
 
+-- IN() pushdown and quoting...
+SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN ('abc', 'def', 'ghi') ORDER BY id;
+
 --
 -- INSERT of special character (german umlaut)
 --
 INSERT INTO varchar_test VALUES(DEFAULT, 'ßßß', 'ÄÖÜ', 'äöü');
 
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
+
+SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('ÄÖÜ', 'ßßß');
 
 DELETE FROM varchar_test;
 
@@ -374,6 +385,13 @@ INSERT INTO datetime_test(v1, v2, v3) VALUES('2013-08-19 15:30:00',
                                              '15:30:00');
 
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
+
+--
+-- IN() expression...
+-- NOTE: this must not generate a sql expression pushed down to the
+--       Informix server, since TIMESTAMP(TZ)OID is not supported for pushdown.
+--
+DELETE FROM datetime_test WHERE v1 IN ('2013-08-19 15:4:00', '2013-08-19 15:50:00', '2013-08-19 15:20:00');
 
 -- DELETE specific time value
 DELETE FROM datetime_test WHERE v3 = '15:30:00';
@@ -547,12 +565,21 @@ BEGIN;
 INSERT INTO interval_test VALUES('5 years 1 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
 INSERT INTO interval_test VALUES('5 years 15 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
 INSERT INTO interval_test VALUES('1 years 0 month', '5 days 1 hours', '3 hours');
-INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 23 hours 59 minutes 59 seconds', '-24 hours 59 minutes');
+INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 23 hours 59 minutes 59 seconds', '24 hours 59 minutes');
 INSERT INTO interval_test VALUES(NULL, NULL, NULL);
 
 SELECT * FROM interval_test ORDER BY f1;
 
 SELECT * FROM interval_test WHERE f1 IS NULL;
+
+--
+-- IN() expression pushdown...
+-- NOTE: Must not trigger a pushed down SQL expression, since INTERVALOID is
+--       not supported for pushdown.
+--
+SET intervalstyle TO sql_standard;
+SELECT * FROM interval_test WHERE f1 IN ('5 years 1 month', '5 years 15 month');
+RESET intervalstyle;
 
 DELETE FROM interval_test WHERE f1 IS NULL;
 
@@ -663,6 +690,9 @@ SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY 
 UPDATE float_test SET val2 = 0.333333333333 WHERE val1 BETWEEN 1.0 and 1.333333;
 
 SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
+
+-- check IN() pushdown
+SELECT val1, val2 FROM float_test WHERE val1 IN (5, 8.75, 9.75, 1.0, 1.25);
 
 COMMIT;
 

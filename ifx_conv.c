@@ -2575,6 +2575,7 @@ void deparse_node_list_for_InExpr(IfxPushdownOprContext *context,
 	 * Begin of IN() expression ...
 	 */
 	buf = makeStringInfo();
+	info->type = IFX_OPR_IN;
 	initStringInfo(buf);
 
 	/*
@@ -2598,6 +2599,17 @@ void deparse_node_list_for_InExpr(IfxPushdownOprContext *context,
 		{
 			case T_Const:
 			{
+				Const *constval = (Const *) node;
+
+				/*
+				 * Check wether this Const node has
+				 * a datatype which can be pushed down safely.
+				 */
+				if (!isCompatibleForPushdown(constval->consttype))
+				{
+					IFX_MARK_PREDICATE_NOT_SUPPORTED(info);
+					break;
+				}
 				visited++;
 				appendStringInfo(buf, "%s", getConstValue((Const *) node));
 
@@ -2612,7 +2624,6 @@ void deparse_node_list_for_InExpr(IfxPushdownOprContext *context,
 	} /* foreach */
 
 	appendStringInfoString(buf, ")");
-	info->type = IFX_OPR_IN;
 	info->expr_string = cstring_to_text(buf->data);
 
 }
@@ -3216,9 +3227,37 @@ static char * getConstValue(Const *constNode)
 	 * Get the type datum text representation via its output function.
 	 */
 	typout = getTypeOutputFunction(constNode->consttype);
-	result = quote_literal_cstr(DatumGetCString(
-									OidFunctionCall1(typout,
-													 constNode->constvalue)));
+
+	/*
+	 * Take care for datatype quoting.
+	 *
+	 * XXX: This is really ugly and i hate it, but currently we don't
+	 *      use the SQLDA structure for prepared _SELECT_ statements,
+	 *      e.g. via ifxExecuteStmtSqlda(). This certainly needs
+	 *      more love in the future...
+	 */
+	switch (constNode->consttype)
+	{
+		case TEXTOID:
+		case BPCHAROID:
+		case VARCHAROID:
+		case BYTEAOID:
+		case TIMEOID:
+		case TIMETZOID:
+		case TIMESTAMPOID:
+		case DATEOID:
+		case TIMESTAMPTZOID:
+		case INTERVALOID:
+			result = quote_literal_cstr(DatumGetCString(
+											OidFunctionCall1(typout,
+															 constNode->constvalue)));
+			break;
+		default:
+			result = DatumGetCString(
+				OidFunctionCall1(typout,
+								 constNode->constvalue));
+			break;
+	}
 
 	return result;
 }
