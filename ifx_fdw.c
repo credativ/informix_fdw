@@ -2173,7 +2173,7 @@ static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state)
 	 * down to the modify action.
 	 */
 
-	rowid = (ItemPointer) palloc0fast(SizeOfIptrData);
+	rowid = (ItemPointer) palloc0fast(sizeof(ItemPointerData));
 	ItemPointerSet(rowid,
 				   DatumGetInt32(state->values[IFX_PGATTRCOUNT(state) - 1].val),
 				   0);
