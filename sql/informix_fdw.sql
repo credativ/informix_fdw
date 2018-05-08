@@ -154,7 +154,7 @@ OPTIONS(database :'INFORMIXDB',
         query 'SELECT val AS val1, val AS val2, val AS val3 FROM nvarchar_test');
 
 -- Should succeed
-SELECT * FROM nvarchar_test ORDER BY val1;
+SELECT * FROM nvarchar_test ORDER BY val1 COLLATE "C";
 
 DROP FOREIGN TABLE nvarchar_test;
 

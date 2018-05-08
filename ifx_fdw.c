@@ -49,7 +49,7 @@ static struct IfxFdwOption ifx_valid_options[] =
 	{ "informixserver",   ForeignServerRelationId },
 	{ "informixdir",      ForeignServerRelationId },
 	{ "delimident",       ForeignServerRelationId },
-	{ "user",             UserMappingRelationId },
+	{ "username",         UserMappingRelationId },
 	{ "password",         UserMappingRelationId },
 	{ "database",         ForeignTableRelationId },
 	{ "query",            ForeignTableRelationId },
@@ -5156,11 +5156,12 @@ ifxIsValidOption(const char *option, Oid context)
 	for (ifxopt = ifx_valid_options; ifxopt->optname; ifxopt++)
 	{
 		if (context == ifxopt->optcontext
-			&& strcmp(ifxopt->optname, ifxopt->optname) == 0)
+			&& strcmp(ifxopt->optname, option) == 0)
 		{
 			return true;
 		}
 	}
+
 	/*
 	 * Only reached in case of mismatch
 	 */
