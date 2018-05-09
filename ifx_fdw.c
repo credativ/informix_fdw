@@ -156,9 +156,9 @@ ifxGetDatabaseString(IfxConnectionInfo *coninfo);
 static StringInfoData *
 ifxGenerateConnName(IfxConnectionInfo *coninfo);
 static char *
-ifxGenStatementName(IfxConnectionInfo *coninfo, int stmt_id);
+ifxGenStatementName(int stmt_id);
 static char *
-ifxGenDescrName(IfxConnectionInfo *coninfo, int descr_id);
+ifxGenDescrName(int descr_id);
 
 static void
 ifxGetOptionDups(IfxConnectionInfo *coninfo, DefElem *def);
@@ -170,7 +170,7 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid);
 static void ifxStatementInfoInit(IfxStatementInfo *info,
 								 int refid);
 
-static char *ifxGenCursorName(IfxConnectionInfo *coninfo, int curid);
+static char *ifxGenCursorName(int curid);
 
 static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate);
 
@@ -1416,7 +1416,7 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 	/*
 	 * Unique statement identifier.
 	 */
-	info->stmt_name = ifxGenStatementName(coninfo, info->refid);
+	info->stmt_name = ifxGenStatementName(info->refid);
 
 	/*
 	 * Prepare the query.
@@ -1434,7 +1434,7 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 		/*
 		 * ...don't forget the cursor name.
 		 */
-		info->cursor_name = ifxGenCursorName(coninfo, info->refid);
+		info->cursor_name = ifxGenCursorName(info->refid);
 
 		elog(DEBUG1, "declare cursor \"%s\" for statement \"%s\"",
 			 info->cursor_name,
@@ -3860,11 +3860,27 @@ static StringInfoData *
 ifxGenerateConnName(IfxConnectionInfo *coninfo)
 {
 	StringInfoData *buf;
+	uint32 key;
 
 	buf = makeStringInfo();
 	initStringInfo(buf);
+
 	appendStringInfo(buf, "%s%s%s", coninfo->username, coninfo->database,
 					 coninfo->servername);
+
+	/*
+	 * We create a hash key out of the connection string, which
+	 * the forms the connection identifier with a "con" prefix
+	 * attached.
+	 */
+	key = string_hash(buf->data, buf->len);
+
+	/*
+	 * Reuse the existing string buffer, original content
+	 * not needed anymore.
+	 */
+	resetStringInfo(buf);
+	appendStringInfo(buf, "con_%u", key);
 
 	return buf;
 }
@@ -4037,6 +4053,46 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
 }
 
 /*
+ * Returns a hashed identifier generate from the contents
+ * of buf with the prefix specified in p. p isn't allowed to
+ * be null, and neither buf. If one of the arguments are NULL or
+ * have a zero-length string specified, the function will return NULL.
+ */
+__attribute__((unused)) static char * ifxHashIdentifier(StringInfoData *buf, char *prefix) {
+
+	char *result;
+	size_t ident_len = 0;
+	uint32 key;
+
+	if ((buf == NULL) || (prefix == NULL))
+		return NULL;
+
+	if (strlen(prefix) <= 0)
+		return NULL;
+
+	if (buf->len <= 0)
+		return NULL;
+
+	/*
+	 * Hash the identifier string.
+	 */
+	key = string_hash(buf->data, buf->len);
+
+	/*
+	 * Copy over the statement identifier in a
+	 * dynamically palloc'ed string buffer, since it might
+	 * get reused over various call sites until query/transaction
+	 * ends.
+	 */
+	ident_len = buf->len + strlen(prefix);
+	result = (char *) palloc0(ident_len + 1);
+	snprintf(result, ident_len, "%s%u",
+			 prefix, key);
+
+	return result;
+}
+
+/*
  * Generate a unique statement identifier to create
  * on the target database. Informix requires us to build
  * a unique name among all concurrent connections.
@@ -4044,34 +4100,60 @@ ifxGetOptions(Oid foreigntableOid, IfxConnectionInfo *coninfo)
  * Returns a palloc'ed string containing a statement identifier
  * suitable to pass to an Informix database.
  */
-static char *ifxGenStatementName(IfxConnectionInfo *coninfo,
-								 int stmt_id)
+static char *ifxGenStatementName(int stmt_id)
 {
-	char *stmt_name;
-	size_t stmt_name_len;
+	char *stmt_name = NULL;
+	StringInfoData *buf;
 
-	stmt_name_len = strlen(coninfo->conname) + 26;
-	stmt_name     = (char *) palloc(stmt_name_len + 1);
-	bzero(stmt_name, stmt_name_len + 1);
+	buf = makeStringInfo();
+	initStringInfo(buf);
 
-	snprintf(stmt_name, stmt_name_len, "%s_stmt%d_%d",
-			 coninfo->conname, MyBackendId, stmt_id);
+	appendStringInfo(buf, "s%d_%d",
+					 MyBackendId, stmt_id);
+
+	stmt_name = (char *) palloc0(buf->len + 1);
+	strncpy(stmt_name, buf->data, buf->len);
+
+	/*
+	 * Free temporary resources.
+	 */
+	resetStringInfo(buf);
+	pfree(buf);
+
+	if (stmt_name == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DESCRIPTOR_FIELD_IDENTIFIER),
+						errmsg("could not generate informix identifier for statement")));
+
+	elog(DEBUG5, "generated statement name %s", stmt_name);
 
 	return stmt_name;
 }
 
-static char *ifxGenDescrName(IfxConnectionInfo *coninfo,
-							 int descr_id)
+static char *ifxGenDescrName(int descr_id)
 {
-	char *descr_name;
-	size_t descr_name_len;
+	char *descr_name = NULL;
+	StringInfoData *buf;
 
-	descr_name_len = strlen(coninfo->conname) + 27;
-	descr_name     = (char *)palloc(descr_name_len + 1);
-	bzero(descr_name, descr_name_len + 1);
+	buf = makeStringInfo();
+	initStringInfo(buf);
 
-	snprintf(descr_name, descr_name_len, "%s_descr%d_%d",
-			 coninfo->conname, MyBackendId, descr_id);
+	appendStringInfo(buf, "d%d_%d",
+					 MyBackendId, descr_id);
+
+	descr_name = (char *) palloc0(buf->len + 1);
+	strncpy(descr_name, buf->data, buf->len);
+
+	/*
+	 * Free temporary resources.
+	 */
+	resetStringInfo(buf);
+	pfree(buf);
+
+	if (descr_name == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DESCRIPTOR_FIELD_IDENTIFIER),
+						errmsg("could not generate informix descriptor identifier for statement")));
+
+	elog(DEBUG5, "generated descriptor name %s", descr_name);
 
 	return descr_name;
 }
@@ -4084,17 +4166,32 @@ static char *ifxGenDescrName(IfxConnectionInfo *coninfo,
  * identifying the returned cursor name uniquely throughout
  * the backend.
  */
-static char *ifxGenCursorName(IfxConnectionInfo *coninfo, int curid)
+static char *ifxGenCursorName(int curid)
 {
-	char *cursor_name;
-	size_t len;
+	char *cursor_name = NULL;
+	StringInfoData *buf;
 
-	len = strlen(coninfo->conname) + 26;
-	cursor_name = (char *) palloc(len + 1);
-	bzero(cursor_name, len + 1);
+	buf = makeStringInfo();
+	initStringInfo(buf);
 
-	snprintf(cursor_name, len, "%s_cur%d_%d",
-			 coninfo->conname, MyBackendId, curid);
+	appendStringInfo(buf, "c%d_%d",
+					 MyBackendId, curid);
+
+	cursor_name = (char *) palloc0(buf->len + 1);
+	strncpy(cursor_name, buf->data, buf->len);
+
+	/*
+	 * Free temporary resources.
+	 */
+	resetStringInfo(buf);
+	pfree(buf);
+
+	if (cursor_name == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FDW_INVALID_DESCRIPTOR_FIELD_IDENTIFIER),
+						errmsg("could not generate informix cursor identifier for statement")));
+
+	elog(DEBUG5, "generated cursor name %s", cursor_name);
+
 	return cursor_name;
 }
 
@@ -4238,7 +4335,7 @@ ifxBeginForeignScan(ForeignScanState *node, int eflags)
 	/* should not happen here */
 	Assert(conn_cached && cached != NULL);
 
-	/* Initialize generic executation state structure */
+	/* Initialize generic execution state structure */
 	festate = makeIfxFdwExecutionState(-1);
 
 	/*
@@ -5001,20 +5098,18 @@ static void ifxPrepareCursorForScan(IfxStatementInfo *info,
 	 * Generate a statement identifier. Required to uniquely
 	 * identify the prepared statement within Informix.
 	 */
-	info->stmt_name = ifxGenStatementName(coninfo,
-										  info->refid);
+	info->stmt_name = ifxGenStatementName(info->refid);
 
 	/*
 	 * An identifier for the dynamically allocated
 	 * DESCRIPTOR area.
 	 */
-	info->descr_name = ifxGenDescrName(coninfo,
-									   info->refid);
+	info->descr_name = ifxGenDescrName(info->refid);
 
 	/*
 	 * ...and finally the cursor name.
 	 */
-	info->cursor_name = ifxGenCursorName(coninfo, info->refid);
+	info->cursor_name = ifxGenCursorName(info->refid);
 
 	/* Prepare the query. */
 	elog(DEBUG1, "prepare query \"%s\"", info->query);
