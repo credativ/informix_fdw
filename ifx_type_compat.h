@@ -265,6 +265,7 @@ typedef enum IfxExtendedType
 	IFX_XTD_DBSENDRECV    = 21,
 	IFX_XTD_SRVSENDRECV   = 22,
 	IFX_XTD_FUNCARG       = 23
+
 } IfxExtendedType;
 
 /*
@@ -439,6 +440,7 @@ typedef struct IfxConnectionInfo
 	short tx_enabled; /* 0 = n tx, 1 = tx enabled */
 	int   xact_level; /* current nest level of transactions */
 	short db_ansi; /* 0 = non-ANSI database, 1 = ANSI-enabled database */
+	short is_obsolete; /* currently: 0 = non SE instance, 1 = Informix SE instance */
 	short predicate_pushdown; /* 0 = disabled, 1 = enabled */
 	short enable_blobs; /* 0 = no special BLOB support,
 						   1 = special BLOB support */

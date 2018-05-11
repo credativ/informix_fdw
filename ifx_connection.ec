@@ -84,14 +84,36 @@ void ifxCreateConnectionXact(IfxConnectionInfo *coninfo)
 	EXEC SQL CONNECT TO :ifxdsn AS :ifxconname
 		USER :ifxuser USING :ifxpass WITH CONCURRENT TRANSACTION;
 
-	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
-	{
-		/* save state into connection info */
-		coninfo->tx_enabled = 1;
-	}
+	if (ifxGetSQLCAWarn(SQLCA_WARN_SET) == 'W') {
 
-	if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W')
-		coninfo->db_ansi = 1;
+		if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+		{
+			/* save state into connection info */
+			coninfo->tx_enabled = 1;
+		}
+
+		if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W') {
+			/* ANSI compliant database */
+			coninfo->db_ansi = 1;
+		}
+
+		if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W') {
+			/* connected to an non-SE instance */
+			coninfo->is_obsolete = 0;
+		} else {
+
+			/* SQLCA_WARN_NO_IFX_SE is not set, assume SE instance */
+			coninfo->is_obsolete = 1;
+		}
+
+	} else {
+
+		/*
+		 * If no warning was set, we implicitely assume an Informix SE
+		 * instance
+		 */
+		coninfo->is_obsolete = 1;
+	}
 }
 
 int ifxStartTransaction(IfxPGCachedConnection *cached, IfxConnectionInfo *coninfo)
@@ -477,6 +499,7 @@ int ifxSetConnectionIdent(char *conname)
 
 void ifxSetConnection(IfxConnectionInfo *coninfo)
 {
+
 	EXEC SQL BEGIN DECLARE SECTION;
 	char *ifxconname;
 	EXEC SQL END DECLARE SECTION;
@@ -489,14 +512,37 @@ void ifxSetConnection(IfxConnectionInfo *coninfo)
 	ifxconname = coninfo->conname;
 	EXEC SQL SET CONNECTION :ifxconname;
 
-	if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
-	{
-		/* save state into connection info */
-		coninfo->tx_enabled = 1;
+	if (ifxGetSQLCAWarn(SQLCA_WARN_SET) == 'W') {
+
+		if (ifxGetSQLCAWarn(SQLCA_WARN_TRANSACTIONS) == 'W')
+		{
+			/* save state into connection info */
+			coninfo->tx_enabled = 1;
+		}
+
+		if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W') {
+			/* ANSI compliant database */
+			coninfo->db_ansi = 1;
+		}
+
+		if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W') {
+			/* if 'W' was set, an non-SE instance was detected */
+			coninfo->is_obsolete = 0;
+		} else {
+
+			/* SQLCA_WARN_NO_IFX_SE is not set, assume SE instance */
+			coninfo->is_obsolete = 1;
+		}
+
+	} else {
+
+		/*
+		 * If no warning was set, we implicitely assume an Informix SE
+		 * instance
+		 */
+		coninfo->is_obsolete = 1;
 	}
 
-	if (ifxGetSQLCAWarn(SQLCA_WARN_ANSI) == 'W')
-		coninfo->db_ansi = 1;
 }
 
 void ifxPrepareQuery(char *query, char *stmt_name)

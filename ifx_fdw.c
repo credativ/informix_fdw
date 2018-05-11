@@ -2523,7 +2523,8 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 	/*
 	 * Give a warning if we have mismatching DBLOCALE settings.
 	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_DB_LOCALE_MISMATCH) == 'W')
+	if ((ifxGetSQLCAWarn(SQLCA_WARN_SET) == 'W')
+		&& (ifxGetSQLCAWarn(SQLCA_WARN_DB_LOCALE_MISMATCH) == 'W'))
 		elog(WARNING, "mismatching DBLOCALE \"%s\"",
 			 (*coninfo)->db_locale);
 
@@ -2531,8 +2532,8 @@ static IfxCachedConnection * ifxSetupConnection(IfxConnectionInfo **coninfo,
 	 * Give a NOTICE in case this is an INFORMIX SE
 	 * database instance.
 	 */
-	if (ifxGetSQLCAWarn(SQLCA_WARN_NO_IFX_SE) == 'W')
-		elog(NOTICE, "connected to an non-Informix SE instance");
+	if ((*coninfo)->is_obsolete == 1)
+		elog(NOTICE, "connected to a Informix SE instance");
 
 	return cached_handle;
 }
@@ -5213,6 +5214,11 @@ static void ifxConnInfoSetDefaults(IfxConnectionInfo *coninfo)
 	coninfo->tablename     = NULL;
 	coninfo->username      = "\0";
 	coninfo->password      = "\0";
+
+	/*
+	 * per default assume non-SE informix instance.
+	 */
+	coninfo->is_obsolete = 0;
 
 	/* default scan mode */
 	coninfo->scan_mode     = IFX_PLAN_SCAN;
