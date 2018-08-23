@@ -121,6 +121,38 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 #define RTE_UPDATED_COLS(a) (a)->modifiedCols
 #endif
 
+/*
+ * get_relid_attribute_name() is dead as of REL_11_STABLE
+ * (see commit 8237f27b504ff1d1e2da7ae4c81a7f72ea0e0e3e in the
+ * pg repository). Use get_attname() instead. Wrap this into a
+ * compatibility macro, to safe further ifdef's...
+ */
+#if PG_VERSION_NUM >= 110000
+#define pg_attname_by_relid(relid, attnum, missing_ok) \
+	get_attname((relid), (attnum), (missing_ok))
+#else
+#define pg_attname_by_relid(relid, attnum, missing_ok) \
+	get_relid_attribute_name((relid), (attnum))
+#endif
+
+/*
+ * PostgreSQL 9.3 introduced TupleDescrAttr() to access
+ * attributes stored in a tuple descriptor. Use that instead
+ * of directly accessing the tupdesc attribute array, if available.
+ *
+ * CAUTION: This macro was introduced in REL9_3_19 with
+ *          commit 5b286cae3cc1c43d6eedf6cf1181d41f653c6a93,
+ *          so we cannot make it available for all previous
+ *          versions for REL9_3_STABLE.
+ */
+#if PG_VERSION_NUM >= 90319
+#define TUPDESC_GET_ATTR(desc, index) \
+	TupleDescAttr((desc), (index))
+#else
+#define TUPDESC_GET_ATTR(desc, index) \
+	((desc)->attrs[(index)])
+#endif
+
 /*******************************************************************************
  * FDW helper functions.
  */
@@ -1176,7 +1208,7 @@ char *dispatchColumnIdentifier(int varno, int varattno, PlannerInfo *root)
 	 * was found.
 	 */
 	if (ident == NULL)
-		ident = get_relid_attribute_name(rte->relid, varattno);
+		ident = pg_attname_by_relid(rte->relid, varattno, false);
 
 	return ident;
 }
@@ -1889,7 +1921,7 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			 */
 			for (attnum = 1; attnum <= tupdesc->natts; attnum++)
 			{
-				Form_pg_attribute pgattr = tupdesc->attrs[attnum - 1];
+				Form_pg_attribute pgattr = TUPDESC_GET_ATTR(tupdesc, attnum - 1);
 
 				state->affectedAttrNums = lappend_int(state->affectedAttrNums,
 													  pgattr->attnum);
@@ -5165,7 +5197,11 @@ ifxExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	/* Give some possibly useful info about startup costs */
 	if (es->costs)
 	{
+#if PG_VERSION_NUM >= 110000
+		ExplainPropertyFloat("Informix costs", NULL, planData.costs, 2, es);
+#else
 		ExplainPropertyFloat("Informix costs", planData.costs, 2, es);
+#endif
 
 		/* print planned foreign query */
 		ExplainPropertyText("Informix query", festate->stmt_info.query, es);
