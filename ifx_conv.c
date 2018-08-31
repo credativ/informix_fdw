@@ -698,6 +698,9 @@ static inline char *interval_to_cstring(IfxFdwExecutionState *state,
 	char *format = NULL;
 	Datum datval;
 	IfxTemporalRange range;
+	bool isnull = false;
+
+	datval = slot_getattr(slot, attnum + 1, &isnull);
 
 	/* NOTE: The minimal field identifier we support is TU_SECONDS! */
 	range  = ifxGetTemporalQualifier(&(state->stmt_info),
@@ -714,7 +717,7 @@ static inline char *interval_to_cstring(IfxFdwExecutionState *state,
 	}
 
 	datval = DirectFunctionCall2(interval_to_char,
-								 slot->tts_values[attnum],
+								 datval,
 								 PointerGetDatum(cstring_to_text(format)));
 	return text_to_cstring(DatumGetTextP(datval));
 }
@@ -767,16 +770,21 @@ void setIfxFloat(IfxFdwExecutionState *state,
 	regproc  typout;
 	char    *strval;
 	IfxAttrDef ifxval;
+	Datum    datum;
+	bool     isnull = false;
 
 	/* Sanity check, SQLDA available? */
 	Assert(state->stmt_info.sqlda != NULL);
 
 	strval = NULL;
 
+	datum = slot_getattr(slot, attnum + 1, &isnull);
+
 	/*
 	 * Take care for NULL values.
 	 */
 	if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		&& ! isnull
 		&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 	{
 		/*
@@ -790,7 +798,7 @@ void setIfxFloat(IfxFdwExecutionState *state,
 		{
 			typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
-													  slot->tts_values[attnum]));
+													  datum));
 
 			/*
 			 * If the typ output function succeed, we have a
@@ -868,15 +876,20 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 {
 	regproc  typout;
 	char    *strval;
+	Datum    datum;
+	bool     isnull;
 
 	/* Sanity check, SQLDA available? */
 	Assert(state->stmt_info.sqlda != NULL);
 	strval = NULL;
 
+	datum = slot_getattr(slot, attnum + 1, &isnull);
+
 	/*
 	 * Take care of NULL datums.
 	 */
 	if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		&& ! isnull
 		&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 	{
 
@@ -900,7 +913,7 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 			if (PG_ATTRTYPE_P(state, attnum) == CASHOID)
 			{
 				regproc castfunc = getTypeCastFunction(state, CASHOID, NUMERICOID);
-				Datum   castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+				Datum   castval  = OidFunctionCall1(castfunc, datum);
 
 				typout = getTypeOutputFunction(NUMERICOID);
 
@@ -912,7 +925,7 @@ void setIfxDecimal(IfxFdwExecutionState *state,
 				typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 
 				strval = DatumGetCString(OidFunctionCall1(typout,
-														  slot->tts_values[attnum]));
+														  datum));
 			}
 		}
 		PG_CATCH();
@@ -994,12 +1007,17 @@ void setIfxInterval(IfxFdwExecutionState *state,
 			 */
 			char *strval = NULL;
 			IfxTemporalRange range;
+			Datum datum;
+			bool isnull = false;
+
+			datum = slot_getattr(slot, attnum + 1, &isnull);
 
 			/*
 			 * If a datum is NULL, there's no reason to try to convert
 			 * it into a character string. Mark it accordingly and we're done.
 			 */
 			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& ! isnull
 				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 			{
 				/*
@@ -1024,7 +1042,7 @@ void setIfxInterval(IfxFdwExecutionState *state,
 							 * Informix API to an Informix interval type. Be prepared
 							 * to deal with conversion errors, though...
 							 */
-							strval = text_to_cstring(DatumGetTextP(slot->tts_values[attnum]));
+							strval = text_to_cstring(DatumGetTextP(datum));
 
 							break;
 						}
@@ -1081,6 +1099,8 @@ void setIfxDate(IfxFdwExecutionState *state,
 {
 	char  *strval = NULL;
 	Datum  datval = PointerGetDatum(NULL);
+	Datum  datum;
+	bool   isnull = false;
 
 	/* Sanity check, SQLDA available? */
 	Assert(state->stmt_info.sqlda != NULL);
@@ -1099,10 +1119,13 @@ void setIfxDate(IfxFdwExecutionState *state,
 		 * representation.
 		 */
 
+		datum = slot_getattr(slot, attnum + 1, &isnull);
+
 		/*
 		 * Don't try to convert a NULL datum.
 		 */
 		if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+			&& ! isnull
 			&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 		{
 			PG_TRY();
@@ -1118,7 +1141,7 @@ void setIfxDate(IfxFdwExecutionState *state,
 				 * static input format to our Informix conversion routines.
 				 */
 				castfunc = getTypeCastFunction(state, DATEOID, TIMESTAMPOID);
-				castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+				castval  = OidFunctionCall1(castfunc, datum);
 
 				format = cstring_to_text(
 					ifxGetIntervalFormatString(
@@ -1190,6 +1213,8 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 	if (IFX_ATTRTYPE_P(state, IFX_ATTR_PARAM_ID(state, attnum)) == IFX_DTIME)
 	{
 		Datum   datval;
+		Datum   datum;
+		bool    isnull = false;
 		char   *strval = NULL;
 
 		/*
@@ -1201,6 +1226,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 		 *       (that is yyyy-mm-dd hh24:mi:ss) first.
 		 */
 
+		datum = slot_getattr(slot, attnum + 1, &isnull);
 
 		/*
 		 * Don't try to convert a NULL timestamp value into a character string,
@@ -1208,6 +1234,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 		 * SQLDA info accordingly.
 		 */
 		if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+		    && ! isnull
 		    && IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 		{
 			text *format;
@@ -1227,7 +1254,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 																			 IFX_ATTR_PARAM_ID(state, attnum)),
 													 FMT_PG));
 						datval = DirectFunctionCall2(timestamptz_to_char,
-													 slot->tts_values[attnum],
+													 datum,
 													 PointerGetDatum(format));
 						break;
 					}
@@ -1244,7 +1271,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 						regproc castfunc;
 
 						castfunc = getTypeCastFunction(state, DATEOID, TIMESTAMPOID);
-						castval  = OidFunctionCall1(castfunc, slot->tts_values[attnum]);
+						castval  = OidFunctionCall1(castfunc, datum);
 
 						format = cstring_to_text(ifxGetIntervalFormatString(
 													 ifxGetTemporalQualifier(&(state->stmt_info),
@@ -1265,7 +1292,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 																			 IFX_ATTR_PARAM_ID(state, attnum)),
 													 FMT_PG));
 						datval = DirectFunctionCall2(timestamp_to_char,
-													 slot->tts_values[attnum],
+													 datum,
 													 PointerGetDatum(format));
 						break;
 					}
@@ -1280,7 +1307,7 @@ void setIfxDateTimestamp(IfxFdwExecutionState *state,
 						 * string, suitable to be passed down to Informix.
 						 */
 						castproc = getTypeCastFunction(state, TIMEOID, INTERVALOID);
-						castval  = OidFunctionCall1(castproc, slot->tts_values[attnum]);
+						castval  = OidFunctionCall1(castproc, datum);
 
 						/*
 						 * Now try to convert the value
@@ -1407,6 +1434,11 @@ void setIfxInteger(IfxFdwExecutionState *state,
 				   TupleTableSlot       *slot,
 				   int                   attnum)
 {
+	Datum datum;
+	bool isnull = false;
+
+	datum = slot_getattr(slot, attnum + 1, &isnull);
+
 	/*
 	 * Sanity check, SQLDA available ?
 	 */
@@ -1418,7 +1450,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 		{
 			short val;
 
-			val = DatumGetInt16(slot->tts_values[attnum]);
+			val = DatumGetInt16(datum);
 
 			/*
 			 * Copy the value into the SQLDA structure.
@@ -1438,7 +1470,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			/*
 			 * Get the integer value.
 			 */
-			val = DatumGetInt32(slot->tts_values[attnum]);
+			val = DatumGetInt32(datum);
 
 			/*
 			 * Copy the value into the SQLDA structure.
@@ -1461,7 +1493,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			 */
 			typout = getTypeOutputFunction(PG_ATTRTYPE_P(state, attnum));
 			strval = DatumGetCString(OidFunctionCall1(typout,
-													  DatumGetInt64(slot->tts_values[attnum])));
+													  DatumGetInt64(datum)));
 			if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
 				|| (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8))
 			{
