@@ -140,18 +140,18 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
  * attributes stored in a tuple descriptor. Use that instead
  * of directly accessing the tupdesc attribute array, if available.
  *
- * CAUTION: This macro was introduced in REL9_3_19 with
- *          commit 5b286cae3cc1c43d6eedf6cf1181d41f653c6a93,
+ * CAUTION: This macro was introduced in REL9_3_19 (and other backpatches
+ *          in later major releases) with commit
+ *          5b286cae3cc1c43d6eedf6cf1181d41f653c6a93,
  *          so we cannot make it available for all previous
- *          versions for REL9_3_STABLE.
+ *          versions.
  */
-#if PG_VERSION_NUM >= 90319
+#ifndef TupDescAttr
+#define TupDescAttr(desc, index) ((desc)->attrs[(index)])
+#endif
+
 #define TUPDESC_GET_ATTR(desc, index) \
 	TupleDescAttr((desc), (index))
-#else
-#define TUPDESC_GET_ATTR(desc, index) \
-	((desc)->attrs[(index)])
-#endif
 
 /*******************************************************************************
  * FDW helper functions.
