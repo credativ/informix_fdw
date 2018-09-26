@@ -136,18 +136,19 @@ PG_FUNCTION_INFO_V1(ifxCloseConnection);
 #endif
 
 /*
- * PostgreSQL 9.3 introduced TupleDescrAttr() to access
+ * PostgreSQL 10 introduced TupleDescrAttr() to access
  * attributes stored in a tuple descriptor. Use that instead
  * of directly accessing the tupdesc attribute array, if available.
  *
- * CAUTION: This macro was introduced in REL9_3_19 (and other backpatches
- *          in later major releases) with commit
- *          5b286cae3cc1c43d6eedf6cf1181d41f653c6a93,
- *          so we cannot make it available for all previous
- *          versions.
+ * CAUTION: This macro was introduced in backpatches
+ *          in various major releases (e.g. with commit
+ *          5b286cae3cc1c43d6eedf6cf1181d41f653c6a93),
+ *          so we make sure it's not defined yet.
  */
-#ifndef TupDescAttr
-#define TupDescAttr(desc, index) ((desc)->attrs[(index)])
+#if PG_VERSION_NUM < 100000
+#ifndef TupleDescAttr
+#define TupleDescAttr(desc, index) ((desc)->attrs[(index)])
+#endif
 #endif
 
 #define TUPDESC_GET_ATTR(desc, index) \
