@@ -281,16 +281,33 @@ ifxExplainForeignModify(ModifyTableState *mstate,
 
 #endif
 
+#ifdef __USE_EDB_API__
+
+#warning building with experimental EDB API support
+
+static void ifx_fdw_xact_callback(XactEvent event, void *arg, bool spl_context);
+static void ifx_fdw_subxact_callback(SubXactEvent event,
+									 SubTransactionId subId,
+									 SubTransactionId parentId,
+									 void *arg,
+									 bool spl_context);
+
+#else
+
 static void ifx_fdw_xact_callback(XactEvent event, void *arg);
-static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
-										   XactEvent event);
-static int ifxXactFinalize(IfxCachedConnection *cached,
-						   IfxXactAction action,
-						   bool connection_error_ok);
 static void ifx_fdw_subxact_callback(SubXactEvent event,
 									 SubTransactionId subId,
 									 SubTransactionId parentId,
 									 void *arg);
+
+#endif
+
+static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
+										   XactEvent event);
+
+static int ifxXactFinalize(IfxCachedConnection *cached,
+						   IfxXactAction action,
+						   bool connection_error_ok);
 
 #if PG_VERSION_NUM >= 90500
 
@@ -5665,7 +5682,7 @@ static int ifxXactFinalize(IfxCachedConnection *cached,
  * or commits it on the remote server.
  */
 static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
-										  XactEvent event)
+										   XactEvent event)
 {
 	switch(event)
 	{
@@ -5723,7 +5740,13 @@ static void ifx_fdw_xact_callback_internal(IfxCachedConnection *cached,
 	}
 }
 
-static void ifx_fdw_xact_callback(XactEvent event, void *arg)
+static void ifx_fdw_xact_callback(XactEvent event, void *arg
+
+#ifdef __USE_EDB_API__
+								  ,bool spl_context
+#endif
+
+	)
 {
 	HASH_SEQ_STATUS      hsearch_status;
 	IfxCachedConnection *cached;
@@ -5760,7 +5783,13 @@ static void ifx_fdw_xact_callback(XactEvent event, void *arg)
 static void ifx_fdw_subxact_callback(SubXactEvent event,
 									 SubTransactionId subId,
 									 SubTransactionId parentId,
-									 void *arg)
+									 void *arg
+
+#ifdef __USE_EDB_API__
+									 ,bool spl_context
+#endif
+
+	)
 {
 	HASH_SEQ_STATUS      hsearch_status;
 	IfxCachedConnection *cached;
