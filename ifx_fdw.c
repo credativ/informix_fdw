@@ -1015,8 +1015,13 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 								   TupleTableSlot *slot,
 								   int attnum)
 {
+	Datum datum;
+	bool isnull = false;
+
 	Assert(state != NULL && attnum >= 0);
 	Assert(state->stmt_info.data != NULL);
+
+	datum = slot_getattr(slot, attnum + 1, &isnull);
 
 	/*
 	 * Set the local indicator value to tell the conversion
@@ -1028,7 +1033,7 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 	 * if we have initialized the ifxAttrDefs array correctly.
 	 */
 	IFX_SET_INDICATOR_P(state, IFX_ATTR_PARAM_ID(state, attnum),
-						(slot->tts_isnull[attnum]) ? INDICATOR_NULL : INDICATOR_NOT_NULL);
+						isnull ? INDICATOR_NULL : INDICATOR_NOT_NULL);
 
 	/*
 	 * Call data conversion routine depending on the PostgreSQL
@@ -1088,9 +1093,10 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			char *cval = NULL;
 
 			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& ! isnull
 				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 			{
-				cval = TextDatumGetCString(slot->tts_values[attnum]);
+				cval = TextDatumGetCString(datum);
 				Assert(cval != NULL);
 				len = strlen(cval);
 			}
@@ -1109,10 +1115,11 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 			int   buflen = 0;
 
 			if (! IFX_ATTR_ISNULL_P(state, IFX_ATTR_PARAM_ID(state, attnum))
+				&& ! isnull
 				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 			{
-				buf    = VARDATA((bytea *)DatumGetPointer(slot->tts_values[attnum]));
-				buflen = VARSIZE((bytea *)DatumGetPointer(slot->tts_values[attnum])) - VARHDRSZ;
+				buf    = VARDATA((bytea *)DatumGetPointer(datum));
+				buflen = VARSIZE((bytea *)DatumGetPointer(datum)) - VARHDRSZ;
 			}
 
 			setIfxCharString(state, attnum, buf, buflen);
