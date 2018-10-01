@@ -2328,8 +2328,9 @@ static Const *ifxConvertNodeConst(Const *oldNode, bool *converted,
 			if (oldNode->constisnull)
 				datVal= PointerGetDatum(NULL);
 		else
-				datVal = DirectFunctionCall2(varcharin,
+				datVal = DirectFunctionCall3(varcharin,
 											 CStringGetDatum(TextDatumGetCString(oldNode->constvalue)),
+											 InvalidOid,
 											 oldNode->consttypmod);
 
 			newNode = makeConst(VARCHAROID,
@@ -2360,8 +2361,9 @@ static Const *ifxConvertNodeConst(Const *oldNode, bool *converted,
 			if (oldNode->constisnull)
 				datVal = PointerGetDatum(NULL);
 			else
-				datVal = DirectFunctionCall2(varcharin,
+				datVal = DirectFunctionCall3(varcharin,
 											 CStringGetDatum(text_to_cstring(DatumGetTextP(oldNode->constvalue))),
+											 InvalidOid,
 											 oldNode->consttypmod);
 
 			if (oldNode->consttypmod == -1)
