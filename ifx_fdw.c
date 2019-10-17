@@ -86,6 +86,10 @@ PG_FUNCTION_INFO_V1(ifx_fdw_validator);
 PG_FUNCTION_INFO_V1(ifxGetConnections);
 PG_FUNCTION_INFO_V1(ifxCloseConnection);
 
+#if PG_VERSION_NUM >= 120000
+extern PGDLLIMPORT double cpu_tuple_cost;
+#endif
+
 /*******************************************************************************
  * FDW internal macros
  */
@@ -4949,10 +4953,17 @@ static TupleTableSlot *ifxIterateForeignScan(ForeignScanState *node)
 
 		tuple->t_self = *iptr;
 
+		/* PostgreSQL 12 has changed the heapam API a little */
+#if PG_VERSION_NUM >= 120000
+		ExecStoreHeapTuple(tuple,
+				   tupleSlot,
+				   false);
+#else
 		ExecStoreTuple(tuple,
 					   tupleSlot,
 					   InvalidBuffer,
 					   false);
+#endif
 	}
 	else
 		ExecStoreVirtualTuple(tupleSlot);
@@ -5594,8 +5605,17 @@ ifxGetConnections(PG_FUNCTION_ARGS)
 		 * Done processing. Terminate hash_seq_search(), since we haven't
 		 * processed forward until NULL (but only if we had processed
 		 * any connections).
+		 *
+		 * For pre PG11 releases, we are somehow paranoid and force
+		 * max_calls to be larger or equal to 0, but starting with PG11
+		 * this isn't necessary anymore, since max_calls is an unsigned
+		 * datatype.
 		 */
+#if PG_VERSION_NUM < 110000
 		if ((fcontext->max_calls >= 0) && IfxCacheIsInitialized)
+#else
+		if (IfxCacheIsInitialized)
+#endif
 			hash_seq_term(call_data->hash_status);
 
 		SRF_RETURN_DONE(fcontext);

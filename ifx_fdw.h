@@ -17,6 +17,11 @@
 
 #include "funcapi.h"
 #include "access/reloptions.h"
+
+#if PG_VERSION_NUM >= 120000
+#include "access/table.h"
+#endif
+
 #include "catalog/indexing.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
@@ -40,7 +45,10 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
+
+#if PG_VERSION_NUM < 120000
 #include "utils/tqual.h"
+#endif
 
 #include "access/attnum.h"
 #include "nodes/pg_list.h"
