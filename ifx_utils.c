@@ -932,6 +932,7 @@ Oid ifxTypeidToPg(IfxSourceType typid, IfxExtendedType extended_id)
 		case IFX_INT8:
 		case IFX_SERIAL8:
 		case IFX_INFX_INT8:
+		case IFX_BIGSERIAL:
 			mappedOid = INT8OID;
 			break;
 		case IFX_BOOLEAN:

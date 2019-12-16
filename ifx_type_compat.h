@@ -227,7 +227,8 @@ typedef enum IfxSourceType
 	 */
 	IFX_LVARCHAR  = 43,
 	IFX_BOOLEAN   = 45,
-	IFX_INFX_INT8 = 52
+	IFX_INFX_INT8 = 52,
+        IFX_BIGSERIAL = 53
 
 } IfxSourceType;
 

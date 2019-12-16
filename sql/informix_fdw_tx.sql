@@ -82,7 +82,7 @@ OPTIONS(table 'longvarchar_test',
 --
 -- Foreign table to test Simple LO handling in the informix foreign data wrapper.
 --
-CREATE FOREIGN TABLE text_byte_test(id bigserial not null, v1 text, v2 bytea)
+CREATE FOREIGN TABLE text_byte_test(id bigserial not null, v1 bytea, v2 text)
 SERVER test_server
 OPTIONS(table 'text_byte_test',
         client_locale :'CLIENT_LOCALE',
@@ -120,11 +120,21 @@ OPTIONS("table" 'serial_test',
                 database :'INFORMIXDB');
 
 --
--- Foreign table to test SERIAL8/BIGSERIAL values
+-- Foreign table to test SERIAL8 values
 --
 CREATE FOREIGN TABLE serial8_test(id serial8)
 SERVER test_server
 OPTIONS("table" 'serial8_test',
+                client_locale :'CLIENT_LOCALE',
+                db_locale :'DB_LOCALE',
+                database :'INFORMIXDB');
+
+--
+-- Foreign table to test BIGSERIAL values
+--
+CREATE FOREIGN TABLE bigserial_test(id bigserial not null, v1 varchar(20) not null)
+SERVER test_server
+OPTIONS("table" 'bigserial_test',
                 client_locale :'CLIENT_LOCALE',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
@@ -349,18 +359,17 @@ BEGIN;
 --
 -- Simple string values...
 --
-INSERT INTO text_byte_test(v1, v2) VALUES('This is a text value',
-                                          '...and this value gets converted into binary');
+INSERT INTO text_byte_test(v1, v2) VALUES('This value gets converted into binary',
+                                          'This is a text value');
 
 SELECT * FROM text_byte_test ORDER BY id ASC;;
 
 --
 -- Some special hex values for bytea...
 --
-INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
-                                          '\x00');
-INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
-                                          '\x00AC00EF');
+INSERT INTO text_byte_test(v1, v2) VALUES('\x00', 'This is another text value');
+INSERT INTO text_byte_test(v1, v2) VALUES('\x00AC00EF',
+                                          'This is another text value');
 
 SELECT * FROM text_byte_test ORDER BY id ASC;
 
@@ -510,6 +519,33 @@ DELETE FROM serial8_test;
 
 -- empty set expected
 SELECT * FROM serial8_test ORDER BY id ASC;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
+-- DML for BIGSERIAL values
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+-- NOTE: the 0 value will advance the informix sequence.
+
+INSERT INTO bigserial_test(id, v1) VALUES(0, 'abc');
+INSERT INTO bigserial_test(id, v1) VALUES(0, 'def');
+INSERT into bigserial_test values(9223372036854775807, 'ghi');
+
+SELECT * FROM bigserial_test ORDER BY id ASC;
+
+-- DELETE INT8_MAX value
+DELETE FROM bigserial_test WHERE id = 9223372036854775807;
+
+SELECT * FROM bigserial_test ORDER BY id ASC;
+
+-- DELETE all
+DELETE FROM bigserial_test;
+
+-- empty set expected
+SELECT * FROM bigserial_test ORDER BY id ASC;
 
 COMMIT;
 
@@ -693,6 +729,9 @@ SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
 
 -- check IN() pushdown
 SELECT val1, val2 FROM float_test WHERE val1 IN (5, 8.75, 9.75, 1.0, 1.25);
+
+-- empty
+DELETE FROM float_test;
 
 COMMIT;
 
@@ -918,6 +957,7 @@ DROP FOREIGN TABLE datetime_test;
 DROP FOREIGN TABLE date_test;
 DROP FOREIGN TABLE interval_test;
 DROP FOREIGN TABLE decimal_test;
+DROP FOREIGN TABLE bigserial_test;
 
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;

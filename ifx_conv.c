@@ -551,6 +551,7 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 			{
 				if ((IFX_ATTRTYPE_P(state, attnum) == IFX_INT8)
 					|| (IFX_ATTRTYPE_P(state, attnum) == IFX_SERIAL8)
+					|| (IFX_ATTRTYPE_P(state, attnum) == IFX_BIGSERIAL)
 					|| (IFX_ATTRTYPE_P(state, attnum) == IFX_INFX_INT8))
 				{
 					char *buf;
@@ -561,12 +562,14 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 					/*
 					 * Extract the value from the sqlvar tuple.
 					 *
-					 * Take care for incompatible types BIGINT and INT8
+					 * We are forced to special case IFX_INFX_INT8 here, too,
+					 * BIGINT and INT8 are incompatible.
 					 */
 					switch (IFX_ATTRTYPE_P(state, attnum))
 					{
 						case IFX_INT8:
 						case IFX_SERIAL8:
+						case IFX_BIGSERIAL:
 							/* INT8 */
 							buf = ifxGetInt8(&(state->stmt_info),
 											 PG_MAPPED_IFX_ATTNUM(state, attnum), buf);
@@ -1481,9 +1484,21 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			break;
 		}
 		case IFX_INT8:
-			/* fall through to IFX_SERIAL8 */
+			/*
+			 * Fall through
+			 *
+			 * Differences are handled below in a common
+			 * code block.
+			 *
+			 * Specifically, the various *SERIAL* and INT* datatypes
+			 * have different binary representation, so that we convert them first
+			 * to their string representation. Since the target type is
+			 * handled by different API calls in ESQL/C, we employ specific
+			 * conversion routines below.
+			 */
 		case IFX_INFX_INT8:
 		case IFX_SERIAL8:
+		case IFX_BIGSERIAL:
 		{
 			char *strval;
 			regproc typout;
@@ -1504,7 +1519,7 @@ void setIfxInteger(IfxFdwExecutionState *state,
 			}
 			else
 			{
-				/* BIGINT, IFX_INFX_INT8 */
+				/* BIGINT, BIGSERIAL and IFX_INFX_INT8 */
 				ifxSetBigint(&state->stmt_info,
 							 IFX_ATTR_PARAM_ID(state, attnum),
 							 strval);

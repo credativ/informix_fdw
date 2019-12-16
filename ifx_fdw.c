@@ -1122,8 +1122,8 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 				&& ! isnull
 				&& IFX_ATTR_IS_VALID_P(state, IFX_ATTR_PARAM_ID(state, attnum)))
 			{
-				buf    = VARDATA((bytea *)DatumGetPointer(datum));
-				buflen = VARSIZE((bytea *)DatumGetPointer(datum)) - VARHDRSZ;
+				buf    = VARDATA_ANY((bytea *)DatumGetPointer(datum));
+				buflen = VARSIZE_ANY_EXHDR((bytea *)DatumGetPointer(datum));
 			}
 
 			setIfxCharString(state, attnum, buf, buflen);
@@ -4619,6 +4619,7 @@ static void ifxColumnValueByAttNum(IfxFdwExecutionState *state, int attnum,
 		case IFX_INTEGER:
 		case IFX_SERIAL:
 		case IFX_INT8:
+		case IFX_BIGSERIAL:
 		case IFX_SERIAL8:
 		case IFX_INFX_INT8:
 		{
