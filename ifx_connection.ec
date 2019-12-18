@@ -455,11 +455,11 @@ void ifxSetEnv(IfxConnectionInfo *coninfo)
 		setenv("DB_LOCALE", coninfo->db_locale, 1);
 
 	/*
-	 * Set DB_MONETARY or leave it empty in case
+	 * Set DBMONEY or leave it empty in case
 	 * no value is specified.
 	 */
 	if (coninfo->db_monetary != NULL)
-		setenv("DB_MONEY", coninfo->db_monetary, 1);
+		setenv("DBMONEY", coninfo->db_monetary, 1);
 
 	/*
 	 * Set DELIMIDENT accordingly. This will determine
