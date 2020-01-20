@@ -67,7 +67,7 @@ OPTIONS(table 'longvarchar_test',
 --
 -- Foreign table to test Simple LO handling in the informix foreign data wrapper.
 --
-CREATE FOREIGN TABLE text_byte_test(id bigserial not null, v1 text, v2 bytea)
+CREATE FOREIGN TABLE text_byte_test(id bigserial not null, v1 bytea, v2 text)
 SERVER test_server
 OPTIONS(table 'text_byte_test',
         client_locale :'CLIENT_LOCALE',
@@ -100,11 +100,20 @@ OPTIONS("table" 'serial_test',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
 --
--- Foreign table to test SERIAL8/BIGSERIAL values
+-- Foreign table to test SERIAL8 values
 --
 CREATE FOREIGN TABLE serial8_test(id serial8)
 SERVER test_server
 OPTIONS("table" 'serial8_test',
+                client_locale :'CLIENT_LOCALE',
+                db_locale :'DB_LOCALE',
+                database :'INFORMIXDB');
+--
+-- Foreign table to test BIGSERIAL values
+--
+CREATE FOREIGN TABLE bigserial_test(id bigserial not null, v1 varchar(20) not null)
+SERVER test_server
+OPTIONS("table" 'bigserial_test',
                 client_locale :'CLIENT_LOCALE',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
@@ -408,27 +417,26 @@ BEGIN;
 --
 -- Simple string values...
 --
-INSERT INTO text_byte_test(v1, v2) VALUES('This is a text value',
-                                          '...and this value gets converted into binary');
+INSERT INTO text_byte_test(v1, v2) VALUES('This value gets converted into binary',
+                                          'This is a text value');
 SELECT * FROM text_byte_test ORDER BY id ASC;;
- id |          v1          |                                             v2                                             
-----+----------------------+--------------------------------------------------------------------------------------------
-  1 | This is a text value | \x2e2e2e616e6420746869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279
+ id |                                      v1                                      |          v2          
+----+------------------------------------------------------------------------------+----------------------
+  1 | \x546869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279 | This is a text value
 (1 row)
 
 --
 -- Some special hex values for bytea...
 --
-INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
-                                          '\x00');
-INSERT INTO text_byte_test(v1, v2) VALUES('This is another text value',
-                                          '\x00AC00EF');
+INSERT INTO text_byte_test(v1, v2) VALUES('\x00', 'This is another text value');
+INSERT INTO text_byte_test(v1, v2) VALUES('\x00AC00EF',
+                                          'This is another text value');
 SELECT * FROM text_byte_test ORDER BY id ASC;
- id |             v1             |                                             v2                                             
-----+----------------------------+--------------------------------------------------------------------------------------------
-  1 | This is a text value       | \x2e2e2e616e6420746869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279
-  2 | This is another text value | \x00
-  3 | This is another text value | \x00ac00ef
+ id |                                      v1                                      |             v2             
+----+------------------------------------------------------------------------------+----------------------------
+  1 | \x546869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279 | This is a text value
+  2 | \x00                                                                         | This is another text value
+  3 | \x00ac00ef                                                                   | This is another text value
 (3 rows)
 
 -- some deletion
@@ -620,6 +628,40 @@ SELECT * FROM serial8_test ORDER BY id ASC;
 
 COMMIT;
 --------------------------------------------------------------------------------
+-- DML for BIGSERIAL values
+--------------------------------------------------------------------------------
+BEGIN;
+-- NOTE: the 0 value will advance the informix sequence.
+INSERT INTO bigserial_test(id, v1) VALUES(0, 'abc');
+INSERT INTO bigserial_test(id, v1) VALUES(0, 'def');
+INSERT into bigserial_test values(9223372036854775807, 'ghi');
+SELECT * FROM bigserial_test ORDER BY id ASC;
+         id          | v1  
+---------------------+-----
+                   1 | abc
+                   2 | def
+ 9223372036854775807 | ghi
+(3 rows)
+
+-- DELETE INT8_MAX value
+DELETE FROM bigserial_test WHERE id = 9223372036854775807;
+SELECT * FROM bigserial_test ORDER BY id ASC;
+ id | v1  
+----+-----
+  1 | abc
+  2 | def
+(2 rows)
+
+-- DELETE all
+DELETE FROM bigserial_test;
+-- empty set expected
+SELECT * FROM bigserial_test ORDER BY id ASC;
+ id | v1 
+----+----
+(0 rows)
+
+COMMIT;
+--------------------------------------------------------------------------------
 -- DML for DECIMAL values
 --------------------------------------------------------------------------------
 BEGIN;
@@ -736,167 +778,49 @@ INSERT INTO float_test(val1, val2)
        VALUES(1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        340282346638528859811704183484516925440.000000);
 SELECT * FROM float_test ORDER BY val1 ASC;
-         val1          |    val2     
------------------------+-------------
-                     1 |    0.333333
-                  1.25 |    0.333333
-                   1.5 |         0.3
-                  1.75 |        0.35
-                     2 |         0.4
-                     4 |         0.8
-                  4.25 |        0.85
-                   4.5 |         0.9
-                  4.75 |        0.95
-                     5 |           1
-                  5.25 |        1.05
-                   5.5 |         1.1
-                  5.75 |        1.15
-                     6 |         1.2
-                  6.25 |        1.25
-                   6.5 |         1.3
-                  6.75 |        1.35
-                   8.5 |         1.7
-                  8.75 |        1.75
-                     9 |         1.8
-                  9.25 |        1.85
-                   9.5 |         1.9
-                  9.75 |        1.95
-                    10 |           2
- 1.79769313486232e+126 | 3.40282e+38
-(25 rows)
+          val1           |     val2      
+-------------------------+---------------
+ 1.7976931348623157e+126 | 3.4028235e+38
+(1 row)
 
 -- -1 * DBL_MIN and -1 * FLT_MIN
 INSERT INTO float_test(val1, val2)
        VALUES(-1 * 1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        -1 * 340282346638528859811704183484516925440.000000);
 SELECT * FROM float_test ORDER BY val1 ASC;
-          val1          |     val2     
-------------------------+--------------
- -1.79769313486232e+125 | -3.40282e+38
-                      1 |     0.333333
-                   1.25 |     0.333333
-                    1.5 |          0.3
-                   1.75 |         0.35
-                      2 |          0.4
-                      4 |          0.8
-                   4.25 |         0.85
-                    4.5 |          0.9
-                   4.75 |         0.95
-                      5 |            1
-                   5.25 |         1.05
-                    5.5 |          1.1
-                   5.75 |         1.15
-                      6 |          1.2
-                   6.25 |         1.25
-                    6.5 |          1.3
-                   6.75 |         1.35
-                    8.5 |          1.7
-                   8.75 |         1.75
-                      9 |          1.8
-                   9.25 |         1.85
-                    9.5 |          1.9
-                   9.75 |         1.95
-                     10 |            2
-  1.79769313486232e+126 |  3.40282e+38
-(26 rows)
+           val1           |      val2      
+--------------------------+----------------
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(2 rows)
 
 -- NULL values
 INSERT INTO float_test(val1, val2) VALUES(NULL, NULL);
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-          val1          |     val2     
-------------------------+--------------
-                        |             
- -1.79769313486232e+125 | -3.40282e+38
-                      1 |     0.333333
-                   1.25 |     0.333333
-                    1.5 |          0.3
-                   1.75 |         0.35
-                      2 |          0.4
-                      4 |          0.8
-                   4.25 |         0.85
-                    4.5 |          0.9
-                   4.75 |         0.95
-                      5 |            1
-                   5.25 |         1.05
-                    5.5 |          1.1
-                   5.75 |         1.15
-                      6 |          1.2
-                   6.25 |         1.25
-                    6.5 |          1.3
-                   6.75 |         1.35
-                    8.5 |          1.7
-                   8.75 |         1.75
-                      9 |          1.8
-                   9.25 |         1.85
-                    9.5 |          1.9
-                   9.75 |         1.95
-                     10 |            2
-  1.79769313486232e+126 |  3.40282e+38
-(27 rows)
+           val1           |      val2      
+--------------------------+----------------
+                          |               
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(3 rows)
 
 DELETE FROM float_test WHERE val2 = 3.40282e+38;
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-          val1          |     val2     
-------------------------+--------------
-                        |             
- -1.79769313486232e+125 | -3.40282e+38
-                      1 |     0.333333
-                   1.25 |     0.333333
-                    1.5 |          0.3
-                   1.75 |         0.35
-                      2 |          0.4
-                      4 |          0.8
-                   4.25 |         0.85
-                    4.5 |          0.9
-                   4.75 |         0.95
-                      5 |            1
-                   5.25 |         1.05
-                    5.5 |          1.1
-                   5.75 |         1.15
-                      6 |          1.2
-                   6.25 |         1.25
-                    6.5 |          1.3
-                   6.75 |         1.35
-                    8.5 |          1.7
-                   8.75 |         1.75
-                      9 |          1.8
-                   9.25 |         1.85
-                    9.5 |          1.9
-                   9.75 |         1.95
-                     10 |            2
-(26 rows)
+           val1           |      val2      
+--------------------------+----------------
+                          |               
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(3 rows)
 
 -- delete NULLs
 DELETE FROM float_test WHERE val1 IS NULL;
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-          val1          |     val2     
-------------------------+--------------
- -1.79769313486232e+125 | -3.40282e+38
-                      1 |     0.333333
-                   1.25 |     0.333333
-                    1.5 |          0.3
-                   1.75 |         0.35
-                      2 |          0.4
-                      4 |          0.8
-                   4.25 |         0.85
-                    4.5 |          0.9
-                   4.75 |         0.95
-                      5 |            1
-                   5.25 |         1.05
-                    5.5 |          1.1
-                   5.75 |         1.15
-                      6 |          1.2
-                   6.25 |         1.25
-                    6.5 |          1.3
-                   6.75 |         1.35
-                    8.5 |          1.7
-                   8.75 |         1.75
-                      9 |          1.8
-                   9.25 |         1.85
-                    9.5 |          1.9
-                   9.75 |         1.95
-                     10 |            2
-(25 rows)
+           val1           |      val2      
+--------------------------+----------------
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(2 rows)
 
 DELETE FROM float_test;
 -- empty
@@ -978,23 +902,23 @@ SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY 
 
 UPDATE float_test SET val2 = 0.333333333333 WHERE val1 BETWEEN 1.0 and 1.333333;
 SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
- val1 |   val2   
-------+----------
-    1 | 0.333333
- 1.25 | 0.333333
-(2 rows)
+ val1 | val2 
+------+------
+(0 rows)
 
 -- check IN() pushdown
 SELECT val1, val2 FROM float_test WHERE val1 IN (5, 8.75, 9.75, 1.0, 1.25);
  val1 |   val2   
 ------+----------
+    1 | 0.333333
+ 1.25 | 0.333333
     5 |        1
  8.75 |     1.75
  9.75 |     1.95
-    1 | 0.333333
- 1.25 | 0.333333
 (5 rows)
 
+-- empty
+DELETE FROM float_test;
 COMMIT;
 --------------------------------------------------------------------------------
 -- Transaction/Savepoint tests
@@ -1126,10 +1050,13 @@ INSERT INTO inttest(f1, f2, f3) VALUES(1001, 2002, 3003), (4004, 5005, 6006), (7
 SELECT * FROM inttest ORDER BY f1 ASC;
   f1  |  f2  |  f3  
 ------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    4 |    5 |    6
  1001 | 2002 | 3003
  4004 | 5005 | 6006
  7007 | 8008 | 9009
-(3 rows)
+(6 rows)
 
 -- should fail
 UPDATE inttest SET f1 = -1 * 4004 WHERE f1 = 4004;
@@ -1137,9 +1064,15 @@ ERROR:  foreign table "inttest" does not allow updates
 ROLLBACK;
 BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
- f1 | f2 | f3 
-----+----+----
-(0 rows)
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    4 |    5 |    6
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- should fail
 DELETE FROM inttest WHERE f1 = 4004;
@@ -1147,9 +1080,15 @@ ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK;
 BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
- f1 | f2 | f3 
-----+----+----
-(0 rows)
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    4 |    5 |    6
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- should fail
 DELETE FROM inttest;
@@ -1170,12 +1109,18 @@ CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
 INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
 INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
- f1 | f2 | f3 
-----+----+----
-  1 |  2 |  3
-  4 |  5 |  6
-  7 |  8 |  9
-(3 rows)
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    1 |    2 |    3
+    4 |    5 |    6
+    4 |    5 |    6
+    7 |    8 |    9
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(9 rows)
 
 --
 -- This UPDATE should lead to a hash join, where the remote table
@@ -1187,21 +1132,31 @@ SET LOCAL enable_nestloop = off;
 SET LOCAL enable_mergejoin = off;
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
- f1 | f2 | f3 
-----+----+----
-  1 |  2 |  3
-  4 |  5 |  6
-  7 |  8 |  9
-(3 rows)
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    1 |    2 |    3
+    4 |    5 |    6
+    4 |    5 |    6
+    7 |    8 |    9
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(9 rows)
 
 --
 -- ...and DELETE.
 --
 DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
- f1 | f2 | f3 
-----+----+----
-(0 rows)
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(4 rows)
 
 DELETE FROM inttest;
 COMMIT;
@@ -1286,6 +1241,7 @@ DROP FOREIGN TABLE datetime_test;
 DROP FOREIGN TABLE date_test;
 DROP FOREIGN TABLE interval_test;
 DROP FOREIGN TABLE decimal_test;
+DROP FOREIGN TABLE bigserial_test;
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
 DROP EXTENSION informix_fdw;

@@ -36,10 +36,9 @@ run the regression test suite. This currently contains two different
 regression tests:
 
 informix_fdw - Checks core functionality
-informix_fdw_utf8 - Additional tests for Informix UTF8 databases
+informix_fdw_dml - Tests DML actions
 
-The latter is currently very generic and likely to be heavily improved
-in the future. The regression tests aren't defined in the Makefile itself,
+The regression tests aren't defined in the Makefile itself,
 since they require a running Informix database instance and you need to
 import a test database into it. Also the regression dump files assume,
 you run the tests with the 'informix' user. If you want a different user,
@@ -48,25 +47,29 @@ make sure you have the required rights to access the tables.
 The following steps are required to prepare the regression test suite
 
 * You need a running Informix instance and full access to it, since you
-  need to import the test database. Once you got access, you need to
+  need to import the regression database. Once you got access, you need to
   extract the dumps located in the archives from
 
-  informix/ifx_testdb.tar.bz2
-  informix/ifx_testdb_utf8.tar.bz2
+  informix/regression.tar.bz2
+  informix/regression_dml.tar.bz2
 
   Once extracted, you will find the new subdirectories
 
-  test.exp
-  test_utf8.exp
+  regression.exp
+  regression_dml.exp
 
-  in your working directory. These contain the dump data for the test
-  and test_utf8 database. If you can't have a test or test_utf8 database, but a
-  database with a different naming, you need to rename the directory and the
+  in your working directory. Those informix exports require a database with
+  the name "regression" (for the regression.exp export files) or "regression_dml"
+  for the DML transactional regression tests. Please note that the latter
+  writes to the database and makes various changes to the table data there.
+
+  If you can't have a "regression" or "regression_dml" database,
+  but a database with a different naming, you need to rename the directory and the
   embedded SQL scripts there to match the database name you have chosen.
   If everything is prepared, import the dump into your target database:
 
-  $ dbimport -i test.exp test
-  $ dbimport -i test_utf8.exp test_utf8
+  $ dbimport -i regression.exp regression
+  $ dbimport -i regression_dml.exp regression_dml
 
 * Prepare your private configuration for the regression tests
 
@@ -83,7 +86,7 @@ The following steps are required to prepare the regression test suite
 * Now you can run the test suite:
 
   $ REGRESS=informix_fdw INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
-  $ REGRESS=informix_fdw_utf8 INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
+  $ REGRESS=informix_fdw_tx INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
 
   When no errors occurred due to configuration or setup errors, you should see
   the following output for each of both regression test:
