@@ -2728,7 +2728,7 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 			 * End of arguments?
 			 * If true, don't add additional pushdown info
 			 */
-			if (lnext(cell) != NULL)
+			if (PG_LIST_NEXT_ITEM(boolexpr->args, cell) != NULL)
 			{
 				/*
 				 * Save boolean expression type.

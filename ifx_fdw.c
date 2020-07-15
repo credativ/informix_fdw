@@ -22,6 +22,11 @@
 #include "parser/parsetree.h"
 #endif
 
+#if PG_VERSION_NUM > 120000
+#include "common/hashfn.h"
+#include "access/relation.h"
+#endif
+
 #include "access/xact.h"
 #include "utils/lsyscache.h"
 
@@ -1919,7 +1924,7 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 	 * No lock required, since the planner should already acquired
 	 * one...
 	 */
-	rel = heap_open(foreignTableOid, NoLock);
+	rel = PG_RELATION_OPEN(foreignTableOid, NoLock);
 
 	switch(operation)
 	{
@@ -1997,7 +2002,7 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			break;
 	}
 
-	heap_close(rel, NoLock);
+	PG_RELATION_CLOSE(rel, NoLock);
 }
 
 #endif
@@ -2173,7 +2178,7 @@ static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
 										IfxFdwExecutionState *state,
 										CmdType cmd)
 {
-	Relation rel    = heap_open(foreignTableOid, NoLock);
+	Relation rel    = PG_RELATION_OPEN(foreignTableOid, NoLock);
 	bool     result = false;
 
 	/*
@@ -2197,7 +2202,7 @@ static bool ifxCheckForAfterRowTriggers(Oid foreignTableOid,
 		}
 	}
 
-	heap_close(rel, NoLock);
+	PG_RELATION_CLOSE(rel, NoLock);
 
 	return result;
 }
@@ -3639,9 +3644,9 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	festate->pgDroppedAttrCount = 0;
 
 	/* open foreign table, should be locked already */
-	foreignRel = heap_open(foreignTableOid, NoLock);
+	foreignRel = PG_RELATION_OPEN(foreignTableOid, NoLock);
 	festate->pgAttrCount = RelationGetNumberOfAttributes(foreignRel);
-	heap_close(foreignRel, NoLock);
+	PG_RELATION_CLOSE(foreignRel, NoLock);
 
 	/*
 	 * Use IFX_PGATTRCOUNT to reflect extra space for retrieval of ROWID,
@@ -3652,7 +3657,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	/*
 	 * Get all attributes for the given foreign table.
 	 */
-	attrRel = heap_open(AttributeRelationId, AccessShareLock);
+	attrRel = PG_RELATION_OPEN(AttributeRelationId, AccessShareLock);
 	ScanKeyInit(&key[0], Anum_pg_attribute_attrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(foreignTableOid));
@@ -3709,7 +3714,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 		if (pgAttrIndex > festate->pgAttrCount)
 		{
 			systable_endscan(scan);
-			heap_close(attrRel, AccessShareLock);
+			PG_RELATION_CLOSE(attrRel, AccessShareLock);
 			elog(ERROR, "unexpected number of attributes in foreign table");
 		}
 
@@ -3746,7 +3751,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 
 	/* finish */
 	systable_endscan(scan);
-	heap_close(attrRel, AccessShareLock);
+	PG_RELATION_CLOSE(attrRel, AccessShareLock);
 }
 
 /*
@@ -5066,7 +5071,7 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 		 * Record a corresponding IfxPushdownOprInfo structure in
 		 * the context, so that it get decoded properly below.
 		 */
-		if (lnext(cell) != NULL)
+		if (PG_LIST_NEXT_ITEM(baserel->baserestrictinfo, cell) != NULL)
 		{
 			IfxPushdownOprInfo *pushAndInfo;
 

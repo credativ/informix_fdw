@@ -16,14 +16,6 @@
 #include "ifx_conncache.h"
 
 /*
- * Expected size of the foreign table cache. This might not
- * be very large, but it is depending on the number
- * of distinct FDW tables actually used. So assume a moderate
- * number of fixed slots.
- */
-#define IFX_FTCACHE_SIZE 32
-
-/*
  * Expected number of cached connections.
  */
 #define IFX_CONNCACHE_SIZE 16
@@ -33,12 +25,6 @@
  */
 #define IFX_CONNCACHE_HASHTABLE "IFX_CONN_CACHE"
 
-/*
- * Name of the foreign table hash table
- */
-#define IFX_FT_HASHTABLE "IFX_FT_CACHE"
-
-static void ifxFTCache_init(void);
 static void ifxConnCache_init(void);
 
 extern bool IfxCacheIsInitialized;
@@ -48,7 +34,6 @@ void InformixCacheInit()
 {
 	if (!IfxCacheIsInitialized)
 	{
-		ifxFTCache_init();
 		ifxConnCache_init();
 		IfxCacheIsInitialized = true;
 	}
@@ -86,48 +71,6 @@ static void ifxConnCache_init()
 	 */
 	MemoryContextSwitchTo(old_ctxt);
 
-}
-
-/*
- * Initialize the foreign table cache. This cache
- * stashes information of a used foreign table away, such as
- * cost estimates and other information.
- */
-static void ifxFTCache_init()
-{
-	HASHCTL hash_ctl;
-	MemoryContext old_ctxt;
-
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
-	hash_ctl.keysize = sizeof(Oid);
-	hash_ctl.entrysize = sizeof(IfxFTCacheItem);
-	hash_ctl.hash = oid_hash;
-
-	/*
-	 * Seems HTAB always allocates in TopMemoryContext if no
-	 * other context is requested, but assign it explicitely
-	 * anyways.
-	 */
-	hash_ctl.hcxt = TopMemoryContext;
-
-	/*
-	 * Since the cache is initialized the first time and is
-	 * required to be stay alive the whole lifetime of the current
-	 * backend, we allocate all cache-related objects in the TopMemoryContext.
-	 *
-	 * Please note that we don't delete them afterwards,
-	 * the cached objects are freed on backend termination automatically.
-	 */
-
-	old_ctxt = MemoryContextSwitchTo(TopMemoryContext);
-
-	ifxCache.tables = hash_create(IFX_FT_HASHTABLE, IFX_FTCACHE_SIZE,
-								  &hash_ctl, HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
-
-	/*
-	 * Back to old context
-	 */
-	MemoryContextSwitchTo(old_ctxt);
 }
 
 /*
@@ -261,36 +204,3 @@ ifxConnCache_rm(char *conname, bool *found)
 	return item;
 }
 
-/*
- * Registers or updates the given foreign table (FT) in the
- * local backend cache. Returns a pointer to the cached FT structure.
- *
- * This function assumes we never get an InvalidOid here, so the caller
- * might be advised to check the Oid before.
- */
-IfxFTCacheItem *ifxFTCache_add(Oid foreignTableOid, char *conname)
-{
-	IfxFTCacheItem *item;
-	bool found;
-
-	/*
-	 * Lookup the OID of this foreign table. If it is *not*
-	 * already registered, create a new cached entry. We assume
-	 * we never get an InvalidOid here.
-	 */
-	item = hash_search(ifxCache.tables, (void *) &foreignTableOid,
-					   HASH_ENTER, &found);
-
-	/*
-	 * If this is a new entry, initialize all required values
-	 */
-	if (!found)
-	{
-		/* TO DO: initialize cached table properties */
-		item->foreignTableOid = foreignTableOid;
-		bzero(item->ifx_connection_name, IFX_CONNAME_LEN);
-		StrNCpy(item->ifx_connection_name, conname, strlen(conname));
-	}
-
-	return item;
-}

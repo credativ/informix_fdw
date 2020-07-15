@@ -56,6 +56,31 @@
 
 #include "ifx_type_compat.h"
 
+/**
+ * PostgreSQL 13 reimplements the old Lisp-style
+ * List API into a dynamic array based one. This changes
+ * some list functions, like lnext(), so we have to deal
+ * with older major releases for backwards compatibility.
+ */
+#if PG_VERSION_NUM > 120000
+#define PG_LIST_NEXT_ITEM(l, c) lnext((l), (c))
+#else
+#define PG_LIST_NEXT_ITEM(l, c) lnext((c))
+#endif
+
+/**
+ * PostgreSQL 13 renamed generic relation related functions
+ * from heap_* to relation_*, so we have to deal with it
+ * to support older major releases.
+ */
+#if PG_VERSION_NUM > 120000
+#define PG_RELATION_OPEN(r, l) relation_open((r), (l))
+#define PG_RELATION_CLOSE(r, l) relation_close((r), (l))
+#else
+#define PG_RELATION_OPEN(r, l) heap_open((r), (l))
+#define PG_RELATION_CLOSE(r, l) heap_close((r), (l))
+#endif
+
 /*
  * Defines actions for remote informix transactions.
  */
