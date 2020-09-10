@@ -62,7 +62,7 @@
  * some list functions, like lnext(), so we have to deal
  * with older major releases for backwards compatibility.
  */
-#if PG_VERSION_NUM > 120000
+#if PG_VERSION_NUM >= 130000
 #define PG_LIST_NEXT_ITEM(l, c) lnext((l), (c))
 #else
 #define PG_LIST_NEXT_ITEM(l, c) lnext((c))
@@ -73,7 +73,7 @@
  * from heap_* to relation_*, so we have to deal with it
  * to support older major releases.
  */
-#if PG_VERSION_NUM > 120000
+#if PG_VERSION_NUM >= 130000
 #define PG_RELATION_OPEN(r, l) relation_open((r), (l))
 #define PG_RELATION_CLOSE(r, l) relation_close((r), (l))
 #else

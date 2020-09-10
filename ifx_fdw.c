@@ -22,7 +22,7 @@
 #include "parser/parsetree.h"
 #endif
 
-#if PG_VERSION_NUM > 120000
+#if PG_VERSION_NUM >= 130000
 #include "common/hashfn.h"
 #include "access/relation.h"
 #endif
