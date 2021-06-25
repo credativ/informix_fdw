@@ -23,6 +23,12 @@
 --
 SET client_min_messages TO ERROR;
 --
+-- With PostgreSQL 12, we have extra_float_digits set to 1. Make
+-- this explicit for the regression tests, so we can get the same
+-- output on older releases.
+--
+SET extra_float_digits TO 3;
+--
 -- Load extension
 --
 CREATE EXTENSION informix_fdw;
@@ -778,9 +784,9 @@ INSERT INTO float_test(val1, val2)
        VALUES(1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        340282346638528859811704183484516925440.000000);
 SELECT * FROM float_test ORDER BY val1 ASC;
-          val1           |     val2      
--------------------------+---------------
- 1.7976931348623157e+126 | 3.4028235e+38
+           val1           |      val2      
+--------------------------+----------------
+ 1.79769313486231569e+126 | 3.40282347e+38
 (1 row)
 
 -- -1 * DBL_MIN and -1 * FLT_MIN
@@ -788,38 +794,38 @@ INSERT INTO float_test(val1, val2)
        VALUES(-1 * 1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        -1 * 340282346638528859811704183484516925440.000000);
 SELECT * FROM float_test ORDER BY val1 ASC;
-           val1           |      val2      
---------------------------+----------------
- -1.7976931348623155e+125 | -3.4028235e+38
-  1.7976931348623157e+126 |  3.4028235e+38
+           val1            |      val2       
+---------------------------+-----------------
+ -1.79769313486231554e+125 | -3.40282347e+38
+  1.79769313486231569e+126 |  3.40282347e+38
 (2 rows)
 
 -- NULL values
 INSERT INTO float_test(val1, val2) VALUES(NULL, NULL);
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-           val1           |      val2      
---------------------------+----------------
-                          |               
- -1.7976931348623155e+125 | -3.4028235e+38
-  1.7976931348623157e+126 |  3.4028235e+38
+           val1            |      val2       
+---------------------------+-----------------
+                           |                
+ -1.79769313486231554e+125 | -3.40282347e+38
+  1.79769313486231569e+126 |  3.40282347e+38
 (3 rows)
 
 DELETE FROM float_test WHERE val2 = 3.40282e+38;
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-           val1           |      val2      
---------------------------+----------------
-                          |               
- -1.7976931348623155e+125 | -3.4028235e+38
-  1.7976931348623157e+126 |  3.4028235e+38
+           val1            |      val2       
+---------------------------+-----------------
+                           |                
+ -1.79769313486231554e+125 | -3.40282347e+38
+  1.79769313486231569e+126 |  3.40282347e+38
 (3 rows)
 
 -- delete NULLs
 DELETE FROM float_test WHERE val1 IS NULL;
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
-           val1           |      val2      
---------------------------+----------------
- -1.7976931348623155e+125 | -3.4028235e+38
-  1.7976931348623157e+126 |  3.4028235e+38
+           val1            |      val2       
+---------------------------+-----------------
+ -1.79769313486231554e+125 | -3.40282347e+38
+  1.79769313486231569e+126 |  3.40282347e+38
 (2 rows)
 
 DELETE FROM float_test;
@@ -884,14 +890,14 @@ SELECT COUNT(*) FROM float_test;
 
 -- delete specific range
 SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY val1 ASC;
- val1 | val2 
-------+------
-    7 |  1.4
- 7.25 | 1.45
-  7.5 |  1.5
- 7.75 | 1.55
-    8 |  1.6
- 8.25 | 1.65
+ val1 |    val2    
+------+------------
+    7 | 1.39999998
+ 7.25 | 1.45000005
+  7.5 |        1.5
+ 7.75 | 1.54999995
+    8 | 1.60000002
+ 8.25 | 1.64999998
 (6 rows)
 
 DELETE FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333;
@@ -908,13 +914,13 @@ SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
 
 -- check IN() pushdown
 SELECT val1, val2 FROM float_test WHERE val1 IN (5, 8.75, 9.75, 1.0, 1.25);
- val1 |   val2   
-------+----------
-    1 | 0.333333
- 1.25 | 0.333333
-    5 |        1
- 8.75 |     1.75
- 9.75 |     1.95
+ val1 |    val2     
+------+-------------
+    1 | 0.333332986
+ 1.25 | 0.333332986
+    5 |           1
+ 8.75 |        1.75
+ 9.75 |  1.95000005
 (5 rows)
 
 -- empty
@@ -1023,7 +1029,7 @@ SELECT * FROM inttest ORDER BY f1;
   4 |  5 |  6
 (3 rows)
 
-ROLLBACK;
+COMMIT;
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
  tx_in_progress 
 ----------------
@@ -1064,15 +1070,12 @@ ERROR:  foreign table "inttest" does not allow updates
 ROLLBACK;
 BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
-  f1  |  f2  |  f3  
-------+------+------
-   -1 |   -2 |   -3
-    1 |    2 |    3
-    4 |    5 |    6
- 1001 | 2002 | 3003
- 4004 | 5005 | 6006
- 7007 | 8008 | 9009
-(6 rows)
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 -- should fail
 DELETE FROM inttest WHERE f1 = 4004;
@@ -1080,15 +1083,12 @@ ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK;
 BEGIN;
 SELECT * FROM inttest ORDER BY f1 ASC;
-  f1  |  f2  |  f3  
-------+------+------
-   -1 |   -2 |   -3
-    1 |    2 |    3
-    4 |    5 |    6
- 1001 | 2002 | 3003
- 4004 | 5005 | 6006
- 7007 | 8008 | 9009
-(6 rows)
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 -- should fail
 DELETE FROM inttest;
@@ -1109,18 +1109,15 @@ CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
 INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
 INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
-  f1  |  f2  |  f3  
-------+------+------
-   -1 |   -2 |   -3
-    1 |    2 |    3
-    1 |    2 |    3
-    4 |    5 |    6
-    4 |    5 |    6
-    7 |    8 |    9
- 1001 | 2002 | 3003
- 4004 | 5005 | 6006
- 7007 | 8008 | 9009
-(9 rows)
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  1 |  2 |  3
+  4 |  5 |  6
+  4 |  5 |  6
+  7 |  8 |  9
+(6 rows)
 
 --
 -- This UPDATE should lead to a hash join, where the remote table
@@ -1132,31 +1129,25 @@ SET LOCAL enable_nestloop = off;
 SET LOCAL enable_mergejoin = off;
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
-  f1  |  f2  |  f3  
-------+------+------
-   -1 |   -2 |   -3
-    1 |    2 |    3
-    1 |    2 |    3
-    4 |    5 |    6
-    4 |    5 |    6
-    7 |    8 |    9
- 1001 | 2002 | 3003
- 4004 | 5005 | 6006
- 7007 | 8008 | 9009
-(9 rows)
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  1 |  2 |  3
+  4 |  5 |  6
+  4 |  5 |  6
+  7 |  8 |  9
+(6 rows)
 
 --
 -- ...and DELETE.
 --
 DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
-  f1  |  f2  |  f3  
-------+------+------
-   -1 |   -2 |   -3
- 1001 | 2002 | 3003
- 4004 | 5005 | 6006
- 7007 | 8008 | 9009
-(4 rows)
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+(1 row)
 
 DELETE FROM inttest;
 COMMIT;

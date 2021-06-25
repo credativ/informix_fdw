@@ -19,6 +19,13 @@
 SET client_min_messages TO ERROR;
 
 --
+-- PostgreSQL 12 increases the default of extra_float_digits to 1,
+-- so make this explicit for the regression tests to get the same results
+-- on older releases.
+--
+SET extra_float_digits TO 1;
+
+--
 -- Load extension
 --
 

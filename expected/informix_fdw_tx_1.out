@@ -8,7 +8,6 @@
 -- Informix database, otherwise no remote transactions are used
 -- and the tests *will* fail.
 --
-
 --
 -- Set server parameters
 --
@@ -18,50 +17,37 @@
 --       varying settings (e.g. database name).
 --
 \set ECHO none
-\set ON_ERROR_STOP 1
-\i ./sql/regression_variables
-\unset ON_ERROR_STOP
-\set ECHO all
-
 --
 -- Suppress WARNINGs during regression test. This will
 -- cause errors in case someone uses a database with logging.
 --
 SET client_min_messages TO ERROR;
-
 --
 -- With PostgreSQL 12, we have extra_float_digits set to 1. Make
 -- this explicit for the regression tests, so we can get the same
 -- output on older releases.
 --
 SET extra_float_digits TO 3;
-
 --
 -- Load extension
 --
-
 CREATE EXTENSION informix_fdw;
-
 --
 -- Create foreign server
 --
-
 CREATE SERVER test_server
 FOREIGN DATA WRAPPER informix_fdw
 OPTIONS (informixserver :'INFORMIXSERVER',
          informixdir :'INFORMIXDIR');
-
 CREATE USER MAPPING FOR CURRENT_USER
 SERVER test_server
 OPTIONS (username :'INFORMIXUSER', password :'INFORMIXPASSWORD');
-
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
 SERVER test_server
 OPTIONS (table 'inttest',
          client_locale :'CLIENT_LOCALE',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB');
-
 --
 -- v1 => varchar(200, 3)
 -- v2 => lvarchar(200)
@@ -73,7 +59,6 @@ OPTIONS(table 'varchar_test',
               client_locale :'CLIENT_LOCALE',
               db_locale :'DB_LOCALE',
               database :'INFORMIXDB');
-
 --
 -- Foreign table to test very long string values.
 --
@@ -85,7 +70,6 @@ OPTIONS(table 'longvarchar_test',
               client_locale :'CLIENT_LOCALE',
               db_locale :'DB_LOCALE',
               database :'INFORMIXDB');
-
 --
 -- Foreign table to test Simple LO handling in the informix foreign data wrapper.
 --
@@ -96,7 +80,6 @@ OPTIONS(table 'text_byte_test',
         db_locale :'DB_LOCALE',
         database :'INFORMIXDB',
         enable_blobs '1');
-
 --
 -- Foreign tables to test DATETIME and DATE values.
 --
@@ -107,15 +90,12 @@ OPTIONS(table 'datetime_test',
         client_locale :'CLIENT_LOCALE',
         db_locale :'DB_LOCALE',
         database :'INFORMIXDB');
-
 CREATE FOREIGN TABLE date_test(val date)
 SERVER test_server
 OPTIONS(table 'date_test',
         client_locale :'CLIENT_LOCALE',
         db_locale :'DB_LOCALE',
         database :'INFORMIXDB');
-
-
 --
 -- Foreign table to test SERIAL values
 --
@@ -125,7 +105,6 @@ OPTIONS("table" 'serial_test',
                 client_locale :'CLIENT_LOCALE',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
-
 --
 -- Foreign table to test SERIAL8 values
 --
@@ -135,7 +114,6 @@ OPTIONS("table" 'serial8_test',
                 client_locale :'CLIENT_LOCALE',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
-
 --
 -- Foreign table to test BIGSERIAL values
 --
@@ -145,7 +123,6 @@ OPTIONS("table" 'bigserial_test',
                 client_locale :'CLIENT_LOCALE',
                 db_locale :'DB_LOCALE',
                 database :'INFORMIXDB');
-
 --
 -- Foreign table to test INTERVAL values
 --
@@ -160,7 +137,6 @@ OPTIONS ("table" 'interval_test',
                  db_locale :'DB_LOCALE',
                  database :'INFORMIXDB'
 );
-
 --
 -- Foreign table to test DECIMAL values
 --
@@ -174,7 +150,6 @@ OPTIONS ("table" 'decimal_test',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB'
 );
-
 --
 -- Foreign table to test FLOAT/DOUBLE PRECISION and
 -- REAL values
@@ -188,22 +163,26 @@ OPTIONS ("table" 'float_test',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB'
 );
-
 --
 -- Start a transaction.
 --
-
 BEGIN;
-
 --
 -- Simple select
 --
 SELECT * FROM inttest WHERE f1 = 101;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 -- This should have started a transaction on the foreign server
 -- as well.
 SELECT tx_in_progress
 FROM ifx_fdw_get_connections() ORDER BY 1;
+ tx_in_progress 
+----------------
+              1
+(1 row)
 
 --
 -- Self join, using multiple cursors within transaction.
@@ -212,32 +191,47 @@ SELECT t1.f1, t2.f1
 FROM inttest t1
      JOIN inttest t2 ON (t1.f1 = t2.f1)
 ORDER BY 1;
+ f1 | f1 
+----+----
+(0 rows)
 
 --
 -- Should call ifx_fdw_xact_callback()
 --
 ROLLBACK;
-
 -- Transaction should be rolled back
 SELECT tx_in_progress
 FROM ifx_fdw_get_connections() ORDER BY 1;
+ tx_in_progress 
+----------------
+              0
+(1 row)
 
 --
 -- Informix should have rollbacked, too
 --
 SELECT * FROM inttest WHERE f1 = 101;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 BEGIN;
-
 --
 -- Simple select
 --
 SELECT * FROM inttest WHERE f1 = 101;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 -- This should have started a transaction on the foreign server
 -- as well.
 SELECT tx_in_progress
 FROM ifx_fdw_get_connections() ORDER BY 1;
+ tx_in_progress 
+----------------
+              1
+(1 row)
 
 --
 -- Self join, using multiple cursors within transaction.
@@ -246,130 +240,196 @@ SELECT t1.f1, t2.f1
 FROM inttest t1
      JOIN inttest t2 ON (t1.f1 = t2.f1)
 ORDER BY 1;
+ f1 | f1 
+----+----
+(0 rows)
 
 COMMIT;
-
 --
 -- No transaction left, also show statistics
 --
 SELECT tx_in_progress, tx_num_commit, tx_num_rollback
 FROM ifx_fdw_get_connections() ORDER BY 1;
+ tx_in_progress | tx_num_commit | tx_num_rollback 
+----------------+---------------+-----------------
+              0 |             2 |               1
+(1 row)
 
 --
 -- Test DML
 --
-
 BEGIN;
-
 --------------------------------------------------------------------------------
 -- DML for Int8/Int4/Int2
 --------------------------------------------------------------------------------
-
 -- Integer values, single INSERT, succeeds
 INSERT INTO inttest VALUES(-1, -2, -3);
-
 -- Integer values, multi-INSERT, succeeds
 INSERT INTO inttest VALUES(-1, -2, -3), (100, 200, 300), (400, 500, 600),
        (-100, -200, -300), (1001, 2002, 3003), (4004, 5005, 6006),
        (7007, 8008, 9009);
-
 -- Show results
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+  f1  |  f2  |  f3  
+------+------+------
+ -100 | -200 | -300
+   -1 |   -2 |   -3
+   -1 |   -2 |   -3
+  100 |  200 |  300
+  400 |  500 |  600
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(8 rows)
 
 -- DELETE values
 -- ... should also use IN() pushdown ;)
 DELETE FROM inttest WHERE f1 IN(100, -100);
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+   -1 |   -2 |   -3
+  400 |  500 |  600
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- UPDATE values, single value
 UPDATE inttest SET f1 = 101 WHERE f2 = 2002;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+   -1 |   -2 |   -3
+  101 | 2002 | 3003
+  400 |  500 |  600
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- UPDATE values, column order
 UPDATE inttest SET f1 = -400, f2 = 1, f3 = 2 WHERE f1 = -1;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+  f1  |  f2  |  f3  
+------+------+------
+ -400 |    1 |    2
+ -400 |    1 |    2
+  101 | 2002 | 3003
+  400 |  500 |  600
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- UPDATE values, mixed column order
 UPDATE inttest SET f2 = -2, f1 = -1, f3 = -3 WHERE f1 IN (4004, 7007, -400);
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+ f1  |  f2  |  f3  
+-----+------+------
+  -1 |   -2 |   -3
+  -1 |   -2 |   -3
+  -1 |   -2 |   -3
+  -1 |   -2 |   -3
+ 101 | 2002 | 3003
+ 400 |  500 |  600
+(6 rows)
 
 --
 -- Test IN() expression
 --
 SELECT * FROM inttest WHERE f1 IN (-2, -1, -3) ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+ -1 | -2 | -3
+ -1 | -2 | -3
+ -1 | -2 | -3
+(4 rows)
 
 -- DELETE everything
 DELETE FROM inttest;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 COMMIT;
-
 --
 -- No transaction left, also show statistics
 --
 SELECT tx_in_progress, tx_num_commit, tx_num_rollback
 FROM ifx_fdw_get_connections() ORDER BY 1;
+ tx_in_progress | tx_num_commit | tx_num_rollback 
+----------------+---------------+-----------------
+              0 |             3 |               1
+(1 row)
 
 --------------------------------------------------------------------------------
 -- DML for VARCHAR/NVARCHAR/LVARCHAR
 --------------------------------------------------------------------------------
 BEGIN;
-
 --
 -- This file is LATIN encoded
 --
 SET LOCAL client_encoding TO 'ISO8859-1';
-
 --
 -- INSERT with simple characters
 --
 INSERT INTO varchar_test VALUES(DEFAULT, 'abc', 'def', 'ghi');
-
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
+ id | v1  | v2  | v3  
+----+-----+-----+-----
+  1 | abc | def | ghi
+(1 row)
 
 -- IN() pushdown and quoting...
 SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN ('abc', 'def', 'ghi') ORDER BY id;
+ id | v1  | v2  | v3  
+----+-----+-----+-----
+  1 | abc | def | ghi
+(1 row)
 
 --
 -- INSERT of special character (german umlaut)
 --
 INSERT INTO varchar_test VALUES(DEFAULT, 'ßßß', 'ÄÖÜ', 'äöü');
-
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
+ id | v1  | v2  | v3  
+----+-----+-----+-----
+  1 | abc | def | ghi
+  2 | ßßß | ÄÖÜ | äöü
+(2 rows)
 
 SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('ÄÖÜ', 'ßßß');
+ id | v1  | v2  | v3  
+----+-----+-----+-----
+  2 | ßßß | ÄÖÜ | äöü
+(1 row)
 
 DELETE FROM varchar_test;
-
 RESET client_encoding;
-
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for TEXT/BYTE (Simple LO)
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 --
 -- BYTEA => IFX BYTE
 -- TEXT  => IFX TEXT
 --
 -- NOTE: TEXT is a Simple LO in Informix as well!
 --
-
 --
 -- Simple string values...
 --
 INSERT INTO text_byte_test(v1, v2) VALUES('This value gets converted into binary',
                                           'This is a text value');
-
 SELECT * FROM text_byte_test ORDER BY id ASC;;
+ id |                                      v1                                      |          v2          
+----+------------------------------------------------------------------------------+----------------------
+  1 | \x546869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279 | This is a text value
+(1 row)
 
 --
 -- Some special hex values for bytea...
@@ -377,30 +437,32 @@ SELECT * FROM text_byte_test ORDER BY id ASC;;
 INSERT INTO text_byte_test(v1, v2) VALUES('\x00', 'This is another text value');
 INSERT INTO text_byte_test(v1, v2) VALUES('\x00AC00EF',
                                           'This is another text value');
-
 SELECT * FROM text_byte_test ORDER BY id ASC;
+ id |                                      v1                                      |             v2             
+----+------------------------------------------------------------------------------+----------------------------
+  1 | \x546869732076616c7565206765747320636f6e76657274656420696e746f2062696e617279 | This is a text value
+  2 | \x00                                                                         | This is another text value
+  3 | \x00ac00ef                                                                   | This is another text value
+(3 rows)
 
 -- some deletion
 DELETE FROM text_byte_test WHERE id IN (1, 2);
-
 -- ...and finally clean everything
 DELETE FROM text_byte_test;
-
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for DATE/TIMESTAMP values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 SET LOCAL DateStyle TO 'ISO, DMY';
-
 INSERT INTO datetime_test(v1, v2, v3) VALUES('2013-08-19 15:30:00',
                                              '2013-08-19',
                                              '15:30:00');
-
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
+           v1           |     v2     |    v3    
+------------------------+------------+----------
+ 2013-08-19 15:30:00-07 | 2013-08-19 | 15:30:00
+(1 row)
 
 --
 -- IN() expression...
@@ -408,192 +470,250 @@ SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
 --       Informix server, since TIMESTAMP(TZ)OID is not supported for pushdown.
 --
 DELETE FROM datetime_test WHERE v1 IN ('2013-08-19 15:4:00', '2013-08-19 15:50:00', '2013-08-19 15:20:00');
-
 -- DELETE specific time value
 DELETE FROM datetime_test WHERE v3 = '15:30:00';
-
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
+ v1 | v2 | v3 
+----+----+----
+(0 rows)
 
 -- DELETE all
 DELETE FROM datetime_test;
-
 -- empty set expected
 SELECT v1, v2, v3 FROM datetime_test ORDER BY id ASC;
+ v1 | v2 | v3 
+----+----+----
+(0 rows)
 
 -- empty set expected
 SELECT val FROM date_test ORDER BY val;
+ val 
+-----
+(0 rows)
 
 -- INSERT, should succeed
 INSERT INTO date_test(val) VALUES('1941-08-19');
 INSERT INTO date_test(val) VALUES('0001-01-01');
 SELECT val FROM date_test ORDER BY val;
+    val     
+------------
+ 0001-01-01
+ 1941-08-19
+(2 rows)
 
 SAVEPOINT _BEFORE_FAIL;
-
 -- INSERT, should fail
 INSERT INTO date_test(val) VALUES('0000-12-31');
-
+ERROR:  date/time field value out of range: "0000-12-31"
+LINE 1: INSERT INTO date_test(val) VALUES('0000-12-31');
+                                          ^
 ROLLBACK TO _BEFORE_FAIL;
-
 SELECT val FROM date_test ORDER BY val;
+    val     
+------------
+ 0001-01-01
+ 1941-08-19
+(2 rows)
 
 -- leap year
 INSERT INTO date_test(val) VALUES('2016-02-29');
 SELECT val FROM date_test ORDER BY val;
+    val     
+------------
+ 0001-01-01
+ 1941-08-19
+ 2016-02-29
+(3 rows)
 
 -- DELETE, should succeed
 DELETE FROM date_test WHERE val = '2016-02-29';
 SELECT val FROM date_test ORDER BY val;
+    val     
+------------
+ 0001-01-01
+ 1941-08-19
+(2 rows)
 
 -- UPDATE, should succeed
 UPDATE date_test SET val = '2016-02-29' WHERE val = '0001-01-01';
 SELECT val FROM date_test ORDER BY val;
+    val     
+------------
+ 1941-08-19
+ 2016-02-29
+(2 rows)
 
 DELETE FROM date_test;
-
 SELECT val FROM date_test ORDER BY val;
+ val 
+-----
+(0 rows)
 
 COMMIT;
-
 --
 -- We don't support PostgreSQL timestamp/timestamptz to Informix DATE conversions
 --
 BEGIN;
-
 ALTER FOREIGN TABLE date_test ALTER val TYPE timestamptz;
-
 SAVEPOINT _BEFORE_FAIL;
-
 -- should fail
 INSERT INTO date_test(val) VALUES('2016-10-10 15:25');
-
+ERROR:  informix_fdw: cannot convert type oid 1184 of attnum 0 to informix type id 7
 ROLLBACK TO _BEFORE_FAIL;
-
 ALTER FOREIGN TABLE date_test ALTER val TYPE timestamp;
-
 -- should fail
 INSERT INTO date_test(val) VALUES('2016-10-10 15:25');
-
+ERROR:  informix_fdw: cannot convert type oid 1114 of attnum 0 to informix type id 7
 ROLLBACK TO _BEFORE_FAIL;
-
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for SERIAL values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 INSERT INTO serial_test VALUES(DEFAULT);
 INSERT INTO serial_test VALUES(1);
 -- INSERT INT_MAX value
 INSERT INTO serial_test VALUES(2147483647);
-
 SELECT * FROM serial_test ORDER BY id ASC;
+     id     
+------------
+          1
+          1
+ 2147483647
+(3 rows)
 
 -- DELETE INT_MAX value
 DELETE FROM serial_test WHERE id = 2147483647;
-
 SELECT * FROM serial_test ORDER BY id ASC;
+ id 
+----
+  1
+  1
+(2 rows)
 
 -- DELETE all
 DELETE FROM serial_test;
-
 -- empty set expected
 SELECT * FROM serial_test ORDER BY id ASC;
+ id 
+----
+(0 rows)
 
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for SERIAL8 values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 INSERT INTO serial8_test VALUES(DEFAULT);
 INSERT INTO serial8_test VALUES(1);
 INSERT into serial8_test values(9223372036854775807);
-
 SELECT * FROM serial8_test ORDER BY id ASC;
+         id          
+---------------------
+                   1
+                   1
+ 9223372036854775807
+(3 rows)
 
 -- DELETE INT8_MAX value
 DELETE FROM serial8_test WHERE id = 9223372036854775807;
-
 SELECT * FROM serial8_test ORDER BY id ASC;
+ id 
+----
+  1
+  1
+(2 rows)
 
 -- DELETE all
 DELETE FROM serial8_test;
-
 -- empty set expected
 SELECT * FROM serial8_test ORDER BY id ASC;
+ id 
+----
+(0 rows)
 
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for BIGSERIAL values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 -- NOTE: the 0 value will advance the informix sequence.
-
 INSERT INTO bigserial_test(id, v1) VALUES(0, 'abc');
 INSERT INTO bigserial_test(id, v1) VALUES(0, 'def');
 INSERT into bigserial_test values(9223372036854775807, 'ghi');
-
 SELECT * FROM bigserial_test ORDER BY id ASC;
+         id          | v1  
+---------------------+-----
+                   1 | abc
+                   2 | def
+ 9223372036854775807 | ghi
+(3 rows)
 
 -- DELETE INT8_MAX value
 DELETE FROM bigserial_test WHERE id = 9223372036854775807;
-
 SELECT * FROM bigserial_test ORDER BY id ASC;
+ id | v1  
+----+-----
+  1 | abc
+  2 | def
+(2 rows)
 
 -- DELETE all
 DELETE FROM bigserial_test;
-
 -- empty set expected
 SELECT * FROM bigserial_test ORDER BY id ASC;
+ id | v1 
+----+----
+(0 rows)
 
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for DECIMAL values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 -- should work
 INSERT INTO decimal_test VALUES((2^32)::numeric, 0.24, 4.91);
-
 SAVEPOINT A;
 -- should fail, exceeds precision
 INSERT INTO decimal_test VALUES((2^64)::numeric, 0.1, 9.91);
+ERROR:  numeric field overflow
+DETAIL:  A field with precision 10, scale 0 must round to an absolute value less than 10^10.
 ROLLBACK TO A;
-
 -- inserts NULL
 INSERT INTO decimal_test VALUES(45.491111, NULL, NULL);
-
 SELECT * FROM decimal_test ORDER BY f1;
+     f1     |  f2  |     f3      
+------------+------+-------------
+         45 |      |            
+ 4294967296 | 0.24 | 4.910000000
+(2 rows)
 
 SELECT * FROM decimal_test WHERE f1 = 2^32;
+     f1     |  f2  |     f3      
+------------+------+-------------
+ 4294967296 | 0.24 | 4.910000000
+(1 row)
 
 -- UPDATE
 UPDATE decimal_test SET f1 = -(2^32), f2 = -0.33, f3 = 9.999999999 WHERE f1 = 2^32;
-
 SELECT * FROM decimal_test ORDER BY f1;
+     f1      |  f2   |     f3      
+-------------+-------+-------------
+ -4294967296 | -0.33 | 9.999999999
+          45 |       |            
+(2 rows)
 
 DELETE FROM decimal_test;
-
 SELECT * FROM decimal_test ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for INTERVAL values
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 --
 -- Informix supports interval types with a range of YYYY-MM and
 -- dd hh24:mi:ss.fffff, where the fractions can have up to 5 digits.
@@ -603,17 +723,27 @@ BEGIN;
 -- which are overlapping the supported interval ranges in Informix
 -- (e.g. 5 years 5 minutes) are truncated.
 --
-
 -- should succeed
 INSERT INTO interval_test VALUES('5 years 1 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
 INSERT INTO interval_test VALUES('5 years 15 month', '5 days 1 hours 1 minute 59 seconds', '3 hours 15 minutes');
 INSERT INTO interval_test VALUES('1 years 0 month', '5 days 1 hours', '3 hours');
 INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 23 hours 59 minutes 59 seconds', '24 hours 59 minutes');
 INSERT INTO interval_test VALUES(NULL, NULL, NULL);
-
 SELECT * FROM interval_test ORDER BY f1;
+        f1        |                 f2                 |         f3         
+------------------+------------------------------------+--------------------
+ @ 100 years ago  | @ 99 days 23 hours 59 mins 59 secs | @ 24 hours 59 mins
+ @ 1 year         | @ 5 days 1 hour                    | @ 3 hours
+ @ 5 years 1 mon  | @ 5 days 1 hour 1 min 59 secs      | @ 3 hours 15 mins
+ @ 6 years 3 mons | @ 5 days 1 hour 1 min 59 secs      | @ 3 hours 15 mins
+                  |                                    | 
+(5 rows)
 
 SELECT * FROM interval_test WHERE f1 IS NULL;
+ f1 | f2 | f3 
+----+----+----
+    |    | 
+(1 row)
 
 --
 -- IN() expression pushdown...
@@ -622,61 +752,88 @@ SELECT * FROM interval_test WHERE f1 IS NULL;
 --
 SET intervalstyle TO sql_standard;
 SELECT * FROM interval_test WHERE f1 IN ('5 years 1 month', '5 years 15 month');
+   f1   |     f2      |    f3    
+--------+-------------+----------
+ 5-1    | 5 1:01:59   | 3:15:00
+ 6-3    | 5 1:01:59   | 3:15:00
+ 1-0    | 5 1:00:00   | 3:00:00
+ -100-0 | 99 23:59:59 | 24:59:00
+        |             | 
+(5 rows)
+
 RESET intervalstyle;
-
 DELETE FROM interval_test WHERE f1 IS NULL;
-
 SELECT * FROM interval_test WHERE f1 IS NULL;
+ f1 | f2 | f3 
+----+----+----
+(0 rows)
 
 DELETE FROM interval_test;
-
 COMMIT;
-
 BEGIN;
-
 -- should fail, spans more than 100 days, syntax error in last interval value
 INSERT INTO interval_test VALUES('-100 years 0 month', '99 days 24 hours', '-24 hours -59 minutes');
-
+ERROR:  could not convert attnum 1 to informix type "14", errcode -1263
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- DML for REAL, FLOAT/DOUBLE PRECISION data type
 --------------------------------------------------------------------------------
-
 BEGIN;
-
 -- DBL_MAX and FLT_MAX
 INSERT INTO float_test(val1, val2)
        VALUES(1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        340282346638528859811704183484516925440.000000);
-
 SELECT * FROM float_test ORDER BY val1 ASC;
+          val1           |     val2      
+-------------------------+---------------
+ 1.7976931348623157e+126 | 3.4028235e+38
+(1 row)
 
 -- -1 * DBL_MIN and -1 * FLT_MIN
 INSERT INTO float_test(val1, val2)
        VALUES(-1 * 1797693134862315708145274237317043567980705675258449965989174768031572607800285387605895586327668781715404589535143824642343213268894641827684675467035375169860499105765512820762454900903893289440758685084551339423045832369032229481658085593321233482747978262041,
        -1 * 340282346638528859811704183484516925440.000000);
-
 SELECT * FROM float_test ORDER BY val1 ASC;
+           val1           |      val2      
+--------------------------+----------------
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(2 rows)
 
 -- NULL values
 INSERT INTO float_test(val1, val2) VALUES(NULL, NULL);
-
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+           val1           |      val2      
+--------------------------+----------------
+                          |               
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(3 rows)
 
 DELETE FROM float_test WHERE val2 = 3.40282e+38;
-
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+           val1           |      val2      
+--------------------------+----------------
+                          |               
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(3 rows)
 
 -- delete NULLs
 DELETE FROM float_test WHERE val1 IS NULL;
-
 SELECT * FROM float_test ORDER BY val1 ASC NULLS FIRST;
+           val1           |      val2      
+--------------------------+----------------
+ -1.7976931348623155e+125 | -3.4028235e+38
+  1.7976931348623157e+126 |  3.4028235e+38
+(2 rows)
 
 DELETE FROM float_test;
-
 -- empty
 SELECT * FROM float_test;
+ val1 | val2 
+------+------
+(0 rows)
 
 INSERT INTO float_test(val1, val2)
 VALUES
@@ -717,87 +874,167 @@ VALUES
 (9.5, 1.900),
 (9.75, 1.950),
 (10, 2.000);
-
 SELECT COUNT(*) FROM float_test;
+ count 
+-------
+    37
+(1 row)
 
 -- delete specific range
 DELETE FROM float_test WHERE val1 BETWEEN 2.25 AND 3.75;
-
 SELECT COUNT(*) FROM float_test;
+ count 
+-------
+    30
+(1 row)
 
 -- delete specific range
 SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY val1 ASC;
+ val1 | val2 
+------+------
+    7 |  1.4
+ 7.25 | 1.45
+  7.5 |  1.5
+ 7.75 | 1.55
+    8 |  1.6
+ 8.25 | 1.65
+(6 rows)
+
 DELETE FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333;
 SELECT val1, val2 FROM float_test WHERE val1 BETWEEN 7.00 AND 8.333333 ORDER BY val1 ASC;
+ val1 | val2 
+------+------
+(0 rows)
 
 UPDATE float_test SET val2 = 0.333333333333 WHERE val1 BETWEEN 1.0 and 1.333333;
-
 SELECT val1, val2 FROM float_test WHERE val2 = 0.333333 ORDER BY val1 ASC;
+ val1 | val2 
+------+------
+(0 rows)
 
 -- check IN() pushdown
 SELECT val1, val2 FROM float_test WHERE val1 IN (5, 8.75, 9.75, 1.0, 1.25);
+ val1 |   val2   
+------+----------
+    1 | 0.333333
+ 1.25 | 0.333333
+    5 |        1
+ 8.75 |     1.75
+ 9.75 |     1.95
+(5 rows)
 
 -- empty
 DELETE FROM float_test;
-
 COMMIT;
-
 --------------------------------------------------------------------------------
 -- Transaction/Savepoint tests
 --------------------------------------------------------------------------------
-
 DROP FOREIGN TABLE inttest;
-
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
 SERVER test_server
 OPTIONS (table 'inttest',
          client_locale :'CLIENT_LOCALE',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB');
-
 BEGIN;
-
 -- insert some values
 INSERT INTO inttest VALUES(-1, -2, -3), (1, 2, 3), (4, 5, 6);
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 SAVEPOINT A;
-
 INSERT INTO inttest VALUES(7, 8, 9);
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
 
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
 
 SAVEPOINT B;
-
 DELETE FROM inttest WHERE f1 = -1;
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(3 rows)
 
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              3
+(1 row)
 
 -- commit SAVEPOINT B;
 ROLLBACK TO SAVEPOINT B;
-
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
 
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
 
 RELEASE SAVEPOINT B;
-
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              2
+(1 row)
 
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(4 rows)
 
 -- rollback to SAVEPOINT A;
 ROLLBACK TO SAVEPOINT A;
-
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              1
+(1 row)
 
 SELECT * FROM inttest ORDER BY f1;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 COMMIT;
-
 SELECT tx_in_progress FROM ifx_fdw_get_connections();
+ tx_in_progress 
+----------------
+              0
+(1 row)
 
 --------------------------------------------------------------------------------
 -- Test CURSOR based DML
@@ -806,9 +1043,7 @@ SELECT tx_in_progress FROM ifx_fdw_get_connections();
 -- This never really worked as intended for certain UPDATE and DELETE plans
 -- anyways.
 --------------------------------------------------------------------------------
-
 DROP FOREIGN TABLE inttest;
-
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
 SERVER test_server
 OPTIONS (table 'inttest',
@@ -816,55 +1051,73 @@ OPTIONS (table 'inttest',
          client_locale :'CLIENT_LOCALE',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB');
-
 BEGIN;
-
 INSERT INTO inttest(f1, f2, f3) VALUES(1001, 2002, 3003), (4004, 5005, 6006), (7007, 8008, 9009);
-
 SELECT * FROM inttest ORDER BY f1 ASC;
+  f1  |  f2  |  f3  
+------+------+------
+   -1 |   -2 |   -3
+    1 |    2 |    3
+    4 |    5 |    6
+ 1001 | 2002 | 3003
+ 4004 | 5005 | 6006
+ 7007 | 8008 | 9009
+(6 rows)
 
 -- should fail
 UPDATE inttest SET f1 = -1 * 4004 WHERE f1 = 4004;
-
+ERROR:  foreign table "inttest" does not allow updates
 ROLLBACK;
 BEGIN;
-
 SELECT * FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 -- should fail
 DELETE FROM inttest WHERE f1 = 4004;
-
+ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK;
 BEGIN;
-
 SELECT * FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  4 |  5 |  6
+(3 rows)
 
 -- should fail
 DELETE FROM inttest;
-
+ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK;
-
 --------------------------------------------------------------------------------
 -- Some more complicated DML statements, default behavior
 --------------------------------------------------------------------------------
-
 DROP FOREIGN TABLE inttest;
-
 CREATE FOREIGN TABLE inttest(f1 bigint not null, f2 integer, f3 smallint)
 SERVER test_server
 OPTIONS (table 'inttest',
          client_locale :'CLIENT_LOCALE',
          db_locale :'DB_LOCALE',
          database :'INFORMIXDB');
-
-
 BEGIN;
-
 CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
 INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
 INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  1 |  2 |  3
+  4 |  5 |  6
+  4 |  5 |  6
+  7 |  8 |  9
+(6 rows)
 
 --
 -- This UPDATE should lead to a hash join, where the remote table
@@ -874,34 +1127,45 @@ SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
 --
 SET LOCAL enable_nestloop = off;
 SET LOCAL enable_mergejoin = off;
-
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+  1 |  2 |  3
+  1 |  2 |  3
+  4 |  5 |  6
+  4 |  5 |  6
+  7 |  8 |  9
+(6 rows)
 
 --
 -- ...and DELETE.
 --
 DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+ -1 | -2 | -3
+(1 row)
 
 DELETE FROM inttest;
-
 COMMIT;
-
 --
 -- Change ROWID-based modify action to cursor-based modify action.
 --
 ALTER FOREIGN TABLE inttest OPTIONS(ADD disable_rowid '1');
-
 BEGIN;
-
 CREATE TEMP TABLE local_inttest(id integer) ON COMMIT DROP;
 INSERT INTO local_inttest SELECT t.id FROM generate_Series(1, 1000) AS t(id);
 INSERT into inttest VALUES(1, 2, 3), (4, 5, 6), (7, 8, 9);
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(3 rows)
 
 --
 -- This UPDATE should lead to a hash join, where the remote table
@@ -911,23 +1175,25 @@ SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
 --
 SET LOCAL enable_nestloop = off;
 SET LOCAL enable_mergejoin = off;
-
 SAVEPOINT A;
-
 --
 -- This should fail, since we don't support such updates (the cursor
 -- will be positioned on the wrong tuple, thus we encounter an invalid
 -- state. Thus this UPDATE is rejected...
 --
 UPDATE inttest SET f1 = t.id FROM local_inttest t WHERE t.id = f1 AND t.id BETWEEN 1 AND 2000;
-
+ERROR:  foreign table "inttest" does not allow updates
 ROLLBACK TO A;
 RELEASE SAVEPOINT A;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(3 rows)
 
 SAVEPOINT B;
-
 --
 -- ...and DELETE.
 --
@@ -935,24 +1201,26 @@ SAVEPOINT B;
 -- above.
 --
 DELETE FROM inttest USING local_inttest t WHERE t.id = inttest.f1;
-
+ERROR:  foreign table "inttest" does not allow deletes
 ROLLBACK TO B;
-
 SELECT f1, f2, f3 FROM inttest ORDER BY f1 ASC;
+ f1 | f2 | f3 
+----+----+----
+  1 |  2 |  3
+  4 |  5 |  6
+  7 |  8 |  9
+(3 rows)
 
 DELETE FROM inttest;
-
+ERROR:  foreign table "inttest" does not allow deletes
 COMMIT;
-
 --
 -- Change back to default behavior
 --
 ALTER FOREIGN TABLE inttest OPTIONS(DROP disable_rowid);
-
 --------------------------------------------------------------------------------
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
-
 DROP FOREIGN TABLE float_test;
 DROP FOREIGN TABLE inttest;
 DROP FOREIGN TABLE longvarchar_test;
@@ -965,11 +1233,9 @@ DROP FOREIGN TABLE date_test;
 DROP FOREIGN TABLE interval_test;
 DROP FOREIGN TABLE decimal_test;
 DROP FOREIGN TABLE bigserial_test;
-
 DROP USER MAPPING FOR CURRENT_USER SERVER test_server;
 DROP SERVER test_server;
 DROP EXTENSION informix_fdw;
-
 --
 -- Done.
 --
