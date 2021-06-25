@@ -197,7 +197,7 @@ static void ifxReleaseSavepoint(int level)
 	char ifx_sql[256];
 	EXEC SQL END DECLARE SECTION;
 
-	bzero(ifx_sql, sizeof(ifx_sql));
+	memset(ifx_sql, '\0', sizeof(ifx_sql));
 	snprintf(ifx_sql, sizeof(ifx_sql), "RELEASE SAVEPOINT ifxfdw_svpt%d",
 			 level);
 
@@ -220,7 +220,7 @@ static void ifxRollbackSavepoint(int level)
 	char ifx_sql[256];
 	EXEC SQL END DECLARE SECTION;
 
-	bzero(ifx_sql, sizeof(ifx_sql));
+	memset(ifx_sql, '\0', sizeof(ifx_sql));
 	snprintf(ifx_sql, sizeof(ifx_sql), "ROLLBACK TO SAVEPOINT ifxfdw_svpt%d",
 			 level);
 
@@ -248,7 +248,7 @@ static void ifxSavepoint(IfxPGCachedConnection *cached, IfxConnectionInfo *conin
 	 * NOTE: Since we rely on the caller, we don't increment the
 	 *       nest level here directly and leave this duty to the caller.
 	 */
-	bzero(ifx_sql, sizeof(ifx_sql));
+	memset(ifx_sql, '\0', sizeof(ifx_sql));
 	snprintf(ifx_sql, sizeof(ifx_sql), "SAVEPOINT ifxfdw_svpt%d",
 			 cached->tx_in_progress + 1);
 
@@ -936,12 +936,12 @@ void ifxGetSqlStateMessage(int id, IfxSqlStateMessage *message)
 
 
 	ifx_msg_id  = id;
-	bzero(ifx_message, 255);
-	bzero(ifx_class_origin, 255);
-	bzero(ifx_subclass_origin, 255);
-	bzero(message->text, 255);
-	bzero(message->class_origin, 255);
-	bzero(message->subclass_origin, 255);
+	memset(ifx_message, '\0', 255);
+	memset(ifx_class_origin, '\0', 255);
+	memset(ifx_subclass_origin, '\0', 255);
+	memset(message->text, '\0', 255);
+	memset(message->class_origin, '\0', 255);
+	memset(message->subclass_origin, '\0', 255);
 	ifx_msg_len = message->len = 0;
 
 	/* Save current SQLCODE and SQLSTATE */

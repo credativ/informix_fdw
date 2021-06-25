@@ -27,6 +27,11 @@
 #include "access/relation.h"
 #endif
 
+/* For PG14 we need add_row_identity_var() */
+#if PG_VERSION_NUM >= 140000
+#include "optimizer/appendinfo.h"
+#endif
+
 #include "access/xact.h"
 #include "utils/lsyscache.h"
 
@@ -362,10 +367,24 @@ static List * ifxImportForeignSchema(ImportForeignSchemaStmt *stmt,
  */
 #if PG_VERSION_NUM >= 90300
 
+/*
+ * PG14 has changed the signature of AddForeignUpdateTargets() to a
+ * different argument list, so we need to do some additional
+ * version magic here, too.
+ */
+#if PG_VERSION_NUM < 140000
 static void
 ifxAddForeignUpdateTargets(Query *parsetree,
 						   RangeTblEntry *target_rte,
 						   Relation target_relation);
+#else
+static void
+ifxAddForeignUpdateTargets(PlannerInfo *root,
+						   Index rtindex,
+						   RangeTblEntry *target_rte,
+						   Relation       target_relation);
+#endif
+
 static List *
 ifxPlanForeignModify(PlannerInfo *root,
 					 ModifyTable *plan,
@@ -475,7 +494,7 @@ static void ifxPrepareImport(ImportForeignSchemaStmt *stmt,
 	 * parsing itself and requires a foreign table OID.
 	 */
 	*coninfo = (IfxConnectionInfo *) palloc(sizeof(IfxConnectionInfo));
-	bzero((*coninfo)->conname, IFX_CONNAME_LEN + 1);
+	memset((*coninfo)->conname, '\0', IFX_CONNAME_LEN + 1);
 	ifxConnInfoSetDefaults(*coninfo);
 
 	/*
@@ -489,7 +508,7 @@ static void ifxPrepareImport(ImportForeignSchemaStmt *stmt,
 	 * Generate connection identifier.
 	 */
 	buf = ifxGenerateConnName(*coninfo);
-	StrNCpy((*coninfo)->conname, buf->data, IFX_CONNAME_LEN);
+	strncpy((*coninfo)->conname, buf->data, IFX_CONNAME_LEN);
 
 	/*
 	 * Generate connection DSN.
@@ -1263,12 +1282,29 @@ char *dispatchColumnIdentifier(int varno, int varattno, PlannerInfo *root)
  * disable_rowid is specified to an Informix foreign table,
  * we switch to an updatable cursor (which all its implications).
  */
+#if PG_VERSION_NUM < 140000
 static void
 ifxAddForeignUpdateTargets(Query *parsetree,
 						   RangeTblEntry *target_rte,
 						   Relation target_relation)
+#else
+static void
+ifxAddForeignUpdateTargets(PlannerInfo *root,
+						   Index rtindex,
+						   RangeTblEntry *target_rte,
+						   Relation       target_relation)
+
+#endif
 {
-	Var         *var;
+	Var *var;
+
+	/*
+	 * Starting with PG14 we shouldn't modify the parse tree directly,
+	 * instead use the appropiate API.
+	 */
+
+#if PG_VERSION_NUM < 140000
+
 	TargetEntry *tle;
 
 	elog(DEBUG3, "informix_fdw: add foreign targets");
@@ -1291,6 +1327,25 @@ ifxAddForeignUpdateTargets(Query *parsetree,
 
 	/* Finally add it to the target list */
 	parsetree->targetList = lappend(parsetree->targetList, tle);
+
+#else
+
+	elog(DEBUG3, "informix_fdw: add foreign targets");
+
+	/*
+	 * Append the ROWID resjunk column of type INT8
+	 * to the target list.
+	 */
+	var = makeVar(rtindex,
+				  SelfItemPointerAttributeNumber,
+				  TIDOID,
+				  -1,
+				  InvalidOid,
+				  0);
+	add_row_identity_var(root, var, rtindex, "rowid");
+
+#endif
+
 }
 
 /*
@@ -1559,7 +1614,11 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 		if (mstate->operation == CMD_UPDATE
 			|| mstate->operation == CMD_DELETE)
 		{
+#if PG_VERSION_NUM < 140000
 			Plan *subplan = mstate->mt_plans[subplan_index]->plan;
+#else
+			Plan *subplan = outerPlanState(mstate)->plan;
+#endif
 
 			state->rowid_attno = ExecFindJunkAttributeInTlist(subplan->targetlist,
 															  "rowid");
@@ -2022,7 +2081,7 @@ static void ifxStatementInfoInit(IfxStatementInfo *info,
 	/* Assign the specified reference id. */
 	info->refid = refid;
 
-	bzero(info->conname, IFX_CONNAME_LEN + 1);
+	memset(info->conname, '\0', IFX_CONNAME_LEN + 1);
 	info->cursorUsage = IFX_SCROLL_CURSOR;
 
 	info->query        = NULL;
@@ -2037,7 +2096,7 @@ static void ifxStatementInfoInit(IfxStatementInfo *info,
 	info->row_size     = 0;
 	info->special_cols = IFX_NO_SPECIAL_COLS;
 
-	bzero(info->sqlstate, 6);
+	memset(info->sqlstate, '\0', 6);
 	info->exception_count = 0;
 }
 
@@ -4362,7 +4421,7 @@ static void ifxPrepareParamsForScan(IfxFdwExecutionState *state,
 	/*
 	 * Save the connection identifier.
 	 */
-	StrNCpy(state->stmt_info.conname, coninfo->conname, IFX_CONNAME_LEN);
+	strncpy(state->stmt_info.conname, coninfo->conname, IFX_CONNAME_LEN);
 }
 
 /*
@@ -4992,12 +5051,12 @@ static IfxConnectionInfo *ifxMakeConnectionInfo(Oid foreignTableOid)
 	 * defaults.
 	 */
 	coninfo = (IfxConnectionInfo *) palloc(sizeof(IfxConnectionInfo));
-	bzero(coninfo->conname, IFX_CONNAME_LEN + 1);
+	memset(coninfo->conname, '\0', IFX_CONNAME_LEN + 1);
 	ifxConnInfoSetDefaults(coninfo);
 	ifxGetOptions(foreignTableOid, coninfo);
 
 	buf = ifxGenerateConnName(coninfo);
-	StrNCpy(coninfo->conname, buf->data, IFX_CONNAME_LEN);
+	strncpy(coninfo->conname, buf->data, IFX_CONNAME_LEN);
 
 	dsn = ifxGetDatabaseString(coninfo);
 	coninfo->dsn = pstrdup(dsn->data);
