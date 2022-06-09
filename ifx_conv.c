@@ -442,7 +442,6 @@ Datum convertIfxDecimal(IfxFdwExecutionState *state, int attnum)
 		return result;
 	}
 
-
 	/*
 	 * Type input function known and target column looks compatible,
 	 * let's try the conversion...

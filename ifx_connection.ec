@@ -27,6 +27,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -1913,6 +1914,7 @@ char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum, char *buf)
 	struct sqlvar_struct *ifx_value;
 	dec_t val;
 
+	memset(dec_buf, '\0', sizeof(dec_buf));
 	ifx_sqlda = (struct sqlda *)state->sqlda;
 	ifx_value = ifx_sqlda->sqlvar + ifx_attnum;
 	result = NULL;
@@ -1946,8 +1948,23 @@ char *ifxGetDecimal(IfxStatementInfo *state, int ifx_attnum, char *buf)
 	}
 	else
 	{
-		dec_buf[sizeof(dec_buf) - 1] = '\0';
-		strncpy(buf, dec_buf, IFX_DECIMAL_BUF_LEN);
+		int i = 0;
+
+		strncpy(buf, dec_buf, IFX_DECIMAL_BUF_LEN - 1);
+
+		/*
+		 * Make proper null termination, since dectoasc() is too lazy to do this
+		 * for us.
+		 */
+		for(i = 0; i < IFX_DECIMAL_BUF_LEN; i++) {
+
+			if (!(isdigit(buf[i])) || !(buf[i] != ',') || !(buf[i] != '.')) {
+				buf[i] = '\0';
+				break;
+			}
+
+		}
+
 		result = buf;
 	}
 
