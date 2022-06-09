@@ -16,14 +16,14 @@ installation of the IBM ESQL/C Client SDK for Informix.
 
 See
 
-http://www-01.ibm.com/software/data/informix/tools/csdk/
+https://www.ibm.com/support/pages/informix-client-software-development-kit-client-sdk-and-informix-connect-system-requirements
 
 for details. Furthermore, the FDW API is available since
 PostgreSQL 9.1, so at least 9.1 is required to use this
 module. Informix FDW is installed as an EXTENSION, for
 details see
 
-http://www.postgresql.org/docs/9.1/static/sql-createextension.html
+http://www.postgresql.org/docs/14/static/sql-createextension.html
 
 = Compiling =
 
