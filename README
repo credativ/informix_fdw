@@ -23,7 +23,7 @@ PostgreSQL 9.1, so at least 9.1 is required to use this
 module. Informix FDW is installed as an EXTENSION, for
 details see
 
-http://www.postgresql.org/docs/14/static/sql-createextension.html
+http://www.postgresql.org/docs/current/static/sql-createextension.html
 
 = Compiling =
 
