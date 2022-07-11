@@ -152,8 +152,11 @@ ifxConnCache_add(Oid foreignTableOid, IfxConnectionInfo *coninfo, bool *found)
 		 * foreign table was initiated), we need to increase the usage counter to ensure
 		 * a new refid for all identifier used by this scan is generated.
 		 */
-		if (coninfo->scan_mode == IFX_PLAN_SCAN)
+		if ( (coninfo->scan_mode == IFX_PLAN_SCAN)
+			 || (coninfo->scan_mode == IFX_IMPORT_SCHEMA) )
+		{
 			item->con.usage++;
+		}
 	}
 
 	return item;
