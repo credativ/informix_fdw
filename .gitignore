@@ -10,3 +10,4 @@ regression.out
 results/
 *.patch
 *.orig
+*.bc
