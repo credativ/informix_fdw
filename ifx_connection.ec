@@ -584,6 +584,7 @@ int ifxFreeResource(IfxStatementInfo *state,
 			break;
 		case IFX_STACK_DECLARE:
 			ifx_id = state->cursor_name;
+			break;
 		default:
 			/* should not happen */
 			return -1;
