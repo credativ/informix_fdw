@@ -65,8 +65,8 @@ typedef struct InformixCache
  *                        was already initialized.
  * ifxCache: INFORMIX connection and foreign table properties cache
  */
-bool IfxCacheIsInitialized;
-InformixCache ifxCache;
+extern bool IfxCacheIsInitialized;
+extern InformixCache ifxCache;
 
 void InformixCacheInit(void);
 

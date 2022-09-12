@@ -27,8 +27,8 @@
 
 static void ifxConnCache_init(void);
 
-extern bool IfxCacheIsInitialized;
-extern InformixCache ifxCache;
+bool IfxCacheIsInitialized;
+InformixCache ifxCache;
 
 void InformixCacheInit()
 {
