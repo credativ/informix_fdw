@@ -25,8 +25,10 @@ if [ ! -f /.initialized ]; then
 
   touch /.initialized
 
-  echo "Waiting 45s for Informix database (setup delay)"
-  sleep 45
+  echo "Waiting 30s for Informix database (setup delay)"
+  sleep 30
+
+  git clone https://github.com/psoo/informix_fdw.git
 
 fi
 

@@ -21,7 +21,6 @@ RUN dnf install -y redhat-rpm-config gcc java-1.8.0-openjdk findutils git tar nc
     dnf install -y postgresql${PG_MAJOR_VERSION}-server postgresql${PG_MAJOR_VERSION}-devel && \
     dnf --enablerepo pgdg${PG_MAJOR_VERSION}-debuginfo install -y \
 postgresql${PG_MAJOR_VERSION}-server-debuginfo  postgresql${PG_MAJOR_VERSION}-devel-debuginfo && \
-    git clone https://github.com/psoo/informix_fdw.git && \
     cd /tmp && \
     ls -la && \
     tar -xf ${CSDK_PACKAGE} && \
