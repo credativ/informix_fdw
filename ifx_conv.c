@@ -1721,7 +1721,8 @@ Datum convertIfxBoolean(IfxFdwExecutionState *state, int attnum)
 Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 {
 	Datum  result;
-	char  *val;
+	char  *locptr;
+	char  *strval;
 	Oid    inputOid;
 	regproc typeinputfunc;
 	long    buf_size;
@@ -1753,9 +1754,9 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 	 * FETCH but don't try to deallocate it. This is done
 	 * later by the ESQL/C API after the FETCH finishes...
 	 */
-	val = ifxGetTextFromLocator(&(state->stmt_info),
-								PG_MAPPED_IFX_ATTNUM(state, attnum),
-								&buf_size);
+	locptr = ifxGetTextFromLocator(&(state->stmt_info),
+								   PG_MAPPED_IFX_ATTNUM(state, attnum),
+								   &buf_size);
 
 	/*
 	 * Check indicator value. In case we got NULL,
@@ -1771,15 +1772,21 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 	 * It looks like Informix returns a locator with an
 	 * empty string always as a NULL pointer to its data buffer...
 	 *
-	 * Check wether the buffer size is zero. We formerly checked
-	 * wether the datum is valid above, so we can proceed safely without
+	 * Check whether the buffer size is zero. We formerly checked
+	 * whether the datum is valid above, so we can proceed safely without
 	 * any checks. In this case we can be sure that the datum must
 	 * be an empty string (but only if val is set to NULL!).
 	 */
 	if ((buf_size <= 0)
-		&& (val == NULL))
+		&& (locptr == NULL))
 	{
-		val = "\0";
+		/*
+		 * This initializes the locator pointer to an empty string, effectively
+		 * overwriting its pointer value into the locator retrieved above. We
+		 * do this to make sure the right thing is done during conversion
+		 * of empty strings below.
+		 */
+		locptr = "\0";
 	}
 
 	PG_TRY();
@@ -1797,19 +1804,27 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 			case BPCHAROID:
 			{
 				/*
+				 * Copy the effective string value from the locator into
+				 * a local buffer. Its buf_size was already checked above and
+				 * we already know that it can't be NULL here.
+				 */
+				strval = palloc0(buf_size + 1);
+				strncpy(strval, locptr, buf_size);
+
+				/*
 				 * Take care for typmods...
 				 */
 				if (PG_ATTRTYPEMOD_P(state, attnum) != -1)
 				{
 					result = OidFunctionCall3(typeinputfunc,
-											  CStringGetDatum(val),
+											  CStringGetDatum(strval),
 											  ObjectIdGetDatum(InvalidOid),
 											  Int32GetDatum(PG_ATTRTYPEMOD_P(state, attnum)));
 				}
 				else
 				{
 					result = OidFunctionCall2(typeinputfunc,
-											  CStringGetDatum(val),
+											  CStringGetDatum(strval),
 											  ObjectIdGetDatum(InvalidOid));
 				}
 
@@ -1822,20 +1837,21 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 				int    len;
 
 				/*
-				 * Allocate a bytea datum. Don't use strlen() for
+				 * Allocate a bytea datum directly. Don't use strlen() for
 				 * val, in case the source column is of type BYTE. Instead,
-				 * rely on the loc_buffer size, Informix has returned to us.
+				 * rely on the locator pointer and loc_buffer size,
+				 * Informix has returned to us.
 				 */
 				len = buf_size;
 				binary_data = (bytea *) palloc0(VARHDRSZ + len);
 
 				SET_VARSIZE(binary_data, len + VARHDRSZ);
-				memcpy(VARDATA(binary_data), val, len);
+				memcpy(VARDATA(binary_data), locptr, len);
 				IFX_SETVAL_P(state, attnum, PointerGetDatum(binary_data));
 				result = IFX_GETVAL_P(state, attnum);
-			}
 
-			break;
+				break;
+			}
 		}
 
 	}
