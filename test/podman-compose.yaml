@@ -1,0 +1,33 @@
+version: '3'
+
+services:
+  informix-regression:
+    build:
+      context: .
+      dockerfile: Dockerfile-informix
+    image: "informix_fdw_server:dev"
+    container_name: "informix"
+    hostname: "informix"
+    environment:
+      LICENSE: "ACCEPT"
+      RUN_FILE_POST_INIT: import_regression_dbs.sh
+    ports:
+      - 27018:27018
+      - 9088:9088
+
+  pg-fdw:
+    image: "informix_fdw_test-pg${PG_MAJOR_VERSION}:dev"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pg-fdw-${PG_MAJOR_VERSION}
+    hostname: pg-fdw-${PG_MAJOR_VERSION}
+    args:
+      CSDK_PACKAGE: ${CSDK_PACKAGE}
+      PG_MAJOR_VERSION: ${PG_MAJOR_VERSION}
+    environment:
+      PG_MAJOR_VERSION: ${PG_MAJOR_VERSION}
+      INFORMIXSERVER: "informix"
+      INFORMIXSQLHOSTS: "/sqlhosts"
+      INFORMIXDIR: "/tmp/csdk"
+    command: "tail -f /dev/null"

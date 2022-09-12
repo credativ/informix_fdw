@@ -1,0 +1,2 @@
+informix        onsoctcp        *informix         9088
+informix_dr     drsoctcp        *informix         9089

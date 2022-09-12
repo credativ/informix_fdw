@@ -1,0 +1,7 @@
+\set INFORMIXSERVER informix
+\set INFORMIXDIR /tmp/csdk
+\set INFORMIXDB regression_dml
+\set INFORMIXUSER informix
+\set INFORMIXPASSWORD in4mix
+\set CLIENT_LOCALE en_US.utf8
+\set DB_LOCALE en_US.819

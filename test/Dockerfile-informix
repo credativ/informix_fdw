@@ -1,0 +1,6 @@
+FROM ibmcom/informix-developer-database:latest AS informix_fdw_database
+
+USER informix
+COPY regression.tar.gz /home/informix
+COPY regression_dml.tar.gz /home/informix
+COPY import_regression_dbs.sh /opt/ibm/files
