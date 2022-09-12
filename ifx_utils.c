@@ -426,6 +426,7 @@ char *ifxGetIntervalFormatString(IfxTemporalRange range, IfxFormatMode mode)
 				case IFX_TU_SECOND:
 					/* must be fraction here */
 					appendStringInfoString(&strbuf, ".");
+					EXPLICIT_FALL_THROUGH;
 				case IFX_TU_F1:
 				case IFX_TU_F2:
 				case IFX_TU_F3:

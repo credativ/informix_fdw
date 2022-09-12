@@ -1170,7 +1170,8 @@ static void ifxColumnValuesToSqlda(IfxFdwExecutionState *state,
 				break;
 			}
 
-			/* fall through in case target column is DTIME */
+			EXPLICIT_FALL_THROUGH;
+			/* fall through */
 		case TIMESTAMPTZOID:
 		case TIMESTAMPOID:
 		case TIMEOID:
@@ -3644,6 +3645,8 @@ static IfxSqlStateClass ifxCatchExceptions(IfxStatementInfo *state,
 				 * the backend). Go with an ERROR instead...
 				 */
 				ifxRewindCallstack(state);
+
+				EXPLICIT_FALL_THROUGH;
 			case IFX_ERROR:
 			case IFX_ERROR_INVALID_NAME:
 				/* log ERROR */

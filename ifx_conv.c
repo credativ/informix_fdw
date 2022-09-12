@@ -1811,6 +1811,7 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 											  CStringGetDatum(val),
 											  ObjectIdGetDatum(InvalidOid));
 				}
+				break;
 			}
 			case BYTEAOID:
 			{
@@ -1830,6 +1831,8 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 				IFX_SETVAL_P(state, attnum, PointerGetDatum(binary_data));
 				result = IFX_GETVAL_P(state, attnum);
 			}
+
+			break;
 		}
 
 	}

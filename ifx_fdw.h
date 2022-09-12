@@ -56,6 +56,16 @@
 
 #include "ifx_type_compat.h"
 
+/*
+ * For specific implicit fall through semantics we
+ * need to silence the compiler
+ */
+#if defined(__GNUC__) && __GNUC__ >= 7
+#define EXPLICIT_FALL_THROUGH __attribute__ ((fallthrough))
+#else
+#define EXPLICIT_FALL_THROUGH ((void)0);
+#endif
+
 /**
  * PostgreSQL 13 reimplements the old Lisp-style
  * List API into a dynamic array based one. This changes
