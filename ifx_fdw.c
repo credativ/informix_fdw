@@ -2366,8 +2366,8 @@ ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 	{
 		bool isnull;
 
-		elog(DEBUG5, "get column pg/ifx mapped attnum %d/%d, attname=\"%s\"",
-		     i, PG_MAPPED_IFX_ATTNUM(state, i), state->pgAttrDefs[i].attname);
+		elog(DEBUG5, "get column pg/ifx mapped attnum %d/%d",
+			 i, PG_MAPPED_IFX_ATTNUM(state, i));
 
 		/*
 		 * It might happen that the FDW table has dropped
