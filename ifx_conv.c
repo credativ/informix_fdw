@@ -1812,6 +1812,8 @@ Datum convertIfxSimpleLO(IfxFdwExecutionState *state, int attnum)
 											  CStringGetDatum(val),
 											  ObjectIdGetDatum(InvalidOid));
 				}
+
+				IFX_SETVAL_P(state, attnum, result);
 				break;
 			}
 			case BYTEAOID:
