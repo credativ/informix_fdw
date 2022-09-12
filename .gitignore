@@ -11,3 +11,4 @@ results/
 *.patch
 *.orig
 *.bc
+test/ibm.csdk.*.tar
