@@ -31,3 +31,5 @@ services:
       INFORMIXSQLHOSTS: "/sqlhosts"
       INFORMIXDIR: "/tmp/csdk"
     command: "tail -f /dev/null"
+    cap_add:
+      - SYS_PTRACE
