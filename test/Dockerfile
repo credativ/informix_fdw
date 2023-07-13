@@ -1,7 +1,7 @@
 FROM rockylinux/rockylinux:8 AS informix_fdw_test
 
 ARG CSDK_PACKAGE
-ARG PG_MAJOR_VERSION=14
+ARG PG_MAJOR_VERSION=15
 ENV PGUSER=postgres
 ENV PG_MAJOR_VERSION=${PG_MAJOR_VERSION}
 ENV CSDK_PACKAGE=${CSDK_PACKAGE}
@@ -18,7 +18,7 @@ RUN dnf install -y redhat-rpm-config gcc java-1.8.0-openjdk findutils git tar nc
     rpm --import RPM-GPG-KEY-PGDG && \
     dnf module -y disable postgresql && \
     dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm && \
-    dnf install -y postgresql${PG_MAJOR_VERSION}-server postgresql${PG_MAJOR_VERSION}-devel && \
+    dnf --enablerepo powertools install -y postgresql${PG_MAJOR_VERSION}-server postgresql${PG_MAJOR_VERSION}-devel && \
     dnf --enablerepo pgdg${PG_MAJOR_VERSION}-debuginfo install -y \
 postgresql${PG_MAJOR_VERSION}-server-debuginfo  postgresql${PG_MAJOR_VERSION}-devel-debuginfo && \
     cd /tmp && \
