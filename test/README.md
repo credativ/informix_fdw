@@ -65,3 +65,17 @@ podman exec -it pg-fdw-15 bash build.sh
 
 Editing and compiling can also be done within the container, all required development file are
 installed.
+
+Using testing containers
+------------------------
+
+`podman-compose-pgdg-testing.yaml` provides a service `pg-fdw-pgdg-testing` especially for builds
+against the PGDG testing repositories. All other definition are the same as in podman-compose.yaml.
+
+The `pg-fdw` container there is in contrast initialized with `pgdg${PG_MAJOR_VERSION}-updates-testing`
+repositories, which also allows to test with a new upcoming major release as soon as PGDG upstream
+provides those packages. To initiate testing, issue the following commands for example:
+
+```shell
+ PG_MAJOR_VERSION=16 podman-compose -f podman-compose-pgdg-testing.yaml up -d  informix-regression pg-fdw-pgdg-testing
+```
