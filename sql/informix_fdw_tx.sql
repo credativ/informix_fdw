@@ -950,6 +950,207 @@ COMMIT;
 ALTER FOREIGN TABLE inttest OPTIONS(DROP disable_rowid);
 
 --------------------------------------------------------------------------------
+-- Tests for PREPARE
+--
+-- See discussion in github issue
+-- https://github.com/credativ/informix_fdw/issues/31
+--------------------------------------------------------------------------------
+
+--
+-- INSERT
+--
+
+BEGIN;
+
+
+PREPARE ins_inttest(bigint) AS INSERT INTO inttest VALUES($1);
+
+EXECUTE ins_inttest (1);
+
+EXECUTE ins_inttest (2);
+
+EXECUTE ins_inttest (3);
+
+EXECUTE ins_inttest (4);
+
+EXECUTE ins_inttest (5);
+
+EXECUTE ins_inttest (6);
+
+EXECUTE ins_inttest (7);
+
+COMMIT;
+
+DEALLOCATE ins_inttest;
+
+--
+-- UPDATE
+--
+
+BEGIN;
+
+PREPARE upd_inttest(bigint) AS UPDATE inttest SET f1 = f1 WHERE f1 = $1;
+
+EXECUTE upd_inttest (1);
+
+EXECUTE upd_inttest (2);
+
+EXECUTE upd_inttest (3);
+
+EXECUTE upd_inttest (4);
+
+EXECUTE upd_inttest (5);
+
+EXECUTE upd_inttest (6);
+
+EXECUTE upd_inttest (7);
+
+COMMIT;
+
+DEALLOCATE upd_inttest;
+
+--
+-- DELETE
+--
+
+BEGIN;
+
+PREPARE del_inttest(bigint) AS DELETE FROM inttest WHERE f1 = $1;
+
+EXECUTE del_inttest (1);
+
+EXECUTE del_inttest (2);
+
+EXECUTE del_inttest (3);
+
+EXECUTE del_inttest (4);
+
+EXECUTE del_inttest (5);
+
+EXECUTE del_inttest (6);
+
+EXECUTE del_inttest (7);
+
+COMMIT;
+
+DEALLOCATE del_inttest;
+
+--------------------------------------------------------------------------------
+-- Trigger Tests
+--------------------------------------------------------------------------------
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS delete_fdw_trigger_test(id bigint primary key);
+
+--
+-- A before trigger testing before actions on INSERT/UPDATE/DELETE
+-- on a foreign table
+--
+CREATE OR REPLACE FUNCTION f_tg_test()
+RETURNS trigger
+LANGUAGE plpgsql
+AS
+$$
+BEGIN
+	IF TG_OP = 'DELETE' THEN
+	   DELETE FROM inttest WHERE f1 = OLD.id;
+	   RETURN OLD;
+	ELSIF TG_OP = 'UPDATE' THEN
+	   UPDATE inttest SET f1 = NEW.id WHERE f1 = OLD.id;
+	   RETURN NEW;
+	ELSIF TG_OP = 'INSERT' THEN
+	   INSERT INTO inttest VALUES(NEW.id);
+	   RETURN NEW;
+	ELSE
+           RAISE EXCEPTION 'unhandled trigger action %', TG_OP;
+	END IF;
+END;
+$$;
+
+--
+-- A broken trigger function referencing the wrong tuple identifiers
+-- according to the trigger action (NEW vs. OLD)
+--
+-- Basically the same as above.
+--
+CREATE OR REPLACE FUNCTION f_tg_test_broken()
+RETURNS trigger
+LANGUAGE plpgsql
+AS
+$$
+BEGIN
+	IF TG_OP = 'DELETE' THEN
+	   DELETE FROM inttest WHERE f1 = NEW.id;
+	   RETURN OLD;
+	ELSIF TG_OP = 'UPDATE' THEN
+	   UPDATE inttest SET f1 = NEW.id WHERE f1 = OLD.id;
+	   RETURN NEW;
+	ELSIF TG_OP = 'INSERT' THEN
+	   INSERT INTO inttest VALUES(OLD.id);
+	   RETURN NEW;
+	ELSE
+           RAISE EXCEPTION 'unhandled trigger action %', TG_OP;
+	END IF;
+END;
+$$;
+
+CREATE TRIGGER tg_inttest
+BEFORE DELETE OR UPDATE OR INSERT ON delete_fdw_trigger_test
+FOR EACH ROW EXECUTE PROCEDURE f_tg_test();
+
+TRUNCATE delete_fdw_trigger_test;
+INSERT INTO delete_fdw_trigger_test VALUES(1), (2), (3);
+
+SELECT * FROM inttest;
+
+DELETE FROM delete_fdw_trigger_test WHERE id = 2;
+
+SELECT * FROM inttest;
+
+UPDATE delete_fdw_trigger_test SET id = 4 WHERE id = 3;
+
+SELECT * FROM inttest;
+
+INSERT INTO delete_fdw_trigger_test VALUES(5);
+
+SELECT * FROM inttest;
+
+DELETE FROM delete_fdw_trigger_test;
+
+SELECT * FROM inttest;
+
+DROP TRIGGER tg_inttest ON delete_fdw_trigger_test;
+
+CREATE TRIGGER tg_inttest
+BEFORE DELETE OR UPDATE OR INSERT ON delete_fdw_trigger_test
+FOR EACH ROW EXECUTE PROCEDURE f_tg_test_broken();
+
+-- should fail
+SAVEPOINT broken;
+INSERT INTO delete_fdw_trigger_test VALUES(1), (2), (3);
+ROLLBACK TO broken;
+
+SELECT * FROM inttest;
+
+-- should delete nothing
+DELETE FROM delete_fdw_trigger_test WHERE id = 2;
+
+SELECT * FROM inttest;
+
+-- should update nothing
+UPDATE delete_fdw_trigger_test SET id = 4 WHERE id = 3;
+
+SELECT * FROM inttest;
+
+DELETE FROM delete_fdw_trigger_test;
+
+SELECT * FROM inttest;
+
+DROP TRIGGER tg_inttest ON delete_fdw_trigger_test;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
 

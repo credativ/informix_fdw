@@ -121,44 +121,35 @@ your Client SDK installation (e.g. $INFORMIXDIR/etc/sqlhosts and
 the Informix FDW can be used as follows, assumed you have an Informix
 connection named 'centosifx_tcp':
 
+```sql
 CREATE EXTENSION informix_fdw;
 
-CREATE SERVER centosifx_tcp
+CREATE SERVER test_server
 FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver 'centosifx_tcp');
+OPTIONS (informixserver 'informix', informixdir '/opt/informix/csdk');
 
 CREATE USER MAPPING FOR CURRENT_USER
-SERVER centosifx_tcp
+SERVER test_server
 OPTIONS (username 'informix', password 'informix');
 
-CREATE FOREIGN TABLE foo (
-       id integer,
-       value integer
-    )
-SERVER centosifx_tcp
-OPTIONS ( query 'SELECT * FROM foo',
-          database 'test',
-          informixdir '/Applications/IBM/informix');
+CREATE FOREIGN TABLE inttest(f1 bigint not null,
+                             f2 integer,
+			     f3 smallint)
+SERVER test_server
+OPTIONS(table 'inttest',
+        client_locale 'en_US.utf8'
+	db_locale 'en_US.819',
+	database 'regression_dml');
+```sql
 
-CREATE SERVER sles11_tcp
-FOREIGN DATA WRAPPER informix_fdw
-OPTIONS (informixserver 'ol_informix1170');
+The settings `informixdir` and `informixserver` are dependent on your
+installation and configuration. `db_locale` and `client_locale` must be
+specified to enable correct conversion between foreign Informix and local PostgreSQL server.
 
-CREATE USER MAPPING FOR CURRENT_USER
-SERVER sles11_tcp
-OPTIONS (username 'informix', password 'informix');
-
-CREATE FOREIGN TABLE foo (
-       id integer,
-       value integer
-    )
-SERVER sles11_tcp
-OPTIONS ( query 'SELECT * FROM foo',
-          database 'test',
-          db_locale 'en_us.819',
-          client_locale 'en_US.utf8',
-          informixserver 'ol_informix1170',
-          informixdir '/Applications/IBM/informix');
+`table` identifies the table on the remote Informix server you want to access. There
+is also the `query` parameter in the example above, which can be used to access
+the remote data in a view-like manner. For more detailed information about options
+read the FDW Options section below.
 
 = Supported datatypes =
 

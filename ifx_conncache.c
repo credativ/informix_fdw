@@ -25,6 +25,14 @@
  */
 #define IFX_CONNCACHE_HASHTABLE "IFX_CONN_CACHE"
 
+/*
+ * Flags for dynahash hashtable, version dependent
+ */
+#if PG_VERSION_NUM >= 140000
+#define IFX_FDW_CONNCACHE_HASH_FLAGS HASH_ELEM | HASH_CONTEXT | HASH_STRINGS
+#else
+#define IFX_FDW_CONNCACHE_HASH_FLAGS HASH_ELEM | HASH_CONTEXT
+#endif
 static void ifxConnCache_init(void);
 
 bool IfxCacheIsInitialized;
@@ -64,7 +72,7 @@ static void ifxConnCache_init()
 	ifxCache.connections = hash_create(IFX_CONNCACHE_HASHTABLE,
 									   IFX_CONNCACHE_SIZE,
 									   &hash_ctl,
-									   HASH_ELEM | HASH_CONTEXT);
+									   IFX_FDW_CONNCACHE_HASH_FLAGS);
 
 	/*
 	 * Back to old context.

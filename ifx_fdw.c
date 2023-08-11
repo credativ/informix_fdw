@@ -32,6 +32,14 @@
 #include "optimizer/appendinfo.h"
 #endif
 
+/*
+ * For REL_16_STABLE, as of commit a61b1f74823 we need optimizer/inherit.h
+ * for get_rel_all_updated_cols().
+ */
+#if PG_VERSION_NUM >= 160000
+#include "optimizer/inherit.h"
+#endif
+
 #include "access/xact.h"
 #include "utils/lsyscache.h"
 
@@ -136,10 +144,21 @@ extern PGDLLIMPORT double cpu_tuple_cost;
 #define IFX_SYSTABLE_SCAN_SNAPSHOT NULL
 #endif
 
-#if PG_VERSION_NUM >= 90500
-#define RTE_UPDATED_COLS(a) (a)->updatedCols
+#if PG_VERSION_NUM >= 90500 && PG_VERSION_NUM < 160000
+#define RTE_UPDATED_COLS(planInfo, resultRel, set) \
+	RangeTblEntry *rte = planner_rt_fetch((resultRel), (planInfo));	\
+	(set) = bms_copy(rte->updatedCols);
+#define BMS_LOOKUP_COL(set, attnum) bms_first_member((set))
+#elif PG_VERSION_NUM >= 160000
+#define RTE_UPDATED_COLS(planInfo, resultRel, set) \
+	RelOptInfo *relInfo = find_base_rel((planInfo), (resultRel));	\
+	(set) = get_rel_all_updated_cols((planInfo), (relInfo));
+#define BMS_LOOKUP_COL(set, attnum) bms_next_member((set), (attnum))
 #else
-#define RTE_UPDATED_COLS(a) (a)->modifiedCols
+#define RTE_UPDATED_COLS(planInfo, resultRel, set) \
+	RangeTblEntry *rte = planner_rt_fetch((resultRel), (planInfo));	\
+	(set) = bms_copy(rte->modifiedCols);
+#define BMS_LOOKUP_COL(set, attnum) bms_first_member((set))
 #endif
 
 /*
@@ -1434,12 +1453,82 @@ ifxPlanForeignModify(PlannerInfo *root,
 			RelOptInfo *relInfo = root->simple_rel_array[resultRelation];
 			IfxCachedConnection *cached;
 			IfxFdwExecutionState *scan_state;
+			IfxFdwPlanState *planState;
 
 			/*
-			 * Extract the state of the foreign scan.
+			 * Check if there is a foreign scan state present. This would
+			 * already have initialized all required objects on the foreign
+			 * Informix server.
+			 *
+			 * In normal cases, ifxGetForeignRelSize() should already have
+			 * initialized all required objects here, since we use the scan
+			 * state to retrieve optimizer stats from Informix to get estimates
+			 * based on the query back from the Informix server.
+			 *
+			 * This is not always true, so we need to check whether a foreign scan
+			 * was already initialized or not (e.g. in the prepared statement
+			 * case). Check if a private execution state was properly initialized,
+			 * and if not, execute the required steps to initiate one ourselves.
 			 */
-			scan_state = (IfxFdwExecutionState *)
-				((IfxFdwPlanState *)relInfo->fdw_private)->state;
+			if (relInfo->fdw_private == NULL) {
+
+				planState = palloc(sizeof(IfxFdwPlanState));
+
+				/*
+				 * Establish remote informix connection or get
+				 * a already cached connection from the informix connection
+				 * cache.
+				 */
+				ifxSetupFdwScan(&coninfo, &scan_state, &plan_values,
+								rte->relid, IFX_PLAN_SCAN);
+
+				/*
+				 * Check for predicates that can be pushed down
+				 * to the informix server, but skip it in case the user
+				 * has set the disable_predicate_pushdown option...
+				 */
+				if (coninfo->predicate_pushdown)
+				{
+					/*
+					 * Also save a list of excluded RestrictInfo structures not carrying any
+					 * predicate found to be pushed down by ifxFilterQuals(). Those will
+					 * passed later to ifxGetForeignPlan()...
+					 */
+					scan_state->stmt_info.predicate = ifxFilterQuals(root, relInfo,
+																	 &(planState->excl_restrictInfo),
+																	 rte->relid);
+					elog(DEBUG2, "predicate for pushdown: %s", scan_state->stmt_info.predicate);
+				}
+				else
+				{
+					elog(DEBUG2, "predicate pushdown disabled");
+					scan_state->stmt_info.predicate = "";
+				}
+
+				/*
+				 * Establish the remote query on the informix server.
+				 *
+				 * If we have an UPDATE or DELETE query, the foreign scan needs to
+				 * employ an FOR UPDATE cursor, since we are going to reuse it
+				 * during modify.
+				 */
+				if ((root->parse->commandType == CMD_UPDATE)
+					|| (root->parse->commandType == CMD_DELETE))
+				{
+					scan_state->stmt_info.cursorUsage = IFX_UPDATE_CURSOR;
+				}
+
+				ifxPrepareScan(coninfo, scan_state);
+
+			} else {
+
+				/*
+				 * Extract the state of the foreign scan.
+				 */
+				scan_state = (IfxFdwExecutionState *)
+					((IfxFdwPlanState *)relInfo->fdw_private)->state;
+
+			}
 
 			/*
 			 * Don't reuse the connection info from the scan state,
@@ -1490,7 +1579,22 @@ ifxPlanForeignModify(PlannerInfo *root,
 		 * cursor here feeded with the new values during ifxExecForeignInsert().
 		 */
 		ifxSetupFdwScan(&coninfo, &state, &plan_values, rte->relid, IFX_PLAN_SCAN);
+
+		/*
+		 * ...don't forget the cursor name.
+		 */
+		state->stmt_info.cursor_name = ifxGenCursorName(state->stmt_info.refid);
 	}
+
+	/*
+	 * Check wether this foreign table has AFTER EACH ROW
+	 * triggers attached. Currently this information is just
+	 * for completeness, since we always include all columns
+	 * in a foreign scan.
+	 */
+	ifxCheckForAfterRowTriggers(rte->relid,
+								state,
+								root->parse->commandType);
 
 	/* Sanity check, should not happen */
 	Assert((state != NULL) && (coninfo != NULL));
@@ -1519,9 +1623,10 @@ ifxPlanForeignModify(PlannerInfo *root,
 	}
 
 	/*
-	 * Prepare and describe the statement.
+	 * Generate a statement name for execution later.
+	 * This is an unique statement identifier.
 	 */
-	ifxPrepareModifyQuery(&state->stmt_info, coninfo, operation);
+	state->stmt_info.stmt_name = ifxGenStatementName(state->stmt_info.refid);
 
 	/*
 	 * Serialize all required plan data for use in executor later.
@@ -1543,11 +1648,6 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 								  CmdType operation)
 {
 	/*
-	 * Unique statement identifier.
-	 */
-	info->stmt_name = ifxGenStatementName(info->refid);
-
-	/*
 	 * Prepare the query.
 	 */
 	elog(DEBUG1, "prepare query \"%s\"", info->query);
@@ -1560,11 +1660,6 @@ static void ifxPrepareModifyQuery(IfxStatementInfo *info,
 	 */
 	if (operation == CMD_INSERT)
 	{
-		/*
-		 * ...don't forget the cursor name.
-		 */
-		info->cursor_name = ifxGenCursorName(info->refid);
-
 		elog(DEBUG1, "declare cursor \"%s\" for statement \"%s\"",
 			 info->cursor_name,
 			 info->stmt_name);
@@ -1657,6 +1752,11 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 	}
 
 	/*
+	 * Prepare and describe the statement.
+	 */
+	ifxPrepareModifyQuery(&state->stmt_info, coninfo, mstate->operation);
+
+	/*
 	 * An INSERT action need to do much more preparing work
 	 * than UPDATE/DELETE: Since no foreign scan is involved, the
 	 * insert modify action need to prepare its own INSERT cursor and
@@ -1697,6 +1797,7 @@ ifxBeginForeignModify(ModifyTableState *mstate,
 		else
 		{
 			/* CMD_UPDATE */
+			state->stmt_info.descr_name = ifxGenDescrName(state->stmt_info.refid);
 			ifxDescribeStmtInput(&state->stmt_info);
 		}
 
@@ -2043,13 +2144,15 @@ static void ifxPrepareParamsForModify(IfxFdwExecutionState *state,
 			 *
 			 * Shamelessly stolen from src/contrib/postgres_fdw.
 			 */
-			RangeTblEntry *rte = planner_rt_fetch(resultRelation, planInfo);
-			Bitmapset  *tmpset = bms_copy(RTE_UPDATED_COLS(rte));
+			Bitmapset  *tmpset = NULL;
+			int         colnum = -1;
 			AttrNumber	col;
 
-			while ((col = bms_first_member(tmpset)) >= 0)
+			RTE_UPDATED_COLS(planInfo, resultRelation, tmpset);
+
+			while ((colnum = BMS_LOOKUP_COL(tmpset, colnum)) >= 0)
 			{
-				col += FirstLowInvalidHeapAttributeNumber;
+				col = colnum + FirstLowInvalidHeapAttributeNumber;
 				if (col <= InvalidAttrNumber)		/* shouldn't happen */
 					elog(ERROR, "system-column update is not supported");
 				state->affectedAttrNums = lappend_int(state->affectedAttrNums,
@@ -3254,16 +3357,6 @@ static void ifxGetForeignRelSize(PlannerInfo *planInfo,
 	 */
 	ifxSetupFdwScan(&coninfo, &state, &plan_values,
 					foreignTableId, IFX_PLAN_SCAN);
-
-	/*
-	 * Check wether this foreign table has AFTER EACH ROW
-	 * triggers attached. Currently this information is just
-	 * for completeness, since we always include all columns
-	 * in a foreign scan.
-	 */
-	ifxCheckForAfterRowTriggers(foreignTableId,
-								state,
-								planInfo->parse->commandType);
 
 	/*
 	 * Check for predicates that can be pushed down
