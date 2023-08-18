@@ -2464,12 +2464,12 @@ size_t ifxGetColumnAttributes(IfxStatementInfo *state)
 				 */
 				break;
 			case SQLINFXBIGINT:
+			case SQLBIGSERIAL:
 				column_data->sqltype = CBIGINTTYPE;
 				column_data->sqllen = state->ifxAttrDefs[ifx_attnum].mem_allocated;
 				break;
 			case SQLINT8:
 			case SQLSERIAL8:
-			case SQLBIGSERIAL:
 				/* summarize all to INT8 */
 				state->ifxAttrDefs[ifx_attnum].type = SQLINT8;
 				column_data->sqltype = CINT8TYPE;

@@ -393,18 +393,18 @@ SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN ('abc', 'def', 'ghi') ORDER 
 --
 -- INSERT of special character (german umlaut)
 --
-INSERT INTO varchar_test VALUES(DEFAULT, 'ßßß', 'ÄÖÜ', 'äöü');
+INSERT INTO varchar_test VALUES(DEFAULT, 'ï¿½ï¿½ï¿½', 'ï¿½ï¿½ï¿½', 'ï¿½ï¿½ï¿½');
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
- id | v1  | v2  | v3  
-----+-----+-----+-----
-  1 | abc | def | ghi
-  2 | ßßß | ÄÖÜ | äöü
+ id |    v1     |    v2     |    v3     
+----+-----------+-----------+-----------
+  1 | abc       | def       | ghi
+  2 | ï¿½ï¿½ï¿½ | ï¿½ï¿½ï¿½ | ï¿½ï¿½ï¿½
 (2 rows)
 
-SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('ÄÖÜ', 'ßßß');
- id | v1  | v2  | v3  
-----+-----+-----+-----
-  2 | ßßß | ÄÖÜ | äöü
+SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('ï¿½ï¿½ï¿½', 'ï¿½ï¿½ï¿½');
+ id |    v1     |    v2     |    v3     
+----+-----------+-----------+-----------
+  2 | ï¿½ï¿½ï¿½ | ï¿½ï¿½ï¿½ | ï¿½ï¿½ï¿½
 (1 row)
 
 DELETE FROM varchar_test;
@@ -641,16 +641,19 @@ BEGIN;
 INSERT INTO bigserial_test(id, v1) VALUES(0, 'abc');
 INSERT INTO bigserial_test(id, v1) VALUES(0, 'def');
 INSERT into bigserial_test values(9223372036854775807, 'ghi');
+INSERT into bigserial_test values(-9223372036854775807, 'ghi');
 SELECT * FROM bigserial_test ORDER BY id ASC;
-         id          | v1  
----------------------+-----
-                   1 | abc
-                   2 | def
- 9223372036854775807 | ghi
-(3 rows)
+          id          | v1  
+----------------------+-----
+ -9223372036854775807 | ghi
+                    1 | abc
+                    2 | def
+  9223372036854775807 | ghi
+(4 rows)
 
 -- DELETE INT8_MAX value
 DELETE FROM bigserial_test WHERE id = 9223372036854775807;
+DELETE FROM bigserial_test WHERE id = -9223372036854775807;
 SELECT * FROM bigserial_test ORDER BY id ASC;
  id | v1  
 ----+-----

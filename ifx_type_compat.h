@@ -181,7 +181,7 @@ typedef struct IfxSqlStateMessage
  * This table is translated from INFORMIXDIR/incl/sqltypes.h. We
  * can't use it directly, since Informix redefines int2 and int4
  * in ifxtypes.h, which is included by sqltypes.h implicitely. So
- * maintain our own lookup types for compatiblity.
+ * maintain our own lookup types for compatibility.
  */
 
 typedef enum IfxSourceType
@@ -228,7 +228,7 @@ typedef enum IfxSourceType
 	IFX_LVARCHAR  = 43,
 	IFX_BOOLEAN   = 45,
 	IFX_INFX_INT8 = 52,
-        IFX_BIGSERIAL = 53
+	IFX_BIGSERIAL = 53
 
 } IfxSourceType;
 

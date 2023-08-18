@@ -569,12 +569,12 @@ Datum convertIfxInt(IfxFdwExecutionState *state, int attnum)
 					{
 						case IFX_INT8:
 						case IFX_SERIAL8:
-						case IFX_BIGSERIAL:
 							/* INT8 */
 							buf = ifxGetInt8(&(state->stmt_info),
 											 PG_MAPPED_IFX_ATTNUM(state, attnum), buf);
 							break;
 						case IFX_INFX_INT8:
+						case IFX_BIGSERIAL:
 							/* BIGINT */
 							buf = ifxGetBigInt(&(state->stmt_info),
 											   PG_MAPPED_IFX_ATTNUM(state, attnum), buf);
