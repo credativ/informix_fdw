@@ -336,13 +336,13 @@ SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
 SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN ('abc', 'def', 'ghi') ORDER BY id;
 
 --
--- INSERT of special character (german umlaut)
+-- INSERT of special character (special german characters)
 --
-INSERT INTO varchar_test VALUES(DEFAULT, '���', '���', '���');
+INSERT INTO varchar_test VALUES(DEFAULT, 'äöüß', 'ÄÖÜß', 'ÄÖÜß');
 
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
 
-SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('���', '���');
+SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('äöüß', 'abc');
 
 DELETE FROM varchar_test;
 

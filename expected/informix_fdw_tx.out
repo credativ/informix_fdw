@@ -391,21 +391,22 @@ SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN ('abc', 'def', 'ghi') ORDER 
 (1 row)
 
 --
--- INSERT of special character (german umlaut)
+-- INSERT of special character (special german characters)
 --
-INSERT INTO varchar_test VALUES(DEFAULT, '���', '���', '���');
+INSERT INTO varchar_test VALUES(DEFAULT, 'äöüß', 'ÄÖÜß', 'ÄÖÜß');
 SELECT id, v1, v2, v3 FROM varchar_test ORDER BY id;
- id |    v1     |    v2     |    v3     
-----+-----------+-----------+-----------
-  1 | abc       | def       | ghi
-  2 | ��� | ��� | ���
+ id |    v1    |    v2    |    v3    
+----+----------+----------+----------
+  1 | abc      | def      | ghi
+  2 | äöüß | ÄÖÜß | ÄÖÜß
 (2 rows)
 
-SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('���', '���');
- id |    v1     |    v2     |    v3     
-----+-----------+-----------+-----------
-  2 | ��� | ��� | ���
-(1 row)
+SELECT id, v1, v2, v3 FROM varchar_test WHERE v1 IN('äöüß', 'abc');
+ id |    v1    |    v2    |    v3    
+----+----------+----------+----------
+  1 | abc      | def      | ghi
+  2 | äöüß | ÄÖÜß | ÄÖÜß
+(2 rows)
 
 DELETE FROM varchar_test;
 RESET client_encoding;
