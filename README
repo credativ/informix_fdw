@@ -86,7 +86,7 @@ The following steps are required to prepare the regression test suite
 * Now you can run the test suite:
 
   $ LANG=en_US.utf8 REGRESS=informix_fdw INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
-  $ LANG=en_US.itf8 REGRESS=informix_fdw_tx INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
+  $ LANG=en_US.utf8 REGRESS=informix_fdw_tx INFORMIXDIR=$INFORMIXDIR USE_PGXS=1 make installcheck
 
   When no errors occurred due to configuration or setup errors, you should see
   the following output for each of both regression test:
