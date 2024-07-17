@@ -619,8 +619,8 @@ static IfxStatementInfo *ifxExecStmt(IfxConnectionInfo *coninfo,
 	stmtinfo->ifxAttrCount = ifxDescriptorColumnCount(stmtinfo);
 	ifxCatchExceptions(stmtinfo, 0);
 
-	stmtinfo->ifxAttrDefs = palloc0fast(stmtinfo->ifxAttrCount
-										* sizeof(IfxAttrDef));
+	stmtinfo->ifxAttrDefs = palloc0(stmtinfo->ifxAttrCount
+									* sizeof(IfxAttrDef));
 
 	/* Populate result set column info array */
 	if ((stmtinfo->row_size = ifxGetColumnAttributes(stmtinfo)) == 0)
@@ -635,9 +635,9 @@ static IfxStatementInfo *ifxExecStmt(IfxConnectionInfo *coninfo,
 	/*
 	 * Allocate memory for SQLVAR result array.
 	 */
-	stmtinfo->data = (char *) palloc0fast(stmtinfo->row_size);
-	stmtinfo->indicator = (short *) palloc0fast(sizeof(short)
-												* stmtinfo->ifxAttrCount);
+	stmtinfo->data = (char *) palloc0(stmtinfo->row_size);
+	stmtinfo->indicator = (short *) palloc0(sizeof(short)
+											* stmtinfo->ifxAttrCount);
 
 	/* Allocate memory within SQLDA structure */
 	ifxSetupDataBufferAligned(stmtinfo);
@@ -2409,7 +2409,7 @@ static ItemPointer ifxGetRowIdForTuple(IfxFdwExecutionState *state)
 	 * down to the modify action.
 	 */
 
-	rowid = (ItemPointer) palloc0fast(sizeof(ItemPointerData));
+	rowid = (ItemPointer) palloc0(sizeof(ItemPointerData));
 	ItemPointerSet(rowid,
 				   DatumGetInt32(state->values[IFX_PGATTRCOUNT(state) - 1].val),
 				   0);
@@ -2469,8 +2469,8 @@ ifxGetValuesFromTuple(IfxFdwExecutionState *state,
 	 *
 	 * Used to retrieve Informix values by ifxColumnValueByAttnum().
 	 */
-	state->values = palloc0fast(sizeof(IfxValue)
-								* state->stmt_info.ifxAttrCount);
+	state->values = palloc0(sizeof(IfxValue)
+							* state->stmt_info.ifxAttrCount);
 
 	for (i = 0; i <= state->pgAttrCount - 1; i++)
 	{
@@ -3466,7 +3466,11 @@ static void ifxGetForeignPaths(PlannerInfo *root,
 #if PG_VERSION_NUM >= 90500
 									 NULL,
 #endif
-									 NIL));
+#if PG_VERSION_NUM >= 170000
+					                 NIL,
+#endif
+									 NIL
+									 ));
 }
 
 static ForeignScan *ifxGetForeignPlan(PlannerInfo *root,
@@ -3814,7 +3818,7 @@ static void ifxPgColumnData(Oid foreignTableOid, IfxFdwExecutionState *festate)
 	 * Use IFX_PGATTRCOUNT to reflect extra space for retrieval of ROWID,
 	 * if necessary.
 	 */
-	festate->pgAttrDefs = palloc0fast(sizeof(PgAttrDef) * IFX_PGATTRCOUNT(festate));
+	festate->pgAttrDefs = palloc0(sizeof(PgAttrDef) * IFX_PGATTRCOUNT(festate));
 
 	/*
 	 * Get all attributes for the given foreign table.
@@ -4338,7 +4342,7 @@ static char *ifxGenStatementName(int stmt_id)
 	initStringInfo(buf);
 
 	appendStringInfo(buf, "s%d_%d",
-					 MyBackendId, stmt_id);
+					 IFX_BACKEND_ID, stmt_id);
 
 	stmt_name = (char *) palloc0(buf->len + 1);
 	strncpy(stmt_name, buf->data, buf->len);
@@ -4367,7 +4371,7 @@ static char *ifxGenDescrName(int descr_id)
 	initStringInfo(buf);
 
 	appendStringInfo(buf, "d%d_%d",
-					 MyBackendId, descr_id);
+					 IFX_BACKEND_ID, descr_id);
 
 	descr_name = (char *) palloc0(buf->len + 1);
 	strncpy(descr_name, buf->data, buf->len);
@@ -4404,7 +4408,7 @@ static char *ifxGenCursorName(int curid)
 	initStringInfo(buf);
 
 	appendStringInfo(buf, "c%d_%d",
-					 MyBackendId, curid);
+					 IFX_BACKEND_ID, curid);
 
 	cursor_name = (char *) palloc0(buf->len + 1);
 	strncpy(cursor_name, buf->data, buf->len);

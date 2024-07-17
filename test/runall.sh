@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TEST_VERSIONS=${1:-15}
+TEST_VERSIONS=${1:-17}
 
 for i in ${TEST_VERSIONS}; do
 

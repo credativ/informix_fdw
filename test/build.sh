@@ -2,8 +2,8 @@
 
 set -e
 
-# Check for given major version of PG and Informix env, use default PG16
-: ${PG_MAJOR_VERSION:=16}
+# Check for given major version of PG and Informix env, use default PG17
+: ${PG_MAJOR_VERSION:=17}
 : ${INFORMIXSERVER:=informix}
 : ${INFORMIXSQLHOSTS:=/tmp/csdk/etc/sqlhosts}
 : ${INFORMIXDIR:=/tmp/csdk}
