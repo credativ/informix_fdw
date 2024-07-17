@@ -91,6 +91,20 @@
 #define PG_RELATION_CLOSE(r, l) heap_close((r), (l))
 #endif
 
+/**
+ * Starting with PostgreSQL 17 MyBackendId is gone and renamed to
+ * MyProcNumber, reflecting its real purpose (being an index into PROCARRAY
+ * starting with 0).
+ *
+ * To keep the number starting at 1 and the old behavior with PG < 17, we simply
+ * always add 1.
+ */
+#if PG_VERSION_NUM >= 170000
+#define IFX_BACKEND_ID (MyProcNumber + 1)
+#else
+#define IFX_BACKEND_ID MyBackendId
+#endif
+
 /*
  * Defines actions for remote informix transactions.
  */
