@@ -612,6 +612,12 @@ typedef struct IfxStatementInfo
 
 } IfxStatementInfo;
 
+/*
+ * Number of current transactions
+ * in progress per backend.
+ */
+extern unsigned int ifxXactInProgress;
+
 extern void ifxCreateConnectionXact(IfxConnectionInfo *coninfo);
 void ifxSetConnection(IfxConnectionInfo *coninfo);
 int ifxSetConnectionIdent(char *conname);

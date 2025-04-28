@@ -42,10 +42,6 @@ EXEC SQL include "varchar.h";
 /* Don't trap errors. Default, but force it explicitely */
 EXEC SQL WHENEVER SQLERROR CONTINUE;
 
-/*
- * Number of current transactions
- * in progress per backend.
- */
 unsigned int ifxXactInProgress = 0;
 
 static void ifxSetEnv(IfxConnectionInfo *coninfo);

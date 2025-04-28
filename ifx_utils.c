@@ -70,7 +70,7 @@ static ifxTemporalFormatIdent ifxTemporalFormat[] =
  * PostgreSQL modifiers. The array index have to
  * match the IFX_TU_* macros in ifx_type_compat.h.
  */
-char *ifxPgTemporalQualifier[]
+static char *ifxPgTemporalQualifier[]
 	= {
 	"YEAR",
 	NULL,

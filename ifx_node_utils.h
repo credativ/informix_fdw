@@ -22,7 +22,6 @@
  * Helper macros.
  */
 
-
 #define makeFdwStringConst(_field_)\
 	makeConst(TEXTOID, -1, InvalidOid, -1,\
 			  PointerGetDatum(cstring_to_text(_field_)),	\

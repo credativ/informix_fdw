@@ -40,6 +40,11 @@
 #include "optimizer/inherit.h"
 #endif
 
+#if PG_VERSION_NUM >= 180000
+#include "commands/explain_state.h"
+#include "commands/explain_format.h"
+#endif
+
 #include "access/xact.h"
 #include "utils/lsyscache.h"
 
@@ -193,6 +198,16 @@ extern PGDLLIMPORT double cpu_tuple_cost;
 
 #define TUPDESC_GET_ATTR(desc, index) \
 	TupleDescAttr((desc), (index))
+
+/*
+ * PostgreSQL 18 learned to distinguish delays between ANALYZE and VACUUM,
+ * see upstream commit e5b0b0ce1509
+ */
+#if PG_VERSION_NUM >= 180000
+#define IFX_FDW_API_VACUUM_DELAY vacuum_delay_point(true)
+#else
+#define IFX_FDW_API_VACUUM_DELAY vacuum_delay_point()
+#endif
 
 /*******************************************************************************
  * FDW helper functions.
@@ -3225,7 +3240,7 @@ ifxAcquireSampleRows(Relation relation, int elevel, HeapTuple *rows,
 		/*
 		 * Allow delay...
 		 */
-		vacuum_delay_point();
+		IFX_FDW_API_VACUUM_DELAY;
 
 		/*
 		 * Read the tuple...
@@ -3459,6 +3474,9 @@ static void ifxGetForeignPaths(PlannerInfo *root,
 									 NULL,
 #endif
 									 baserel->rows,
+#if PG_VERSION_NUM >= 180000
+									 0, /* number of disabled plan nodes */
+#endif
 									 planState->coninfo->planData.costs,
 									 planState->coninfo->planData.total_costs,
 									 NIL,
