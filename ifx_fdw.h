@@ -277,6 +277,12 @@ typedef enum IfxOprType
 	IFX_IS_NULL,
 	IFX_IS_NOT_NULL,
 	IFX_OPR_IN,
+
+	/* The following marks explicit precedence and no "real"
+	   node representations */
+	IFX_OPR_CONTEXT_START,
+	IFX_OPR_CONTEXT_END,
+
 	IFX_OPR_UNKNOWN
 } IfxOprType;
 

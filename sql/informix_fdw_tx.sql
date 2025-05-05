@@ -1153,6 +1153,42 @@ DROP TRIGGER tg_inttest ON delete_fdw_trigger_test;
 COMMIT;
 
 --------------------------------------------------------------------------------
+-- Test for Github Issue #4
+--------------------------------------------------------------------------------
+
+BEGIN;
+
+DELETE FROM inttest;
+DELETE FROM varchar_test;
+
+INSERT INTO inttest VALUES(1, 1, 1), (2,1,1), (3,1,1), (1,2,1), (1,3,1), (1,1,2), (1,1,3), (2,2,2), (3,3,3);
+
+SELECT * FROM inttest WHERE f1 = 1 AND (f2 = 2 OR f2 = 3);
+
+SELECT * FROM inttest WHERE f1 = 1 AND (f2 = 2 OR (f1 = 2 AND f3 = 1));
+
+SELECT * FROM inttest WHERE f1 = 1 AND (f2 IN(1,2) OR (f2 = 3 AND f3 = 1));
+
+DELETE FROM inttest;
+
+INSERT INTO varchar_test(id, v1, v2, v3) VALUES(1, 'a', 'b', 'c');
+INSERT INTO varchar_test(id, v1, v2, v3) VALUES(2, 'a', 'd', 'e');
+INSERT INTO varchar_test(id, v1, v2, v3) VALUES(3, 'a', 'f', 'g');
+INSERT INTO varchar_test(id, v1, v2, v3) VALUES(4, 'a', 'h', 'i');
+
+SELECT * FROM varchar_test WHERE v1 = 'a' AND (v2 = 'b' OR v2 = 'h');
+
+SELECT * FROM varchar_test WHERE v1 = 'a' AND (v2 = 'b' OR (v2 = 'h' AND v3 = 'c'));
+
+SELECT * FROM varchar_test WHERE v1 = 'a' AND (v2 IN ('b', 'f') OR (v2 = 'h' AND v3 = 'c'));
+
+SELECT * FROM varchar_test WHERE v2 = 'd' OR v2 = 'b' OR v2 = 'h' AND v2 = 'f';
+
+DELETE FROM varchar_test;
+
+COMMIT;
+
+--------------------------------------------------------------------------------
 -- Regression Tests End, Cleanup
 --------------------------------------------------------------------------------
 

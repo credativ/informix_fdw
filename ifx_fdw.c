@@ -5208,10 +5208,10 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 							 List **excl_restrictInfo,
 							 Oid foreignTableOid)
 {
+	char                 *oprStr = "";
 	IfxPushdownOprContext pushdownCxt;
 	ListCell             *cell;
 	StringInfoData       *buf;
-	char                 *oprStr;
 	int i;
 
 	Assert(foreignTableOid != InvalidOid);
@@ -5269,12 +5269,6 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 	}
 
 	/*
-	 * Since restriction clauses are always AND together,
-	 * assume a AND_EXPR per default.
-	 */
-	oprStr = "AND";
-
-	/*
 	 * Check wether ifx_predicate_tree_walker() encountered a OR'ed
 	 * expression and removed some clauses...we can't rely on the returned
 	 * predicate string, so assume we can't push down any. This won't be safe,
@@ -5307,6 +5301,20 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 
 		switch (info->type)
 		{
+			case IFX_OPR_CONTEXT_START:
+				appendStringInfo(buf, "%s (", (strlen(oprStr) > 0 ? oprStr : ""));
+
+				/*
+				 * It is important to reset oprStr to an empty string.
+				 * That ensures next iteration won't emit another
+				 * AND representation into the predicate string. Next
+				 * baserestrictinfo will add this back.
+				 */
+				oprStr = "";
+				break;
+			case IFX_OPR_CONTEXT_END:
+				appendStringInfoString(buf, ")");
+				break;
 			case IFX_OPR_OR:
 			case IFX_OPR_AND:
 			case IFX_OPR_NOT:
@@ -5317,10 +5325,11 @@ static char * ifxFilterQuals(PlannerInfo *planInfo,
 			case IFX_IS_NOT_NULL:
 				/* fall through, no special action necessary */
 			default:
-				appendStringInfo(buf, " %s %s",
+				appendStringInfo(buf, " %s %s ",
 								 (i > 1) ? oprStr : "",
 								 text_to_cstring(info->expr_string));
 		}
+
 	}
 
 	/* empty string in case no pushdown predicates are found */

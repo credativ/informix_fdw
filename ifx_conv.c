@@ -2728,8 +2728,22 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 	{
 		BoolExpr *boolexpr;
 		ListCell *cell;
+		IfxPushdownOprInfo *bracket;
 
 		boolexpr = (BoolExpr *) node;
+
+		/*
+		 * Start new bracket. This ensures and BoolExpr expression is wrapped
+		 * into round brackets, preserving the correct precedence for e.g. OR'ed
+		 * conditions.
+		 */
+		bracket = palloc(sizeof(IfxPushdownOprInfo));
+		bracket->expr     = NULL;
+		bracket->num_args = 0;
+		bracket->arg_idx  = 0;
+		bracket->type     = IFX_OPR_CONTEXT_START;
+		bracket->deparsetype = IFX_DEPARSED_EXPR;
+		IFX_MARK_PREDICATE_ELEM(bracket, context);
 
 		/*
 		 * Decode the arguments to the BoolExpr
@@ -2784,6 +2798,17 @@ bool ifx_predicate_tree_walker(Node *node, struct IfxPushdownOprContext *context
 				IFX_MARK_PREDICATE_BOOL(info, context);
 			}
 		}
+
+		/*
+		 * Close bracket
+		 */
+		bracket = palloc(sizeof(IfxPushdownOprInfo));
+		bracket->expr     = NULL;
+		bracket->num_args = 0;
+		bracket->arg_idx  = 0;
+		bracket->type     = IFX_OPR_CONTEXT_END;
+		bracket->deparsetype = IFX_DEPARSED_EXPR;
+		IFX_MARK_PREDICATE_ELEM(bracket, context);
 
 		/* done */
 		return true;
