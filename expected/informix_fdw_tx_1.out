@@ -1403,6 +1403,7 @@ SELECT * FROM inttest;
 (0 rows)
 
 DROP TRIGGER tg_inttest ON delete_fdw_trigger_test;
+DROP TABLE delete_fdw_trigger_test;
 COMMIT;
 --------------------------------------------------------------------------------
 -- Test for Github Issue #4

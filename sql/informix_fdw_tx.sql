@@ -1150,6 +1150,8 @@ SELECT * FROM inttest;
 
 DROP TRIGGER tg_inttest ON delete_fdw_trigger_test;
 
+DROP TABLE delete_fdw_trigger_test;
+
 COMMIT;
 
 --------------------------------------------------------------------------------
