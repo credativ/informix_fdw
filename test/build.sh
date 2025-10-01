@@ -28,7 +28,7 @@ if [ ! -f /.initialized ]; then
   echo "Waiting 30s for Informix database (setup delay)"
   sleep 30
 
-  git clone https://github.com/psoo/informix_fdw.git
+  git clone https://github.com/credativ/informix_fdw.git
 
 fi
 
