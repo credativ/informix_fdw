@@ -173,9 +173,8 @@ ifxDeserializePlanData(IfxPlanData *planData,
 
 	bvalue = DatumGetByteaP(const_expr->constvalue);
 
-	elog(DEBUG1, "deserialized planData %s\n, varsize %d",
-		 nodeToString(const_expr),
-		 VARSIZE(bvalue));
+	elog(DEBUG1, "deserialized planData %s",
+		 nodeToString(const_expr));
 
 	memcpy(planData, VARDATA(bvalue), sizeof(IfxPlanData));
 }
