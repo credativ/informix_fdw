@@ -929,7 +929,7 @@ static void ifxRowIdValueToSqlda(IfxFdwExecutionState *state,
 															  &isnull));
 
 	/* Should be valid */
-	Assert(PointerIsValid(iptr));
+	Assert(iptr != NULL);
 
 	if (isnull)
 		elog(ERROR, "informix_fdw: could not extract rowid");
