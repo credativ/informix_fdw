@@ -17,7 +17,7 @@
 
 #include "nodes/pg_list.h"
 #include "utils/hsearch.h"
-#include "utils/dynahash.h"
+// #include "utils/dynahash.h"
 
 /*
  * Cached information for an INFORMIX
